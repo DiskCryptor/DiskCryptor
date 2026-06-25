@@ -15,6 +15,7 @@
 [Includes]
   Include
   Library/DiskCryptorLib
+  Library/DcsCfgLib
 
 [LibraryClasses]
   CommonLib|Include/Library/CommonLib.h
