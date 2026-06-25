@@ -36,6 +36,7 @@
 #include "misc/xml.h"
 #include "misc/fs_sup.h"
 #include "mok_sup.h"
+#include "dc_header.h"
 
 const wchar_t* efi_var_guid = L"{8BE4DF61-93CA-11D2-AA0D-00E098032B8C}";
 
@@ -64,6 +65,7 @@ static const wchar_t* dcs_zip_file = L"DcsPkg_IA32";
 static const efi_file_t dcs_files[] = {
 	{L"DcsBoot32.efi",		L"\\EFI\\DCS\\DcsBoot.efi"}, // boot file must be first
 	{L"DcsInt32.dcs",		L"\\EFI\\DCS\\DcsInt.dcs"},
+	{L"DcsTpm32.dcs",		L"\\EFI\\DCS\\DcsTpm.dcs"},
 	{L"DcsInfo32.dcs",		L"\\EFI\\DCS\\DcsInfo.dcs"},
 	//{L"DcsCfg32.dcs",		L"\\EFI\\DCS\\DcsCfg.dcs"},
 	{L"LegacySpeaker32.dcs",L"\\EFI\\DCS\\LegacySpeaker.dcs"},
@@ -78,6 +80,7 @@ static const wchar_t* dcs_zip_file = L"DcsPkg_X64";
 static const efi_file_t dcs_files[] = {
 	{L"DcsBoot.efi",		L"\\EFI\\DCS\\DcsBoot.efi"}, // boot file must be first
 	{L"DcsInt.dcs",			L"\\EFI\\DCS\\DcsInt.dcs"},
+	{L"DcsTpm.dcs",			L"\\EFI\\DCS\\DcsTpm.dcs"},
 	{L"DcsInfo.dcs",		L"\\EFI\\DCS\\DcsInfo.dcs"},
 	//{L"DcsCfg.dcs",			L"\\EFI\\DCS\\DcsCfg.dcs"},
 	{L"LegacySpeaker.dcs",	L"\\EFI\\DCS\\LegacySpeaker.dcs"},
@@ -175,7 +178,85 @@ int dc_efi_file_exists(const wchar_t *root, const wchar_t* name) // works also o
 	return 0;
 }
 
-int dc_efi_get_sys_part(int dsk_num, wchar_t* path)
+/* Helper to find Volume GUID path for a partition (better for file operations)
+ * Returns ST_OK on success, ST_NF_DEVICE if not found */
+int dc_efi_get_volume_guid_path(int dsk_num, int part_num, wchar_t *path, int max_len)
+{
+	wchar_t volume_name[MAX_PATH];
+	HANDLE hFind;
+	HANDLE hVolume;
+	STORAGE_DEVICE_NUMBER sdn;
+	DWORD bytes;
+	int found = 0;
+
+	hFind = FindFirstVolume(volume_name, MAX_PATH);
+	if (hFind == INVALID_HANDLE_VALUE) {
+		return ST_NF_DEVICE;
+	}
+
+	do {
+		/* Remove trailing backslash for CreateFile */
+		size_t len = wcslen(volume_name);
+		if (len > 0 && volume_name[len - 1] == L'\\') {
+			volume_name[len - 1] = L'\0';
+		}
+
+		hVolume = CreateFile(volume_name, 0,
+			FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+
+		if (hVolume != INVALID_HANDLE_VALUE) {
+			if (DeviceIoControl(hVolume, IOCTL_STORAGE_GET_DEVICE_NUMBER,
+				NULL, 0, &sdn, sizeof(sdn), &bytes, NULL)) {
+				if ((int)sdn.DeviceNumber == dsk_num && (int)sdn.PartitionNumber == part_num) {
+					/* Found it - keep without trailing backslash */
+					wcsncpy_s(path, max_len, volume_name, _TRUNCATE);
+					found = 1;
+				}
+			}
+			CloseHandle(hVolume);
+		}
+
+		if (found) break;
+
+	} while (FindNextVolume(hFind, volume_name, MAX_PATH));
+
+	FindVolumeClose(hFind);
+	return found ? ST_OK : ST_NF_DEVICE;
+}
+
+int dc_efi_get_os_disk(void)
+{
+	wchar_t boot_dev[MAX_PATH];
+	wchar_t volume_path[MAX_PATH];
+	HANDLE hVolume;
+	STORAGE_DEVICE_NUMBER sdn;
+	DWORD bytes;
+	int dsk_num = -1;
+
+	/* Get boot device path */
+	if (dc_get_boot_device(boot_dev) != ST_OK) {
+		return -1;
+	}
+
+	/* Convert to Win32 path */
+	swprintf_s(volume_path, MAX_PATH, L"\\\\?%s", &boot_dev[7]);
+
+	/* Open volume and get device number */
+	hVolume = CreateFile(volume_path, 0,
+		FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+
+	if (hVolume != INVALID_HANDLE_VALUE) {
+		if (DeviceIoControl(hVolume, IOCTL_STORAGE_GET_DEVICE_NUMBER,
+			NULL, 0, &sdn, sizeof(sdn), &bytes, NULL)) {
+			dsk_num = (int)sdn.DeviceNumber;
+		}
+		CloseHandle(hVolume);
+	}
+
+	return dsk_num;
+}
+
+int dc_efi_get_sys_part(int dsk_num, int esp_part, wchar_t* path)
 {
 	wchar_t               disk[MAX_PATH];
 	HANDLE                hdisk = NULL;
@@ -183,18 +264,15 @@ int dc_efi_get_sys_part(int dsk_num, wchar_t* path)
 	u32                   bytes;
 	u8                    buff[sizeof(DRIVE_LAYOUT_INFORMATION_EX) + sizeof(PARTITION_INFORMATION_EX) * 127]; // 128 partitions must be enough
 	PDRIVE_LAYOUT_INFORMATION_EX dli = pv(buff);
+	int                   first_esp_part = -1;
+	wchar_t               first_esp_path[MAX_PATH] = { 0 };
 
 	// if dsk_num == -1 then use boot disk
 	if (dsk_num == -1) {
-		resl = dc_get_boot_device(disk);
-		if (resl == ST_OK) {
-			swprintf_s(path, MAX_PATH, L"\\\\?%s", &disk[7]);
-		}
-		return resl;
+		dsk_num = dc_efi_get_os_disk();
+		if (dsk_num < 0) return ST_NF_DEVICE;
 	}
-	else {
-		_snwprintf(disk, countof(disk), L"\\\\.\\PhysicalDrive%d", dsk_num);
-	}
+	_snwprintf(disk, countof(disk), L"\\\\.\\PhysicalDrive%d", dsk_num);
 
 	do
 	{
@@ -213,15 +291,55 @@ int dc_efi_get_sys_part(int dsk_num, wchar_t* path)
 
 		if (dli->PartitionStyle == 1) // GPT
 		{
-			// find EFI system pattition by type GUID
-			for (DWORD i = 0; i < dli->PartitionCount; i++)
-			{
-				PPARTITION_INFORMATION_EX part = &dli->PartitionEntry[i];
-				if (IsEqualGUID(&part->Gpt.PartitionType, &efi_sys_partition))
+			// If specific partition requested, use it directly
+			if (esp_part > 0) {
+				for (DWORD i = 0; i < dli->PartitionCount; i++) {
+					PPARTITION_INFORMATION_EX part = &dli->PartitionEntry[i];
+					if (part->PartitionNumber == esp_part) {
+						// Try Volume GUID path first (better for file operations)
+						if (dc_efi_get_volume_guid_path(dsk_num, esp_part, path, MAX_PATH) == ST_OK) {
+							resl = ST_OK;
+						} else {
+							// Fall back to GLOBALROOT path
+							swprintf_s(path, MAX_PATH, L"\\\\?\\GLOBALROOT\\Device\\Harddisk%d\\Partition%d", dsk_num, part->PartitionNumber);
+							resl = ST_OK;
+						}
+						break;
+					}
+				}
+			}
+			else {
+				// Auto-detect: first look for ESP with \EFI\DCS, then fallback to first ESP
+				for (DWORD i = 0; i < dli->PartitionCount; i++)
 				{
-					swprintf_s(path, MAX_PATH, L"\\\\?\\GLOBALROOT\\Device\\Harddisk%d\\Partition%d", dsk_num, part->PartitionNumber);
+					PPARTITION_INFORMATION_EX part = &dli->PartitionEntry[i];
+					if (IsEqualGUID(&part->Gpt.PartitionType, &efi_sys_partition))
+					{
+						wchar_t temp_path[MAX_PATH];
+						// Try Volume GUID path first
+						if (dc_efi_get_volume_guid_path(dsk_num, part->PartitionNumber, temp_path, MAX_PATH) != ST_OK) {
+							// Fall back to GLOBALROOT path
+							swprintf_s(temp_path, MAX_PATH, L"\\\\?\\GLOBALROOT\\Device\\Harddisk%d\\Partition%d", dsk_num, part->PartitionNumber);
+						}
+
+						// Remember first ESP as fallback
+						if (first_esp_part < 0) {
+							first_esp_part = part->PartitionNumber;
+							wcscpy_s(first_esp_path, MAX_PATH, temp_path);
+						}
+
+						// Check if this ESP has DCS installed
+						if (dc_efi_file_exists(temp_path, L"\\EFI\\DCS")) {
+							wcscpy_s(path, MAX_PATH, temp_path);
+							resl = ST_OK;
+							break;
+						}
+					}
+				}
+				// If no ESP with DCS found, use first ESP
+				if (resl != ST_OK && first_esp_part > 0) {
+					wcscpy_s(path, MAX_PATH, first_esp_path);
 					resl = ST_OK;
-					break;
 				}
 			}
 		}
@@ -260,6 +378,13 @@ int dc_load_efi_file(const wchar_t *root, const wchar_t* fileName, void **data, 
 	wchar_t path[MAX_PATH];
 	swprintf_s(path, MAX_PATH, L"%s%s", root, fileName);
 	return load_file(path, data, size);
+}
+
+int dc_save_efi_file(const wchar_t *root, const wchar_t* fileName, void *data, int size)
+{
+	wchar_t path[MAX_PATH];
+	swprintf_s(path, MAX_PATH, L"%s%s", root, fileName);
+	return save_file(path, data, size);
 }
 
 int dc_delete_efi_file(const wchar_t* root, const wchar_t* fileName)
@@ -952,22 +1077,22 @@ int dc_is_msft_boot_replaced(const wchar_t *root)
 	return is_dcs_file;
 }
 
-int dc_efi_is_msft_boot_replaced(int dsk_num)
+int dc_efi_is_msft_boot_replaced(int dsk_num, int esp_part)
 {
 	wchar_t  path[MAX_PATH] = { 0 };
-	if (dc_efi_get_sys_part(dsk_num, path) == ST_OK)
+	if (dc_efi_get_sys_part(dsk_num, esp_part, path) == ST_OK)
 		return dc_is_msft_boot_replaced(path);
 	return 0;
 }
 
-int dc_efi_replace_msft_boot(int dsk_num)
+int dc_efi_replace_msft_boot(int dsk_num, int esp_part)
 {
 	int      resl;
 	wchar_t  root[MAX_PATH] = { 0 };
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, esp_part, root);
 		if (resl != ST_OK) break;
 
 		if (!dc_is_dcs_on_partition(root)) {
@@ -987,14 +1112,14 @@ int dc_efi_replace_msft_boot(int dsk_num)
 	return resl;
 }
 
-int dc_efi_restore_msft_boot(int dsk_num)
+int dc_efi_restore_msft_boot(int dsk_num, int esp_part)
 {
 	int      resl;
 	wchar_t  root[MAX_PATH] = { 0 };
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, esp_part, root);
 		if (resl != ST_OK) break;
 
 		if (!dc_is_msft_boot_replaced(root)) {
@@ -1009,7 +1134,7 @@ int dc_efi_restore_msft_boot(int dsk_num)
 	return resl;
 }
 
-int dc_set_efi_boot(int dsk_num, int replace_ms, int shim)
+int dc_set_efi_boot(int dsk_num, int esp_part, int replace_ms, int shim)
 {
 	int      resl;
 	wchar_t  root[MAX_PATH] = { 0 };
@@ -1027,7 +1152,7 @@ int dc_set_efi_boot(int dsk_num, int replace_ms, int shim)
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, esp_part, root);
 		if (resl != ST_OK) break;
 
 		// check if the bootloader is already installed
@@ -1058,11 +1183,11 @@ int dc_set_efi_boot(int dsk_num, int replace_ms, int shim)
 
 			dc_mok_set_timeout(600); // 10 min, NOTE: this will be auto reset back to 10s after reboot :/
 
-			/*size_t end = wcslen(root);
+			size_t end = wcslen(root);
 			const wchar_t* files[] = {root};
 			wcscat_s(root, MAX_PATH, shim_files[shim_mok_index].target);
 			dc_mok_enroll_files(files, 1, L"123", 0);
-			root[end] = 0;*/
+			root[end] = 0;
 		}
 		else {
 			resl = dc_copy_file(root, root, dcs_files[0].target, efi_boot_file); // L"\\EFI\\DCS\\DcsBoot.efi" -> L"\\EFI\\Boot\\BOOTx64.efi"
@@ -1074,6 +1199,8 @@ int dc_set_efi_boot(int dsk_num, int replace_ms, int shim)
 		resl = dc_efi_config_by_partition(root, 1, &conf);
 		if (resl != ST_OK) break;
 
+		dc_efi_update_cert(NULL);
+
 		if (replace_ms) {
 			resl = dc_replace_msft_boot(root);
 		}
@@ -1083,7 +1210,7 @@ int dc_set_efi_boot(int dsk_num, int replace_ms, int shim)
 	return resl;
 }
 
-int dc_update_efi_boot(int dsk_num)
+int dc_update_efi_boot(int dsk_num, int esp_part)
 {
 	int      resl;
 	wchar_t  root[MAX_PATH] = { 0 };
@@ -1091,9 +1218,9 @@ int dc_update_efi_boot(int dsk_num)
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, esp_part, root);
 		if (resl != ST_OK) break;
-	
+
 		// check if the bootloader is installed
 		if (!dc_is_dcs_on_partition(root)) {
 			resl = ST_BLDR_NOTINST; break;
@@ -1127,14 +1254,14 @@ int dc_update_efi_boot(int dsk_num)
 	return resl;
 }
 
-int dc_unset_efi_boot(int dsk_num)
+int dc_unset_efi_boot(int dsk_num, int esp_part)
 {
 	int      resl;
 	wchar_t  root[MAX_PATH] = { 0 };
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, esp_part, root);
 		if (resl != ST_OK) break;
 
 		// check if the bootloader is installed
@@ -1161,7 +1288,7 @@ int dc_unset_efi_boot(int dsk_num)
 		else { // remove boot file
 			dc_delete_efi_file(root, efi_boot_file);
 		}
-		
+
 		// restore original boot file
 		dc_ren_efi_file(root, efi_boot_bak, efi_boot_file);
 
@@ -1180,7 +1307,7 @@ int dc_get_platform_info(int dsk_num, char** infoContent, int *size)
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, -1, root);
 		if (resl != ST_OK) break;
 
 		// check if the bootloader is installed
@@ -1327,13 +1454,10 @@ int dc_get_disk_id_by_guid(char* guid, unsigned long *disk_id)
 	return resl;
 }*/
 
-void dc_efi_config_store(STRING* newConfig, char* configContent, DWORD size, ldr_config* conf)
+void dc_efi_config_store(STRING* newConfig, char* configContent, DWORD size, ldr_config* conf, const wchar_t* root)
 {
 	XmlWriteHeader(newConfig);
 	StrAppend(newConfig, "\n\t<configuration>");
-
-	// Set the DCS Module in case we use a build that supports multiple methods
-	WriteConfigString(newConfig, configContent, "DcsModule", "DiskCryptor"); 
 
 // Main:
 	// Keyboard Layout
@@ -1341,6 +1465,12 @@ void dc_efi_config_store(STRING* newConfig, char* configContent, DWORD size, ldr
 		// QWERTZ	1
 		// AZERTY	2
 	WriteConfigInteger(newConfig, configContent, "KeyboardLayout", conf->kbd_layout);
+
+	// Header KDF
+	WriteConfigInteger(newConfig, configContent, "HeaderKDF", conf->header_kdf);
+
+	// Keyfile Mixer
+	WriteConfigInteger(newConfig, configContent, "KeyfileMixer", conf->keyfile_mixer);
 
 	// Booting Method
 		// First disk MBR								// BT_MBR_FIRST    2
@@ -1358,29 +1488,36 @@ void dc_efi_config_store(STRING* newConfig, char* configContent, DWORD size, ldr
 	WriteConfigString(newConfig, configContent, "BootPartition", disk_guid); // boot partition guid without brackets*/
 
 // Authentication:
-	// Authenticaltion Method
-		// Password and bootauth keyfile 3
-		// Password request 1
-		// Embedded bootauth keyfile 2
 	WriteConfigInteger(newConfig, configContent, "AutoLogin", (conf->logon_type & LDR_LT_GET_PASS) ? 0 : 1);
+	
 	//WriteConfigString(newConfig, configContent, "AutoPassword", "");
-	/*if ((conf->logon_type & LDR_LT_EMBED_KEY) == 0)
-		WriteConfigString(newConfig, configContent, "KeyFilePath", ""); // empty string -> no key file
-	else 
+
+	
+	if (is_all_zeros(conf->emb_key, sizeof(conf->emb_key)))
 	{
-		const char keyPath[] = "\\EFI\\DCS\\key.bin";
+		WriteConfigString(newConfig, configContent, "KeyFilePath", ""); // empty string -> no key file
+	}
+	else if (root)
+	{
+		const char keyPath[] = "\\EFI\\DCS\\KeyFile.bin";
 		WriteConfigString(newConfig, configContent, "KeyFilePath", keyPath);
 
 		wchar_t fullPath[MAX_PATH];
 		swprintf_s(fullPath, MAX_PATH, L"%s%S", root, keyPath);
 
-		resl = save_file(fullPath, conf->emb_key, sizeof(conf->emb_key)); // todo: allow for arbitrary sized key files
-		if (resl != ST_OK) break;
-	}*/
+		save_file(fullPath, conf->emb_key, sizeof(conf->emb_key));
+	}
+
+	if (conf->logon_type & LDR_LT_EMBED_KEY)
+		WriteConfigInteger(newConfig, configContent, "UseKeyFile", 1);
+	else if (conf->logon_type & LDR_LT_USB_KEY)
+		WriteConfigInteger(newConfig, configContent, "UseKeyFile", 2);
+	else 
+		WriteConfigInteger(newConfig, configContent, "UseKeyFile", 0);
 	
 	// Picture Password
-	WriteConfigInteger(newConfig, configContent, "TouchInput", (conf->logon_type & LDR_LT_PIC_PASS) ? 1 : 0);
-	WriteConfigString(newConfig, configContent, "PasswordPicture", "\\EFI\\DCS\\login.bmp"); // h1630 v1090
+	WriteConfigInteger(newConfig, configContent, "TouchInput", (conf->logon_type & LDR_LT_USE_OSK) ? 1 : 0);
+	//WriteConfigString(newConfig, configContent, "PasswordPicture", "\\EFI\\DCS\\login.bmp"); // h1630 v1090
 	//WriteConfigString(newConfig, configContent, "PictureChars", ); // leave default
 	//WriteConfigInteger(newConfig, configContent, "AuthorizeVisible", 0);		// show chars
 	//WriteConfigInteger(newConfig, configContent, "PasswordHideLetters", 1);	// always show letters in touch points
@@ -1414,25 +1551,28 @@ void dc_efi_config_store(STRING* newConfig, char* configContent, DWORD size, ldr
 		// Halt system					"halt"      EFI_DCS_HALT_REQUESTED
 		// Reboot system				"reboot"    EFI_DCS_REBOOT_REQUESTED
 		// Boot from active partition	"cancel"	EFI_DCS_USER_CANCELED
-		// Exit to BIOS
+		// Exit to Firmware				"continue"	
 		// Retry authentication			"exit"  &&  gDCryptAuthRetry > 0; else gDCryptAuthRetry == 0;
 		// Load Boot Disk MBR			"cancel"	EFI_DCS_USER_CANCELED
 		//								"shutdown"  EFI_DCS_SHUTDOWN_REQUESTED
+
 	if (conf->error_type & LDR_ET_REBOOT) 
 		WriteConfigString(newConfig, configContent, "ActionFailed", "Reboot");
-	else if (conf->error_type & LDR_ET_BOOT_ACTIVE) 
-		WriteConfigString(newConfig, configContent, "ActionFailed", "Cancel");
-	//else if (conf->error_type & LDR_ET_EXIT_TO_BIOS)
-	//	; // todo: not supported
 	else if (conf->error_type & LDR_ET_MBR_BOOT) 
 		WriteConfigString(newConfig, configContent, "ActionFailed", "Cancel");
-	else //if (conf->error_type & LDR_ET_RETRY)
+	else if (conf->error_type & LDR_ET_RETRY)
 		WriteConfigString(newConfig, configContent, "ActionFailed", "Exit");
+	else if (conf->error_type & LDR_ET_EXIT_TO_BIOS)
+		WriteConfigString(newConfig, configContent, "ActionFailed", "Exit");
+	else if((conf->error_type & 0x3E) == 0)
+		WriteConfigString(newConfig, configContent, "ActionFailed", "Halt");
 
 	// Authentication Tries
 	WriteConfigInteger(newConfig, configContent, "AuthorizeRetry", (conf->error_type & LDR_ET_RETRY) ? 100 : 0);
 
 // Other
+
+	WriteConfigInteger(newConfig, configContent, "BlockUnencryptedVolumes", (conf->options & LDR_OP_BLOCK_UNENC) ? 1 : 0);
 
 	WriteConfigInteger(newConfig, configContent, "UseHardwareCrypto", (conf->options & LDR_OP_HW_CRYPTO) ? 1 : 0);
 
@@ -1477,7 +1617,7 @@ int dc_efi_config_write(const wchar_t* root, ldr_config *conf)
 	{
 		load_file(fileName, &configContent, &size);
 
-		dc_efi_config_store(&newConfig, configContent, size, conf);
+		dc_efi_config_store(&newConfig, configContent, size, conf, root);
 
 		resl = save_file(tempName, newConfig.str, newConfig.len);
 
@@ -1502,7 +1642,7 @@ int dc_efi_config_write(const wchar_t* root, ldr_config *conf)
 	return resl;
 }
 
-void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf)
+void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf, const wchar_t* root)
 {
 	char     buffer[1024];
 
@@ -1512,6 +1652,12 @@ void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf)
 		// QWERTZ	1
 		// AZERTY	2
 	conf->kbd_layout = ReadConfigInteger(configContent, "KeyboardLayout", 0);
+
+	// Header KDF
+	conf->header_kdf = ReadConfigInteger(configContent, "HeaderKDF", KDF_DEFAULT);
+
+	// Keyfile Mixer
+	conf->keyfile_mixer = ReadConfigInteger(configContent, "KeyfileMixer", KEYFILE_MIX_HASHED);
 
 	// Booting Method
 		// First disk MBR								// BT_MBR_FIRST    2
@@ -1527,43 +1673,40 @@ void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf)
 	if (resl != ST_OK) break;*/
 
 // Authentication:
-	// Authenticaltion Method
-		// Password and bootauth keyfile 3
-		// Password request 1
-		// Embedded bootauth keyfile 2
 	if (ReadConfigInteger(configContent, "AutoLogin", 0) == 0) {
 		conf->logon_type |= LDR_LT_GET_PASS;
 	}
-	//ReadConfigString(configContent, "AutoPassword", "", buffer, sizeof(buffer));
-	/*ReadConfigString(configContent, "KeyFilePath", "", buffer, sizeof(buffer));
-	if (strlen(buffer) > 0) {
-		conf->logon_type |= LDR_LT_EMBED_KEY;
 
+	//ReadConfigString(configContent, "AutoPassword", "", buffer, sizeof(buffer));
+
+	ReadConfigString(configContent, "KeyFilePath", "", buffer, sizeof(buffer));
+	if (root && strlen(buffer) > 0) 
+	{
 		wchar_t fullPath[MAX_PATH];
 		swprintf_s(fullPath, MAX_PATH, L"%s%S", root, buffer);
 
 		u8* keyfile;
 		u32 keysize;
-		resl = load_file(fullPath, &keyfile, &keysize);
-		if (resl == ST_OK)
+		if (load_file(fullPath, &keyfile, &keysize) == ST_OK)
 		{
-			if (keysize == sizeof(conf->emb_key)) {  // todo: allow for arbitrary sized key files
+			if (keysize == sizeof(conf->emb_key)) {
 				memcpy(conf->emb_key, keyfile, sizeof(conf->emb_key));
-			}
-			else {
-				resl = ST_INV_DATA_SIZE;
 			}
 
 			burn(keyfile, keysize);
 			free(keyfile);
 		}
+	}
 
-		if (resl != ST_OK) break;
-	}*/
+	if (ReadConfigInteger(configContent, "UseKeyFile", 0) == 1) {
+		conf->logon_type |= LDR_LT_EMBED_KEY;
+	} else if (ReadConfigInteger(configContent, "UseKeyFile", 0) == 2) {
+		conf->logon_type |= LDR_LT_USB_KEY;
+	}
 
 	// Picture Password
 	if (ReadConfigInteger(configContent, "TouchInput", 0)) {
-		conf->logon_type |= LDR_LT_PIC_PASS;
+		conf->logon_type |= LDR_LT_USE_OSK;
 	}
 	//WriteConfigString(configFile, configContent, "PasswordPicture", "\\EFI\\DCS\\login.bmp"); // h1630 v1090
 	//WriteConfigString(configFile, configContent, "PictureChars", ); // leave default
@@ -1620,19 +1763,22 @@ void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf)
 	// Invalid Password action			ConfigReadString("ActionFailed", ...
 		// Halt system					"halt"      EFI_DCS_HALT_REQUESTED
 		// Reboot system				"reboot"    EFI_DCS_REBOOT_REQUESTED
-		// Boot from active partition	"cancel"	EFI_DCS_USER_CANCELED
+		// Boot from active partition
 		// Exit to BIOS
 		// Retry authentication			"exit"  &&  gDCryptAuthRetry > 0; else gDCryptAuthRetry == 0;
-		// Load Boot Disk MBR			"cancel"	EFI_DCS_USER_CANCELED
+		// Load Boot Disk				"cancel"	EFI_DCS_USER_CANCELED
 		//								"shutdown"  EFI_DCS_SHUTDOWN_REQUESTED
 	ReadConfigString(configContent, "ActionFailed", "exit", buffer, sizeof(buffer));
 	if (_strcmpi(buffer, "Reboot") == 0)
 		conf->error_type |= LDR_ET_REBOOT;
 	else if (_strcmpi(buffer, "Cancel") == 0)
-		//conf->error_type |= LDR_ET_BOOT_ACTIVE;
 		conf->error_type |= LDR_ET_MBR_BOOT;
+	else if (_strcmpi(buffer, "Exit") == 0)
+		conf->error_type |= LDR_ET_EXIT_TO_BIOS;
 	//else if(_strcmpi(buffer, "Exit") == 0)
 	//	conf->error_type |= LDR_ET_RETRY;
+	//else if(_strcmpi(buffer, "Halt") == 0)
+	//	conf->error_type |= 0;
 
 	// Authentication Tries
 	if (ReadConfigInteger(configContent, "AuthorizeRetry", 100)) {
@@ -1640,6 +1786,10 @@ void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf)
 	}
 
 // Other
+
+	if (ReadConfigInteger(configContent, "BlockUnencryptedVolumes", 0)) {
+		conf->options |= LDR_OP_BLOCK_UNENC;
+	}
 
 	if (ReadConfigInteger(configContent, "UseHardwareCrypto", 1)) {
 		conf->options |= LDR_OP_HW_CRYPTO;
@@ -1670,7 +1820,7 @@ int dc_efi_config_read(const wchar_t* root, ldr_config *conf)
 
 		conf->ldr_ver = dc_get_dcs_version(root);
 		
-		dc_efi_config_load(configContent, size, conf);
+		dc_efi_config_load(configContent, size, conf, root);
 
 	} while (0);
 
@@ -1768,7 +1918,7 @@ static int dc_get_embedded_config(wchar_t* file, ldr_config* conf)
 		resl = get_fat_file(img_data, img_size, dcs_conf_file, &prop_data, &prop_size);
 		if (resl != ST_OK) break;
 
-		dc_efi_config_load(prop_data, (DWORD)prop_size, conf);
+		dc_efi_config_load(prop_data, (DWORD)prop_size, conf, NULL);
 	}
 	while(0);
 
@@ -1802,7 +1952,7 @@ static int dc_set_embedded_config(wchar_t* file, ldr_config* conf)
 		resl = get_fat_file(img_data, img_size, dcs_conf_file, &prop_data, &prop_size);
 		if (resl != ST_OK) break;
 
-		dc_efi_config_store(&newConfig, prop_data, (DWORD)prop_size, conf);
+		dc_efi_config_store(&newConfig, prop_data, (DWORD)prop_size, conf, NULL);
 
 		memset(prop_data, '    ', prop_size);
 		strcpy(prop_data, newConfig.str);
@@ -1836,7 +1986,7 @@ int dc_get_efi_config(int dsk_num, wchar_t *file, ldr_config *conf)
 		else
 			resl = dc_get_embedded_config(file, conf);
 	}
-	else if ((resl = dc_efi_get_sys_part(dsk_num, path)) == ST_OK)
+	else if ((resl = dc_efi_get_sys_part(dsk_num, -1, path)) == ST_OK)
 		resl = dc_efi_config_by_partition(path, FALSE, conf);
 
 	return resl;
@@ -1853,7 +2003,7 @@ int dc_set_efi_config(int dsk_num, wchar_t* file, ldr_config* conf)
 		else
 			resl = dc_set_embedded_config(file, conf);
 	}
-	else if ((resl = dc_efi_get_sys_part(dsk_num, path)) == ST_OK)
+	else if ((resl = dc_efi_get_sys_part(dsk_num, -1, path)) == ST_OK)
 		resl = dc_efi_config_by_partition(path, TRUE, conf);
 
 	return resl;
@@ -1897,6 +2047,9 @@ void dc_efi_config_init(ldr_config *conf)
 		"Authorizing...",
 		"Password correct",
 
+		KDF_DEFAULT,
+		KEYFILE_MIX_HASHED,
+
 		{ 0 } /*reserved*/
 	};
 
@@ -1907,6 +2060,11 @@ int dc_efi_shim_available()
 {
 	TCHAR	source_path[MAX_PATH], *p;
 	DWORD	length;
+
+	DC_FLAGS flags;
+	if (dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &flags, sizeof(flags)) == NO_ERROR && !(flags.load_flags & DST_PRO_ENABLED)) {
+		return 0; // pro features are not enabled
+	}
 
 	if (g_inst_dll == NULL || (length = GetModuleFileName(g_inst_dll, source_path, _countof(source_path))) == 0) return 0;
 	if (length >= _countof(source_path) - 1 || (p = wcsrchr(source_path, '\\')) == NULL) return 0;
@@ -1930,7 +2088,7 @@ int dc_is_shim_on_partition(const wchar_t *root)
 int dc_efi_is_shim_set(int dsk_num)
 {
 	wchar_t  root[MAX_PATH] = { 0 };
-	if(dc_efi_get_sys_part(dsk_num, root) == ST_OK)
+	if(dc_efi_get_sys_part(dsk_num, -1, root) == ST_OK)
 		return dc_is_shim_on_partition(root);
 	return 0;
 }
@@ -1943,7 +2101,7 @@ int dc_is_dcs_on_partition(const wchar_t *root)
 int dc_is_dcs_on_disk(int dsk_num)
 {
 	wchar_t  root[MAX_PATH] = { 0 };
-	if(dc_efi_get_sys_part(dsk_num, root) == ST_OK)
+	if(dc_efi_get_sys_part(dsk_num, -1, root) == ST_OK)
 		return dc_is_dcs_on_partition(root);
 	return 0;
 }
@@ -1951,7 +2109,7 @@ int dc_is_dcs_on_disk(int dsk_num)
 int dc_efi_is_msft_on_disk(int dsk_num)
 {
 	wchar_t  root[MAX_PATH] = { 0 };
-	if (dc_efi_get_sys_part(dsk_num, root) == ST_OK)
+	if (dc_efi_get_sys_part(dsk_num, -1, root) == ST_OK)
 		return dc_efi_file_exists(root, msft_boot_file);
 	return 0;
 }
@@ -2219,7 +2377,7 @@ int dc_efi_set_bme_ex(wchar_t* description, int dsk_num, int setBootEntry, int f
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, -1, root);
 		if (resl != ST_OK) break;
 
 		if (!dc_is_dcs_on_partition(root)) {
@@ -2262,7 +2420,7 @@ int dc_efi_find_bme(int dsk_num, UINT16 statrtOrderNum, wchar_t* type)
 
 	do
 	{
-		resl = dc_efi_get_sys_part(dsk_num, root);
+		resl = dc_efi_get_sys_part(dsk_num, -1, root);
 		if (resl != ST_OK) break;
 
 		resl = dc_get_part_info(root, &ptix);
@@ -2293,7 +2451,52 @@ int dc_efi_is_bme_set(int dsk_num)
 	return dc_efi_find_bme(dsk_num, LDR_DCS_ID, NULL) == ST_OK;
 }
 
-#include "crc32.h"
+int dc_efi_del_msft_bme()
+{
+	WCHAR tempBuf[1024];
+	UINT32 bootOrderLen;
+	UINT16* bootOrder;
+	UINT32 i;
+	int resl = ST_NF_DEVICE;
+
+	// Read the BootOrder variable
+	bootOrderLen = GetFirmwareEnvironmentVariableW(L"BootOrder", efi_var_guid, tempBuf, sizeof(tempBuf));
+	if (bootOrderLen == 0) {
+		return ST_NF_DEVICE;
+	}
+
+	bootOrder = (UINT16*)tempBuf;
+
+	// Iterate through all boot entries to find Windows Boot Manager
+	for (i = 0; i < bootOrderLen / 2; i++) {
+		wchar_t varName[256];
+		byte* entryData;
+		DWORD entryLen;
+
+		swprintf_s(varName, ARRAYSIZE(varName), L"Boot%04X", bootOrder[i]);
+
+		entryData = malloc(1024);
+		if (entryData == NULL) {
+			continue;
+		}
+
+		entryLen = GetFirmwareEnvironmentVariableW(varName, efi_var_guid, entryData, 1024);
+		if (entryLen > 0) {
+			// Check if this entry contains the Windows Boot Manager path
+			if (dc_buffer_contains_wide_string(entryData, entryLen, msft_boot_file + 1)) { // +1 skip first '\'
+				// Found Windows Boot Manager entry, delete it
+				free(entryData);
+				resl = dc_efi_del_bme_impl(bootOrder[i], NULL);
+				break;
+			}
+		}
+		free(entryData);
+	}
+
+	return resl;
+}
+
+#include "..\crc32.h"
 #ifdef _M_ARM64
 #include "xts_small.h"
 #include "sha512_pkcs5_2_small.h"
@@ -2309,7 +2512,7 @@ int dc_get_dcs_root(wchar_t* root)
 	vol_inf  info;
 
 	// first try boot partition
-	resl = dc_efi_get_sys_part(-1, root);
+	resl = dc_efi_get_sys_part(-1, -1, root);
 	if (resl == ST_OK) {
 		if (dc_is_dcs_on_partition(root))
 			return ST_OK;
@@ -2329,31 +2532,26 @@ int dc_get_dcs_root(wchar_t* root)
 	return ST_BLDR_NOTINST;
 }
 
-int dc_prep_encrypt(const wchar_t* device, dc_pass* password, crypt_info* crypt)
+int dc_prep_encrypt(const wchar_t* device, dc_pass* password, crypt_info* crypt, int flags)
 {
 	int      resl;
 	wchar_t  root[MAX_PATH] = { 0 };
 	wchar_t  path[MAX_PATH] = { 0 };
 
+	dc_init_crypto();
+
 	if ((resl = dc_get_dcs_root(root)) == ST_OK)
 	{
 		swprintf_s(path, MAX_PATH, L"%s%s_%s", root, dcs_test_file, &device[8]);
 
-		dc_conf_data  conf;
-		if (dc_load_config(&conf) == NO_ERROR) {
-			xts_init(conf.conf_flags & CONF_HW_CRYPTO);
-		} else {
-			xts_init(0);
-		}
-
 		xts_key*      header_key = NULL;
-		xts_key*      volume_key = NULL;
+		//xts_key*      volume_key = NULL;
 		dc_header*    header = NULL;
-		UCHAR         salt[PKCS5_SALT_SIZE], *dk = NULL;
+		UCHAR         salt[HEADER_SALT_SIZE], *dk = NULL;
 
 		// allocate required memory
 		if ( (header_key = (xts_key*)secure_alloc(sizeof(xts_key))) == NULL ||
-			(volume_key = (xts_key*)secure_alloc(sizeof(xts_key))) == NULL ||
+			//(volume_key = (xts_key*)secure_alloc(sizeof(xts_key))) == NULL ||
 			(dk = (PUCHAR)secure_alloc(DISKKEY_SIZE)) == NULL ||
 			(header = (dc_header*)secure_alloc(sizeof(dc_header))) == NULL )
 		{
@@ -2364,30 +2562,37 @@ int dc_prep_encrypt(const wchar_t* device, dc_pass* password, crypt_info* crypt)
 		// create the volume header
 		memset((BYTE*)header, 0, sizeof(dc_header));
 
-		if ( (resl = dc_device_control(DC_CTL_GET_RAND, NULL, 0, salt, PKCS5_SALT_SIZE)) != NO_ERROR ) goto cleanup;
+		if ( (resl = dc_device_control(DC_CTL_GET_RAND, NULL, 0, salt, HEADER_SALT_SIZE)) != NO_ERROR ) goto cleanup;
 		if ( (resl = dc_device_control(DC_CTL_GET_RAND, NULL, 0, &header->disk_id, sizeof(header->disk_id))) != NO_ERROR ) goto cleanup;
 		if ( (resl = dc_device_control(DC_CTL_GET_RAND, NULL, 0, header->key_1, sizeof(header->key_1))) != NO_ERROR ) goto cleanup;
 
 		header->sign     = DC_VOLUME_SIGN;
-		header->version  = DC_HDR_VERSION;
-		header->flags    = VF_NO_REDIR;
+		header->version  = DC_HDR_VERSION; // leave at v1 then CRC covers space
+		header->flags    = VF_NO_REDIR | flags;
 		header->alg_1    = crypt->cipher_id;
-		header->tmp_wp_mode = crypt->wp_mode;
 		header->data_off = sizeof(dc_header);
-		header->hdr_crc  = crc32((const unsigned char*)&header->version, DC_CRC_AREA_SIZE);
+		
+		header->head_kdf = password->kdf;
+
+		memcpy(header->space, crypt, sizeof(crypt_info));
+
+		header->hdr_crc  = calculate_header_crc_um(header);
 
 		// derive the header key
-		sha512_pkcs5_2(1000, password->pass, password->size, salt, PKCS5_SALT_SIZE, dk, PKCS_DERIVE_MAX);
+		if (!dc_derive_key_um(password, password->kdf, salt, dk, NULL)) {
+			resl = ST_ERROR;
+			goto cleanup;
+		}
 
 		// initialize encryption keys
-		xts_set_key(header->key_1, crypt->cipher_id, volume_key);
-		xts_set_key(dk, crypt->cipher_id, header_key);
+		//if (!xts_set_key(header->key_1, crypt->cipher_id, volume_key)) { resl = ST_INVALID_PARAM; goto cleanup; }
+		if (!xts_set_key(dk, crypt->cipher_id, header_key)) { resl = ST_INVALID_PARAM; goto cleanup; }
 
 		// encrypt the volume header
 		xts_encrypt((const unsigned char*)header, (unsigned char*)header, sizeof(dc_header), 0, header_key);
 
 		// save salt
-		memcpy(header->salt, salt, PKCS5_SALT_SIZE);
+		memcpy(header->salt, salt, HEADER_SALT_SIZE);
 
 		// write volume header to output file
 		resl = save_file(path, header, sizeof(dc_header));
@@ -2395,7 +2600,7 @@ int dc_prep_encrypt(const wchar_t* device, dc_pass* password, crypt_info* crypt)
 	cleanup:
 		if (header != NULL) secure_free(header);
 		if (dk != NULL) secure_free(dk);
-		if (volume_key != NULL) secure_free(volume_key);
+		//if (volume_key != NULL) secure_free(volume_key);
 		if (header_key != NULL) secure_free(header_key);
 	}
 
@@ -2433,14 +2638,18 @@ int dc_clear_pending_header(const wchar_t* device)
 	return resl;
 }
 
-int dc_api dc_get_pending_header_nt(const wchar_t* device, wchar_t* path)
+int dc_get_pending_header_nt(const wchar_t* device, wchar_t* path)
 {
 	wchar_t  root[MAX_PATH] = { 0 };
 
 	if (dc_get_dcs_root(root) == ST_OK)
 	{
-		swprintf_s(path, MAX_PATH, L"\\Device\\%s%s_%s", &root[4], dcs_test_file, &device[8]);
-
+		// Convert user-mode path to NT path format: "\\?\" -> "\??\"
+		if (wcsncmp(root, L"\\\\?\\", 4) == 0) {
+			swprintf_s(path, MAX_PATH, L"\\??\\%s%s_%s", &root[4], dcs_test_file, &device[8]);
+		} else {
+			swprintf_s(path, MAX_PATH, L"%s%s_%s", root, dcs_test_file, &device[8]);
+		}
 		return ST_OK;
 	}
 
@@ -2569,15 +2778,102 @@ int dc_efi_dcs_is_signed()
 		if (wcscat_s(source_path, _countof(source_path), L".zip") != 0) return 0;
 	}
 
-	if (use_pkg) 
+	if (use_pkg)
 	{
 		resl = dc_pkg_is_signed(source_path, dcs_files, dcs_files_count);
 	}
-	else if (dc_open_zip(source_path, &zip) == ST_OK) 
+	else if (dc_open_zip(source_path, &zip) == ST_OK)
 	{
 		resl = dc_zip_is_signed(zip, dcs_files, dcs_files_count);
 
 		zip_close(zip);
+	}
+
+	return resl;
+}
+
+static const wchar_t* dcs_cert_file = L"\\EFI\\DCS\\Certificate.dat";
+
+// Forward declaration for registry certificate loading
+int dc_load_certificate(WCHAR* certificate, size_t cert_size);
+
+int dc_efi_update_cert(const wchar_t* cert)
+{
+	int resl = ST_OK;
+	int dsk_num;
+	wchar_t root[MAX_PATH];
+	wchar_t* cert_buf = NULL;
+	const wchar_t* cert_to_use = cert;
+	int should_delete = FALSE;
+
+	// Find disk with DCS installed
+	dsk_num = dc_efi_get_os_disk();
+	if (dsk_num < 0) {
+		return ST_NF_DEVICE;
+	}
+
+	// Check if DCS is installed on this disk
+	if (!dc_is_dcs_on_disk(dsk_num)) {
+		return ST_NF_DEVICE;
+	}
+
+	// Get the EFI system partition path
+	resl = dc_efi_get_sys_part(dsk_num, -1, root);
+	if (resl != ST_OK) {
+		return resl;
+	}
+
+	// Check if \EFI\DCS directory exists
+	if (!dc_efi_file_exists(root, L"\\EFI\\DCS")) {
+		return ST_NF_DEVICE;
+	}
+
+	// If cert is NULL, read from registry
+	if (cert == NULL) {
+		cert_buf = malloc(4096 * sizeof(WCHAR));
+		if (cert_buf == NULL) {
+			return ST_NOMEM;
+		}
+
+		if (dc_load_certificate(cert_buf, 4096) == ST_OK && cert_buf[0] != L'\0') {
+			cert_to_use = cert_buf;
+		} else {
+			// Registry empty or not found - delete the file
+			should_delete = TRUE;
+		}
+	}
+	// If cert is non-NULL but empty, delete the file
+	else if (cert[0] == L'\0') {
+		should_delete = TRUE;
+	}
+
+	if (should_delete) {
+		resl = dc_delete_efi_file(root, dcs_cert_file);
+	}
+	else {
+		// Convert wide string to UTF-8
+		int utf8_len = WideCharToMultiByte(CP_UTF8, 0, cert_to_use, -1, NULL, 0, NULL, NULL);
+		if (utf8_len <= 0) {
+			resl = ST_ERROR;
+		}
+		else {
+			char* utf8_cert = malloc(utf8_len);
+			if (utf8_cert == NULL) {
+				resl = ST_NOMEM;
+			}
+			else {
+				WideCharToMultiByte(CP_UTF8, 0, cert_to_use, -1, utf8_cert, utf8_len, NULL, NULL);
+
+				// Save UTF-8 encoded certificate (without null terminator)
+				resl = dc_save_efi_file(root, dcs_cert_file, utf8_cert, utf8_len - 1);
+
+				free(utf8_cert);
+			}
+		}
+	}
+
+	if (cert_buf) {
+		free(cert_buf);
 	}
 
 	return resl;

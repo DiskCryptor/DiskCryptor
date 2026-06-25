@@ -13,6 +13,15 @@
       <UniqueIdentifier>{67DA6AB6-F800-4c08-8B7A-83BB121AAD01}</UniqueIdentifier>
       <Extensions>rc;ico;cur;bmp;dlg;rc2;rct;bin;rgs;gif;jpg;jpeg;jpe;resx;tiff;tif;png;wav;mfcribbon-ms</Extensions>
     </Filter>
+    <Filter Include="crypto">
+      <UniqueIdentifier>{5e0d297c-6767-43fa-b574-8552955f61b1}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypto\Argon2">
+      <UniqueIdentifier>{acf9c956-def3-42e1-89ea-589d788341e2}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypto\Argon2\blake2">
+      <UniqueIdentifier>{9c2afac6-5e6c-4953-a0b6-1e3b8d69cfad}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="driver.rc">
@@ -20,6 +29,9 @@
     </ResourceCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="alloc_bitmap.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="benchmark.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -104,8 +116,41 @@
     <ClCompile Include="dump_helpers.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\argon2.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\core.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\opt_avx2.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\opt_sse2.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\ref.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\selftest.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\blake2\blake2b.c">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\argon2_mt.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="verify.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="base64.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\alloc_bitmap.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\benchmark.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -191,6 +236,30 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="dump_helpers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\argon2.h">
+      <Filter>crypto\Argon2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\core.h">
+      <Filter>crypto\Argon2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blake2b.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blake2-impl.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-opt.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-ref.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\argon2_mt.h">
+      <Filter>crypto\Argon2</Filter>
+    </ClInclude>
+    <ClInclude Include="verify.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

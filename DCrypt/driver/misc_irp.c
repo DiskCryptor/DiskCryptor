@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+	* Copyright (c) 2026
+	* DavidXanatos <info@diskcryptor.org>
     * Copyright (c) 2007-2013
     * ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -139,7 +141,18 @@ NTSTATUS dc_process_power_irp(dev_hook *hook, PIRP irp)
 		{
 			// prevent device encryption to sync device and memory state
 			hook->flags |= F_PREVENT_ENC;
+#ifdef DC_CONCURRENT_TRANSCRYPT
+			if (hook->flags & F_SYNC) {
+				/* Wait for any in-progress transcryption to complete.
+				 * dc_transcrypt_step checks F_PREVENT_ENC and will exit early,
+				 * but we need to wait for any step that's already past that check. */
+				dc_wait_for_transcrypt(hook);
+				/* Save current progress */
+				dc_save_enc_state(hook, SYNC_STEP_UPDATE);
+			}
+#else
 			dc_send_sync_packet(hook->dev_name, S_OP_SYNC, 0);
+#endif
 		}
 
 		if (irp_sp->Parameters.Power.State.SystemState == PowerSystemWorking)

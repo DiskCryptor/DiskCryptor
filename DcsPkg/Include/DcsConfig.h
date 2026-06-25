@@ -3,7 +3,7 @@ DCS configuration
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI
-Copyright (c) 2019. DiskCryptor, David Xanatos
+Copyright (c) 2019-2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials
 are licensed and made available under the terms and conditions
@@ -25,12 +25,10 @@ https://opensource.org/licenses/Apache-2.0
 // Build Config
 //////////////////////////////////////////////////////////////////////////
 
-//#define DEBUG_BUILD
-
 #define DCS_DIRECTORY L"DCS"
 
 #define DCS_CAPTION "Disk Cryptor" //Disk Cryptography Services
-#define DCS_VERSION 206 // 2.06
+#define DCS_VERSION 237 // 2.37
 
 #define NO_BML
 
@@ -41,6 +39,7 @@ https://opensource.org/licenses/Apache-2.0
 //////////////////////////////////////////////////////////////////////////
 #define CONFIG_FILE_PATH L"\\EFI\\" DCS_DIRECTORY L"\\DcsProp"
 
+extern CHAR16  *gConfigFileName;
 extern char    *gConfigBuffer;
 extern UINTN    gConfigBufferSize;
 extern char    *gConfigBufferUpdated;
@@ -52,8 +51,35 @@ BOOLEAN InitConfig(CHAR16* configFileName);
 BOOLEAN ConfigRead(char *configKey, char *configValue, int maxValueSize);
 int ConfigReadInt(char *configKey, int defaultValue);
 __int64 ConfigReadInt64(char *configKey, __int64 defaultValue);
-char *ConfigReadString(char *configKey, char *defaultValue, char *str, int maxLen); 
-CHAR16 *ConfigReadStringW(char *configKey, CHAR16 *defaultValue, CHAR16 *str, int maxLen); 
+char *ConfigReadString(char *configKey, char *defaultValue, char *str, int maxLen);
+CHAR16 *ConfigReadStringW(char *configKey, CHAR16 *defaultValue, CHAR16 *str, int maxLen);
+
+//////////////////////////////////////////////////////////////////////////
+// Config String Builder for XML generation
+//////////////////////////////////////////////////////////////////////////
+
+typedef struct _CFG_STRING {
+	CHAR8   *Str;
+	UINTN    Len;
+	UINTN    Size;
+} CFG_STRING;
+
+EFI_STATUS CfgStrInit(CFG_STRING *S, UINTN InitialSize);
+VOID CfgStrFree(CFG_STRING *S);
+EFI_STATUS CfgStrAppend(CFG_STRING *S, CONST CHAR8 *Str);
+
+//////////////////////////////////////////////////////////////////////////
+// Config XML Writing Functions
+//////////////////////////////////////////////////////////////////////////
+
+EFI_STATUS CfgWriteHeader(CFG_STRING *S);
+EFI_STATUS CfgWriteFooter(CFG_STRING *S);
+VOID CfgMarkUpdated(CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey);
+EFI_STATUS CfgWriteString(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey, CONST CHAR8 *ConfigValue);
+EFI_STATUS CfgWriteInteger(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey, INT32 ConfigValue);
+EFI_STATUS CfgWriteInteger64(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey, INT64 ConfigValue);
+EFI_STATUS CfgWriteStringW(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey, CONST CHAR16 *ConfigValue);
+EFI_STATUS ConfigSave(CFG_STRING *NewConfig); 
 
 BOOLEAN InitParams();
 

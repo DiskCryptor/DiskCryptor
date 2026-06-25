@@ -29,6 +29,7 @@
 #include "misc.h"
 #include "mbrinst.h"
 #include "efiinst.h"
+#include "gpt_sup.h"
 #include "disk_name.h"
 #include "console.h"
 
@@ -524,6 +525,7 @@ int boot_menu(int argc, wchar_t *argv[])
 	int        is_small = 0;
 	int        is_shim = -1;
 	int        is_bme = -1;
+	int        is_esp = -1;
 
 	if (is_param(L"-small")) is_small = 1;
 
@@ -533,14 +535,19 @@ int boot_menu(int argc, wchar_t *argv[])
 	if (is_param(L"-bme")) is_bme = 1;
 	else if (is_param(L"-nobme")) is_bme = 0;
 
+	if (is_param(L"-esp")) is_esp = 1;
+	else if (is_param(L"-noesp")) is_esp = 0;
+
 	do
 	{
 		if ((argc == 3) && (wcscmp(argv[2], L"-mode") == 0))
 		{
 			int			is_efi = dc_efi_check();
 			int			sb_enabled = is_efi ? dc_efi_is_secureboot() : 0;
+			int			has_dcs_esp = is_efi ? (dc_find_dcs_esp(-1) > 0) : 0;
+			const wchar_t *mode_str = is_efi ? (has_dcs_esp ? L"ESP" : L"EFI") : L"MBR";
 
-			wprintf(L"Boot mode: %s%s\n", is_efi ? L"EFI" : L"MBR", sb_enabled ? L" (SecureBoot)" : L"");
+			wprintf(L"Boot mode: %s%s\n", mode_str, sb_enabled ? L" (SecureBoot)" : L"");
 
 			resl = ST_OK; break;
 		}
@@ -560,7 +567,9 @@ int boot_menu(int argc, wchar_t *argv[])
 				L"HDD  |           name            |  size   | bootable | bootloader \n" 
 				L"-----+---------------------------+---------+----------+------------\n");
 
-			if (dc_get_boot_disk(&bd_1, &bd_2) != ST_OK) {
+			if (dc_efi_check()) {
+				bd_1 = bd_2 = dc_efi_get_os_disk();
+			} else if (dc_get_boot_disk(&bd_1, &bd_2) != ST_OK) {
 				bd_1 = bd_2 = -1;
 			}
 
@@ -592,7 +601,7 @@ int boot_menu(int argc, wchar_t *argv[])
 					if (efi_ldr) {
 						has_bme = dc_efi_is_bme_set(i);
 						has_shim = dc_efi_is_shim_set(i);
-						replaced_ms = dc_efi_is_msft_boot_replaced(i);
+						replaced_ms = dc_efi_is_msft_boot_replaced(i, -1);
 						if (has_bme)
 							wcscat(str, L"<");
 						else
@@ -842,41 +851,82 @@ int boot_menu(int argc, wchar_t *argv[])
 		if ((argc >= 4) && (wcscmp(argv[2], L"-setefi") == 0))
 		{
 			int d_num;
-			
+
 			if (dsk_num(argv[3], &d_num) == 0) {
 				resl = ST_OK; break;
-			}			
+			}
 
-			if ( (resl = dc_set_efi_boot_interactive(d_num, is_bme, is_shim)) == ST_OK) {
+			if ((resl = dc_set_efi_boot_interactive(d_num, is_bme, is_shim, is_esp)) == ST_OK) {
 				wprintf(L"EFI bootloader successfully installed to %s\n", argv[3]);
 			}
 			break;
 		}
 
-		if ((argc == 4) && (wcscmp(argv[2], L"-updefi") == 0))
+		if ((argc >= 4) && (wcscmp(argv[2], L"-updefi") == 0))
 		{
 			int d_num;
-			
+
 			if (dsk_num(argv[3], &d_num) == 0) {
 				resl = ST_OK; break;
 			}
 
-			if ( (resl = dc_update_efi_boot(d_num)) == ST_OK ) {
+			if ( (resl = dc_update_efi_boot(d_num, -1)) == ST_OK ) {
 				wprintf(L"EFI bootloader on %s successfully updated\n", argv[3]);
 			}
 			break;
 		}
 
-		if ((argc == 4) && (wcscmp(argv[2], L"-delefi") == 0))
+		if ((argc >= 3) && (wcscmp(argv[2], L"-delefi") == 0))
 		{
-			int d_num;
-			
-			if (dsk_num(argv[3], &d_num) == 0) {
-				resl = ST_OK; break;
+			int d_num = -1;
+
+			/* Try to find disk number in argv[3] or argv[4] */
+			if (argc >= 4 && dsk_num(argv[3], &d_num) != 0) {
+				/* Found disk in argv[3] */
+			} else if (argc >= 5 && dsk_num(argv[4], &d_num) != 0) {
+				/* Found disk in argv[4] */
 			}
 
-			if ( (resl = dc_unset_efi_boot(d_num)) == ST_OK ) {
-				wprintf(L"EFI bootloader successfully removed from %s\n", argv[3]);
+			/* If -esp specified, delete the DCS ESP partition */
+			if (is_esp == 1) {
+				/* Use OS disk if no disk specified */
+				if (d_num == -1) {
+					d_num = dc_efi_get_os_disk();
+					wprintf(L"Using OS disk: %d\n", d_num);
+				}
+
+				if (d_num < 0) {
+					wprintf(L"Error: Could not determine disk number\n");
+					resl = ST_NF_DEVICE;
+					break;
+				}
+
+				/* Find DCS ESP partition by label/name and delete it */
+				wprintf(L"Searching for DCS ESP partition on disk %d...\n", d_num);
+				int dcs_esp = dc_find_dcs_esp(d_num);
+				if (dcs_esp > 0) {
+					wprintf(L"Found DCS ESP partition: %d\n", dcs_esp);
+					wprintf(L"Deleting partition...\n");
+					resl = dc_gpt_delete_partition(d_num, dcs_esp);
+					if (resl == ST_OK) {
+						wprintf(L"DCS ESP partition %d successfully deleted\n", dcs_esp);
+					} else {
+						wprintf(L"Error: Could not delete DCS ESP partition %d, error %d\n", dcs_esp, resl);
+					}
+				} else {
+					wprintf(L"No DCS ESP partition found (looked for GPT name 'DCS Boot' or label 'DCS_BOOT')\n");
+					resl = ST_NF_DEVICE;
+				}
+			} else {
+				/* Normal -delefi without -esp */
+				if (d_num == -1) {
+					wprintf(L"Error: Disk number required (e.g., hd0)\n");
+					resl = ST_NF_DEVICE;
+					break;
+				}
+				if ((resl = dc_unset_efi_boot(d_num, -1)) == ST_OK) {
+					wprintf(L"EFI bootloader successfully removed\n");
+				}
 			}
 			break;
 		}
@@ -933,7 +983,7 @@ int boot_menu(int argc, wchar_t *argv[])
 				resl = ST_OK; break;
 			}
 
-			if ((resl = dc_efi_replace_msft_boot(d_num)) == ST_OK) {
+			if ((resl = dc_efi_replace_msft_boot(d_num, -1)) == ST_OK) {
 				wprintf(L"DCS bootloader successfully replaced Microsoft Boot Manager file (bootmgfw.efi) on %s\n", argv[3]);
 			}
 			break;
@@ -947,10 +997,20 @@ int boot_menu(int argc, wchar_t *argv[])
 				resl = ST_OK; break;
 			}
 
-			if ((resl = dc_efi_restore_msft_boot(d_num)) == ST_OK) {
+			if ((resl = dc_efi_restore_msft_boot(d_num, -1)) == ST_OK) {
 				wprintf(L"Microsoft Boot Manager file (bootmgfw.efi) successfully restored on %s\n", argv[3]);
 			}
-			break;	
+			break;
+		}
+
+		if ((argc >= 3) && (wcscmp(argv[2], L"-removems") == 0))
+		{
+			if ((resl = dc_efi_del_msft_bme()) == ST_OK) {
+				wprintf(L"Windows Boot Manager EFI boot entry successfully removed\n");
+			} else {
+				wprintf(L"Windows Boot Manager EFI boot entry not found\n");
+			}
+			break;
 		}
 
 		if ((argc >= 4) && (wcscmp(argv[2], L"-makerec") == 0))
@@ -988,6 +1048,130 @@ int boot_menu(int argc, wchar_t *argv[])
 			}
 			break;
 		}
+
+		if ((argc >= 4) && (wcscmp(argv[2], L"-mountesp") == 0))
+		{
+			wchar_t letter = argv[3][0];
+			wchar_t device_path[MAX_PATH];
+			wchar_t disk_path[MAX_PATH];
+			wchar_t dos_name[4];
+			int dcs_esp_part;
+			int os_disk;
+			int is_dedicated = 0;
+			HANDLE hdisk;
+			DWORD bytes;
+			u8 buff[sizeof(DRIVE_LAYOUT_INFORMATION_EX) + sizeof(PARTITION_INFORMATION_EX) * 127];
+			PDRIVE_LAYOUT_INFORMATION_EX dli = pv(buff);
+
+			/* Validate drive letter */
+			if (!iswalpha(letter)) {
+				wprintf(L"Error: Invalid drive letter '%s'\n", argv[3]);
+				resl = ST_ERROR; break;
+			}
+			letter = towupper(letter);
+
+			/* Check if drive letter is already in use */
+			DWORD drives = GetLogicalDrives();
+			if (drives & (1 << (letter - L'A'))) {
+				wprintf(L"Error: Drive letter %c: is already in use\n", letter);
+				resl = ST_ERROR; break;
+			}
+
+			/* Get OS disk */
+			os_disk = dc_efi_get_os_disk();
+			if (os_disk < 0) {
+				wprintf(L"Error: Could not determine boot disk\n");
+				resl = ST_NF_DEVICE; break;
+			}
+
+			/* Find DCS ESP partition */
+			dcs_esp_part = dc_find_dcs_esp(os_disk);
+			if (dcs_esp_part <= 0) {
+				wprintf(L"Error: No dedicated DCS ESP partition found\n");
+				wprintf(L"       (looked for GPT name 'DCS Boot' or label 'DCS_BOOT')\n");
+				resl = ST_NF_DEVICE; break;
+			}
+
+			/* Check if partition has GPT name "DCS Boot" - confirms it's a dedicated ESP */
+			_snwprintf(disk_path, MAX_PATH, L"\\\\.\\PhysicalDrive%d", os_disk);
+			hdisk = CreateFile(disk_path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+			if (hdisk != INVALID_HANDLE_VALUE) {
+				if (DeviceIoControl(hdisk, IOCTL_DISK_GET_DRIVE_LAYOUT_EX, NULL, 0, dli, sizeof(buff), &bytes, NULL)) {
+					for (DWORD i = 0; i < dli->PartitionCount; i++) {
+						if (dli->PartitionEntry[i].PartitionNumber == dcs_esp_part) {
+							if (dli->PartitionStyle == PARTITION_STYLE_GPT &&
+								_wcsicmp(dli->PartitionEntry[i].Gpt.Name, DCS_BOOT_PARTITION_NAME) == 0) {
+								is_dedicated = 1;
+							}
+							break;
+						}
+					}
+				}
+				CloseHandle(hdisk);
+			}
+
+			if (!is_dedicated) {
+				wprintf(L"Error: DCS is installed to the Windows EFI partition, not a dedicated DCS ESP\n");
+				wprintf(L"       This command only works with a dedicated DCS ESP partition\n");
+				wprintf(L"       (partition must have GPT name 'DCS Boot')\n");
+				resl = ST_ERROR; break;
+			}
+
+			/* Build device path and mount */
+			swprintf_s(device_path, MAX_PATH, L"\\Device\\Harddisk%d\\Partition%d", os_disk, dcs_esp_part);
+			swprintf_s(dos_name, 4, L"%c:", letter);
+
+			if (!DefineDosDevice(DDD_RAW_TARGET_PATH, dos_name, device_path)) {
+				wprintf(L"Error: Failed to mount partition (error %d)\n", GetLastError());
+				resl = ST_ERROR; break;
+			}
+
+			wprintf(L"DCS ESP partition %d mounted to %c:\\\n", dcs_esp_part, letter);
+			resl = ST_OK;
+			break;
+		}
+
+		//if ((argc >= 4) && (wcscmp(argv[2], L"-umountesp") == 0))
+		//{
+		//	wchar_t letter = argv[3][0];
+		//	wchar_t device_path[MAX_PATH];
+		//	wchar_t dos_name[4];
+		//	int dcs_esp_part;
+		//	int os_disk;
+
+		//	/* Validate drive letter */
+		//	if (!iswalpha(letter)) {
+		//		wprintf(L"Error: Invalid drive letter '%s'\n", argv[3]);
+		//		resl = ST_ERROR; break;
+		//	}
+		//	letter = towupper(letter);
+
+		//	/* Get OS disk and DCS ESP for device path */
+		//	os_disk = dc_efi_get_os_disk();
+		//	if (os_disk < 0) {
+		//		wprintf(L"Error: Could not determine boot disk\n");
+		//		resl = ST_NF_DEVICE; break;
+		//	}
+
+		//	dcs_esp_part = dc_find_dcs_esp(os_disk);
+		//	if (dcs_esp_part <= 0) {
+		//		wprintf(L"Error: No dedicated DCS ESP partition found\n");
+		//		resl = ST_NF_DEVICE; break;
+		//	}
+
+		//	swprintf_s(device_path, MAX_PATH, L"\\Device\\Harddisk%d\\Partition%d", os_disk, dcs_esp_part);
+		//	swprintf_s(dos_name, 4, L"%c:", letter);
+
+		//	if (!DefineDosDevice(DDD_RAW_TARGET_PATH | DDD_REMOVE_DEFINITION | DDD_EXACT_MATCH_ON_REMOVE,
+		//		dos_name, device_path)) {
+		//		wprintf(L"Error: Failed to unmount partition (error %d)\n", GetLastError());
+		//		resl = ST_ERROR; break;
+		//	}
+
+		//	wprintf(L"DCS ESP partition unmounted from %c:\\\n", letter);
+		//	resl = ST_OK;
+		//	break;
+		//}
 
 	} while (0);
 

@@ -16,6 +16,7 @@
   MODULE_TYPE               = UEFI_DRIVER
   VERSION_STRING            = 1.0
   ENTRY_POINT               = LegacySpeakerDriverEntryPoint
+  UNLOAD_IMAGE              = LegacySpeakerUnload
 
 [Packages]
   MdePkg/MdePkg.dec

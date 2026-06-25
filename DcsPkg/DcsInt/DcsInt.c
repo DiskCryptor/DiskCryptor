@@ -3,7 +3,7 @@ Block R/W interceptor
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI
-Copyright (c) 2019. DiskCryptor, David Xanatos
+Copyright (c) 2019-2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials
 are licensed and made available under the terms and conditions
@@ -25,6 +25,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include "DcsConfig.h"
 #include <Guid/EventGroup.h>
 
+#include "../MiscUtilsLib/MiscUtilsLib.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Auxiliary hardware
@@ -182,17 +183,13 @@ OnExit(
 	EFI_GUID *guid = NULL;
 	CHAR16 *fileStr  = NULL;
 	CHAR8  action[256] = { 0 };
-
-	if (EFI_ERROR(retValue)) {
-		CleanSensitiveData(FALSE);
-	}
 	
 	switch (type) {
 	case OnExitAuthFailed:		ConfigReadString("ActionFailed", "Exit", action, sizeof(action));		break;
 	case OnExitAuthNotFound:	ConfigReadString("ActionNotFound", "Exit", action, sizeof(action));		break;
 	case OnExitAuthTimeout:		ConfigReadString("ActionTimeout", "Shutdown", action, sizeof(action));	break;
-	case OnExitAuthCancelled:	ConfigReadString("ActionSuccess", "Continue", action, sizeof(action));	break;
-	case OnExitSuccess:			ConfigReadString("ActionCancelled", "Exit", action, sizeof(action));	break;
+	case OnExitAuthCancelled:	ConfigReadString("ActionCancelled", "Continue", action, sizeof(action));break;
+	case OnExitSuccess:			ConfigReadString("ActionSuccess", "Exit", action, sizeof(action));		break;
 	}
 
 	if (action[0] == 0) return retValue;
@@ -257,7 +254,6 @@ OnExit(
 			res = EfiFindPartByGUID(guid, &h);
 			if (EFI_ERROR(res)) {
 				ERR_PRINT(L"\nCannot find start partition\n");
-				CleanSensitiveData(FALSE);
 				retValue = EFI_DCS_HALT_REQUESTED;
 				goto exit;
 			}
@@ -266,14 +262,12 @@ OnExit(
 				res = EfiExec(h, fileStr);
 				if (EFI_ERROR(res)) {
 					ERR_PRINT(L"\nStart %s - %r\n", fileStr, res);
-					CleanSensitiveData(FALSE);
 					retValue = EFI_DCS_HALT_REQUESTED;
 					goto exit;
 				}
 			}
 			else {
 				ERR_PRINT(L"\nNo EFI execution path specified. Halting!\n");
-				CleanSensitiveData(FALSE);
 				retValue = EFI_DCS_HALT_REQUESTED;
 				goto exit;
 			}
@@ -297,11 +291,16 @@ OnExit(
 		goto exit;
 	}
 
-	else if (AsciiStrStr(action, "continue") == action) {
+	else if (AsciiStrNStr(action, "bootmenu") == action) {
+		retValue = EFI_DCS_INPUT_REQUIRED;
+		goto exit;
+	}
+
+	else if (AsciiStrNStr(action, "continue") == action) {
 		retValue = EFI_SUCCESS;
 		goto exit;
 	}
-	else if (AsciiStrStr(action, "exit") == action) {
+	else if (AsciiStrNStr(action, "exit") == action) {
 		goto exit;
 	}
 
@@ -326,8 +325,118 @@ VirtualNotifyEvent(
 	IN VOID             *Context
 	)
 {
-	// Clean all sensible info and keys before transfer to OS
+	// Clean all sensible info and keys before transfer to OS, except BDB
 	CleanSensitiveData(FALSE);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Console Resolution Setup
+//////////////////////////////////////////////////////////////////////////
+
+/**
+  Sets up console to the best available text mode.
+  Prefers 160x50, otherwise selects the highest resolution mode.
+  Failsafe: if setting fails, keeps the original mode.
+**/
+VOID
+SetupConsoleResolution(
+	UINTN TargetColumns,
+	UINTN TargetRows
+	)
+{
+	EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *ConOut;
+	UINTN OriginalMode;
+	UINTN MaxMode;
+	UINTN Mode;
+	UINTN Columns;
+	UINTN Rows;
+	EFI_STATUS Status;
+
+	// Best match tracking
+	UINTN BestMode = (UINTN)-1;
+	UINTN BestColumns = 0;
+	UINTN BestRows = 0;
+	UINTN BestScore = 0;
+
+	// Exact match tracking (160x50)
+	UINTN ExactMode = (UINTN)-1;
+
+	ConOut = gST->ConOut;
+	if (ConOut == NULL) {
+		return; // No console, nothing to do
+	}
+
+	// Save original mode for failsafe restore
+	OriginalMode = ConOut->Mode->Mode;
+	MaxMode = ConOut->Mode->MaxMode;
+
+	if (MaxMode == 0) {
+		return; // No modes available
+	}
+
+	// Scan all available modes
+	for (Mode = 0; Mode < MaxMode; Mode++) {
+		Status = ConOut->QueryMode(ConOut, Mode, &Columns, &Rows);
+		if (EFI_ERROR(Status)) {
+			continue; // Skip invalid modes
+		}
+
+		// Check for exact match (160x50)
+		if (Columns == TargetColumns && Rows == TargetRows) {
+			ExactMode = Mode;
+			break; // Found exact match, no need to continue
+		}
+
+		// Score based on total characters (Columns * Rows)
+		// Prefer modes closest to or larger than target
+		UINTN Score = Columns * Rows;
+
+		// Bonus for being close to target dimensions
+		if (Columns >= TargetColumns && Rows >= TargetRows) {
+			// Meets or exceeds target - prefer smaller excess
+			UINTN Excess = (Columns - TargetColumns) + (Rows - TargetRows);
+			if (Excess < 100) {
+				Score += 100000 - Excess * 100; // High bonus for close match
+			}
+		}
+
+		if (Score > BestScore) {
+			BestScore = Score;
+			BestMode = Mode;
+			BestColumns = Columns;
+			BestRows = Rows;
+		}
+	}
+
+	// Determine which mode to use
+	UINTN TargetMode;
+	if (ExactMode != (UINTN)-1) {
+		TargetMode = ExactMode;
+	} else if (BestMode != (UINTN)-1) {
+		TargetMode = BestMode;
+	} else {
+		return; // No valid mode found, keep current
+	}
+
+	// Don't change if already in target mode
+	if (TargetMode == OriginalMode) {
+		return;
+	}
+
+	// Try to set the target mode
+	Status = ConOut->SetMode(ConOut, TargetMode);
+	if (EFI_ERROR(Status)) {
+		// Failed to set target mode, try to restore original
+		Status = ConOut->SetMode(ConOut, OriginalMode);
+		if (EFI_ERROR(Status)) {
+			// Last resort: try mode 0 (usually always available)
+			ConOut->SetMode(ConOut, 0);
+		}
+		return;
+	}
+
+	// Clear screen after mode change for clean display
+	ConOut->ClearScreen(ConOut);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -340,8 +449,18 @@ UefiMain(
 {
 	EFI_STATUS res;
 
+	// Setup console resolution
+	//SetupConsoleResolution(100, 31); // or 128, 40
+
 #ifdef DEBUG_BUILD
-	OUT_PRINT(L"DcsInt - DEBUG Build %s %s\n", _T(__DATE__), _T(__TIME__)); 
+	OUT_PRINT(L"DcsInt - DEBUG Build %s %s\n", _T(__DATE__), _T(__TIME__));
+
+	UINTN Columns;
+	UINTN Rows;
+	EFI_STATUS Status = gST->ConOut->QueryMode(gST->ConOut, gST->ConOut->Mode->Mode, &Columns, &Rows);
+	if (!EFI_ERROR(Status)) {
+		OUT_PRINT(L"Console resolution: %ux%u (mode %u)\n", Columns, Rows, gST->ConOut->Mode->Mode);
+	}
 #endif
 
 	InitBio();
@@ -365,32 +484,45 @@ UefiMain(
 	res = DcsDiskCryptor(ImageHandle, SystemTable);
 
 	if (gConfigDebug) {
-		OUT_PRINT(L"DcsInt done\n");
+		OUT_PRINT(L"DcsInt done, ret:  %r\n", res);
 	}
 
 	if (EFI_ERROR(res)) {
 		if (res == EFI_DCS_USER_TIMEOUT)
-			return OnExit(OnExitAuthTimeout, res);
+			res = OnExit(OnExitAuthTimeout, res);
 		else if (res == EFI_DCS_USER_CANCELED)
-			return OnExit(OnExitAuthCancelled, res);
+			res = OnExit(OnExitAuthCancelled, res);
 		else if (res == EFI_DCS_DATA_NOT_FOUND)
-			return OnExit(OnExitAuthNotFound, res);
+			res = OnExit(OnExitAuthNotFound, res);
 		else
-			return OnExit(OnExitAuthFailed, res);
+			res = OnExit(OnExitAuthFailed, res);
+	}
+	else {
+
+		if (EFI_ERROR(gBS->CreateEventEx(
+			EVT_NOTIFY_SIGNAL,
+			TPL_NOTIFY,
+			VirtualNotifyEvent,
+			NULL,
+			&gEfiEventVirtualAddressChangeGuid,
+			&mVirtualAddrChangeEvent
+		))) {
+			ERR_PRINT(L"Failed to setup VirtualAddrChangeEvent to Clean Sensitive Data from RAM after boot!\n");
+		}
+
+		res = OnExit(OnExitSuccess, res);
 	}
 
-	res = gBS->CreateEventEx(
-		EVT_NOTIFY_SIGNAL,
-		TPL_NOTIFY,
-		VirtualNotifyEvent,
-		NULL,
-		&gEfiEventVirtualAddressChangeGuid,
-		&mVirtualAddrChangeEvent
-		);
-
+	// clear all sensitive data on failure
 	if (EFI_ERROR(res)) {
-		ERR_PRINT(L"Failed to setup VirtualAddrChangeEvent to Clean Sensitive Data from RAM after boot!");
+		CleanSensitiveData(TRUE);
+		return res;
 	}
 
-	return OnExit(OnExitSuccess, EFI_SUCCESS);
+	// Caution: installing hooks but returning error will cause ConnectAllEfi to randomly crash!
+	if (EFI_ERROR(DscInstallHook(ImageHandle, SystemTable))) {
+		ERR_PRINT(L"Failed to install EFI Hooks!\n");
+		return EFI_DCS_HALT_REQUESTED;
+	}
+	return res;
 }

@@ -19,6 +19,13 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Argon2\argon2.h" />
+    <ClInclude Include="Argon2\argon2_mt.h" />
+    <ClInclude Include="Argon2\blake2\blake2-impl.h" />
+    <ClInclude Include="Argon2\blake2\blake2b.h" />
+    <ClInclude Include="Argon2\blake2\blamka-round-opt.h" />
+    <ClInclude Include="Argon2\blake2\blamka-round-ref.h" />
+    <ClInclude Include="Argon2\core.h" />
     <ClInclude Include="crypto_fast\aes_asm.h" />
     <ClInclude Include="crypto_fast\aes_key.h" />
     <ClInclude Include="crypto_fast\aes_padlock.h" />
@@ -39,18 +46,15 @@
     <ClInclude Include="crypto_small\sha512_small.h" />
     <ClInclude Include="crypto_small\twofish_small.h" />
     <ClInclude Include="crypto_small\xts_small.h" />
+    <ClInclude Include="DcsConfigMenu.h" />
     <ClInclude Include="DcsDiskCryptor.h" />
     <ClInclude Include="emmintrin.h" />
-    <ClInclude Include="include\boot\bios.h" />
-    <ClInclude Include="include\boot\boot.h" />
-    <ClInclude Include="include\boot\boot_hook.h" />
-    <ClInclude Include="include\boot\dc_header.h" />
-    <ClInclude Include="include\boot\dc_io.h" />
-    <ClInclude Include="include\boot\e820.h" />
-    <ClInclude Include="include\boot\hdd.h" />
-    <ClInclude Include="include\boot\hdd_io.h" />
+    <ClInclude Include="include\bootloader.h" />
+    <ClInclude Include="include\dc_header.h" />
+    <ClInclude Include="include\dc_io.h" />
+    <ClInclude Include="include\dc_keyfiles.h" />
     <ClInclude Include="include\defines.h" />
-    <ClInclude Include="include\volume.h" />
+    <ClInclude Include="include\volume_header.h" />
     <ClInclude Include="intrin.h" />
   </ItemGroup>
   <ItemGroup>
@@ -69,6 +73,14 @@
     <None Include="DiskCryptorLib.inf" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Argon2\argon2.c" />
+    <ClCompile Include="Argon2\argon2_mt.c" />
+    <ClCompile Include="Argon2\blake2\blake2b.c" />
+    <ClCompile Include="Argon2\core.c" />
+    <ClCompile Include="Argon2\opt_avx2.c" />
+    <ClCompile Include="Argon2\opt_sse2.c" />
+    <ClCompile Include="Argon2\ref.c" />
+    <ClCompile Include="Argon2\selftest.c" />
     <ClCompile Include="crypto_fast\aes_key.c" />
     <ClCompile Include="crypto_fast\crc32.c" />
     <ClCompile Include="crypto_fast\serpent.c" />
@@ -85,9 +97,12 @@
     <ClCompile Include="crypto_small\sha512_small.c" />
     <ClCompile Include="crypto_small\twofish_small.c" />
     <ClCompile Include="crypto_small\xts_small.c" />
+    <ClCompile Include="DcsConfigMenu.c" />
     <ClCompile Include="DcsDiskCryptor.c" />
+    <ClCompile Include="DcsTpmSupport.c" />
     <ClCompile Include="dc_header.c" />
     <ClCompile Include="dc_io.c" />
+    <ClCompile Include="dc_keyfiles.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
@@ -98,22 +113,22 @@
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
     <ConfigurationType>Makefile</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'" Label="Configuration">
     <ConfigurationType>Makefile</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'" Label="Configuration">
-    <ConfigurationType>Makefile</ConfigurationType>
+    <ConfigurationType>Application</ConfigurationType>
     <UseDebugLibraries>true</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Makefile</ConfigurationType>
     <UseDebugLibraries>false</UseDebugLibraries>
-    <PlatformToolset>v141</PlatformToolset>
+    <PlatformToolset>v143</PlatformToolset>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -135,23 +150,23 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <NMakePreprocessorDefinitions>_UEFI;_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <NMakePreprocessorDefinitions>_UEFI;_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <NMakeOutput>
     </NMakeOutput>
     <NMakePreprocessorDefinitions>_UEFI;NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <NMakeOutput>
     </NMakeOutput>
     <NMakePreprocessorDefinitions>_UEFI;NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup>
   </ItemDefinitionGroup>

@@ -129,7 +129,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>false</OptimizeReferences>
@@ -159,7 +159,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <TargetMachine>MachineX64</TargetMachine>
@@ -185,7 +185,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\Release_arm64\crypto_small.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\Release_arm64\crypto_small.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -208,7 +208,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\Crt\i386;$(DDK)\lib\win7\i386</AdditionalLibraryDirectories>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -236,7 +236,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\Crt\amd64;$(DDK)\lib\win7\amd64</AdditionalLibraryDirectories>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -262,35 +262,59 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\crypto_small.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\crypto_small.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\Crt\amd64;$(DDK)\lib\win7\amd64</AdditionalLibraryDirectories>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\crypto\Argon2\argon2.c" />
+    <ClCompile Include="..\crypto\Argon2\argon2_mt.c" />
+    <ClCompile Include="..\crypto\Argon2\blake2\blake2b.c" />
+    <ClCompile Include="..\crypto\Argon2\core.c" />
+    <ClCompile Include="..\crypto\Argon2\opt_avx2.c" />
+    <ClCompile Include="..\crypto\Argon2\opt_sse2.c" />
+    <ClCompile Include="..\crypto\Argon2\ref.c" />
+    <ClCompile Include="..\crypto\Argon2\selftest.c" />
+    <ClCompile Include="benchmark.c" />
     <ClCompile Include="cd_enc.c" />
     <ClCompile Include="dcapi.c" />
     <ClCompile Include="disk_name.c" />
     <ClCompile Include="drv_ioctl.c" />
     <ClCompile Include="drvinst.c" />
     <ClCompile Include="efiinst.c" />
+    <ClCompile Include="gpt_sup.c" />
     <ClCompile Include="keyfiles.c" />
     <ClCompile Include="mbrinst.c" />
     <ClCompile Include="misc.c" />
     <ClCompile Include="misc\fat_sup.c" />
     <ClCompile Include="misc\iso_sup.c" />
+    <ClCompile Include="misc\SVariant.c" />
     <ClCompile Include="misc\xml.c" />
     <ClCompile Include="misc\zip.c" />
     <ClCompile Include="mok_sup.c" />
     <ClCompile Include="rand.c" />
     <ClCompile Include="sb_sup.c" />
+    <ClCompile Include="tpm_12.c" />
+    <ClCompile Include="tpm_sup.c" />
     <ClCompile Include="w10.c" />
+    <ClCompile Include="dc_header.c" />
+    <ClCompile Include="tpm_20.c" />
+    <ClCompile Include="cert_utils.c" />
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="dcres.rc" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\crypto\Argon2\argon2.h" />
+    <ClInclude Include="..\crypto\Argon2\argon2_mt.h" />
+    <ClInclude Include="..\crypto\Argon2\blake2\blake2-impl.h" />
+    <ClInclude Include="..\crypto\Argon2\blake2\blake2b.h" />
+    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-opt.h" />
+    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-ref.h" />
+    <ClInclude Include="..\crypto\Argon2\core.h" />
+    <ClInclude Include="include\benchmark.h" />
     <ClInclude Include="include\cd_enc.h" />
     <ClInclude Include="include\dcapi.h" />
     <ClInclude Include="include\dcres.h" />
@@ -298,15 +322,23 @@
     <ClInclude Include="include\drvinst.h" />
     <ClInclude Include="include\drv_ioctl.h" />
     <ClInclude Include="include\efiinst.h" />
+    <ClInclude Include="include\gpt_sup.h" />
     <ClInclude Include="include\keyfiles.h" />
     <ClInclude Include="include\mbrinst.h" />
     <ClInclude Include="include\misc.h" />
     <ClInclude Include="include\mok_sup.h" />
     <ClInclude Include="include\rand.h" />
+    <ClInclude Include="include\tpm_12.h" />
+    <ClInclude Include="include\tpm_sup.h" />
     <ClInclude Include="include\w10.h" />
+    <ClInclude Include="include\dc_header.h" />
+    <ClInclude Include="include\tpm_20.h" />
+    <ClInclude Include="include\cert_utils.h" />
     <ClInclude Include="misc\dirent.h" />
     <ClInclude Include="misc\fs_sup.h" />
     <ClInclude Include="misc\miniz.h" />
+    <ClInclude Include="misc\SVariant.h" />
+    <ClInclude Include="misc\VariantDefs.h" />
     <ClInclude Include="misc\xml.h" />
     <ClInclude Include="misc\zip.h" />
   </ItemGroup>

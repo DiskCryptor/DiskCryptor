@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
 	* Copyright (c) 2007-2010
 	* ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -45,12 +47,7 @@ int _draw_proc(
 			{
 				item->itemHeight -= 3;
 			}
-		}
-		break;
-
-		case WM_GETDLGCODE : //##
-		{
-			return -1;
+			return 1L;
 		}
 		break;
 
@@ -100,19 +97,12 @@ void _draw_listview(
 	int            col_cnt     = Header_GetItemCount( ListView_GetHeader( itst->hwndItem ) );
 	LVITEM         lvitem      = { LVIF_TEXT | LVIF_PARAM, itst->itemID, 0, 0, 0, s_text, countof(s_text) };
 	COLORREF       bgcolor     = ListView_GetBkColor( itst->hwndItem );
+	int            scroll_x    = GetScrollPos( itst->hwndItem, SB_HORZ );
 
 	ListView_GetItem( itst->hwndItem, &lvitem );
 	is_root = _is_root_item( lvitem.lParam );
 
-	{
-		void *user_data = wnd_get_long( __lists[HMAIN_DRIVES], GWL_USERDATA );
-		if (user_data != NULL)
-		{
-			MessageBox( __dlg, s_text, NULL, 0 );
-		}
-	}
-
-	if ( ( itst->itemState & ODS_SELECTED ) && IsWindowEnabled( itst->hwndItem ) /*&& ( lvitem.lParam != NULL )*/ ) 
+	if ( ( itst->itemState & ODS_SELECTED ) && IsWindowEnabled( itst->hwndItem ) /*&& ( lvitem.lParam != NULL )*/ )
 	{
 		if ( GetFocus( ) == itst->hwndItem )
 		{
@@ -121,15 +111,15 @@ void _draw_listview(
 			bgcolor = _cl( COLOR_BTNFACE, 80 );
 		}
 	}
-	if ( is_root ) 
+	if ( is_root )
 	{
 		bgcolor = _cl( COLOR_BTNSHADOW, 60 );
 	}
-	if ( _is_marked_item(lvitem.lParam) ) 
+	if ( _is_marked_item(lvitem.lParam) )
 	{
 		bgcolor = _cl( COLOR_BTNSHADOW, 35 );
 	}
-	
+
 	_fill( itst->hDC, &itst->rcItem, bgcolor );
 
 	for ( ; k < col_cnt; k++ )
@@ -137,7 +127,7 @@ void _draw_listview(
 		lvc.mask = LVCF_FMT | LVCF_WIDTH | LVCF_IMAGE;
 		ListView_GetColumn( itst->hwndItem, k, &lvc );
 
-		itst->rcItem.left  = k ? itst->rcItem.right : 0;
+		itst->rcItem.left  = k ? itst->rcItem.right : -scroll_x;
 		itst->rcItem.right = itst->rcItem.left + lvc.cx;
 
 		lvitem.iItem       = itst->itemID; 
@@ -146,7 +136,7 @@ void _draw_listview(
 		ListView_GetItem( itst->hwndItem, &lvitem );
 		dtp.iLeftMargin = dtp.iRightMargin = 5;		
 
-		if ( (!itst->rcItem.left) && _is_icon_show( itst->hwndItem, k ) )
+		if ( (itst->rcItem.left == -scroll_x) && _is_icon_show( itst->hwndItem, k ) )
 		{
 			ImageList_GetIconSize( __dsk_img, &cx, &cy );
 			offset = lvitem.lParam && !is_root ? 25 : 3;
@@ -154,14 +144,14 @@ void _draw_listview(
 			itst->rcItem.left += offset + cy + ( lvitem.lParam && !is_root ? 8 : 4 );
 			icon = 0;
 
-			if (! is_root ) 
+			if (! is_root )
 			{
 				if ( _is_splited_item(lvitem.lParam) ) icon = 1;
 				if ( _is_cdrom_item(lvitem.lParam) )   icon = 2;
 			}
 
 			ImageList_Draw(
-				__dsk_img, icon, itst->hDC, offset, itst->rcItem.top + 3, ILD_TRANSPARENT
+				__dsk_img, icon, itst->hDC, offset - scroll_x, itst->rcItem.top + 3, ILD_TRANSPARENT
 				);
 		} else 
 		{
@@ -219,14 +209,20 @@ void _draw_listview(
 void _draw_combobox(
 		LPDRAWITEMSTRUCT itst
 	)
-{	
-	TEXTMETRIC tm; 	
+{
+	TEXTMETRIC tm;
 
 	wchar_t data[MAX_PATH];
 	int x,y;
 
 	DWORD txc = COLOR_WINDOWTEXT;
 	DWORD bgc = _cl(COLOR_BTNFACE, LGHT_CLR);
+
+	/* Handle invalid item ID (can be -1 for empty combo or focus rect) */
+	if (itst->itemID == (UINT)-1) {
+		_fill(itst->hDC, &itst->rcItem, _cl(COLOR_BTNFACE, LGHT_CLR));
+		return;
+	}
 
 	if (itst->itemState & ODS_SELECTED) {
 		bgc = _cl(COLOR_BTNSHADOW, DARK_CLR-15);
@@ -238,17 +234,18 @@ void _draw_combobox(
 		txc = COLOR_GRAYTEXT;
 
 	}
-		
-	SetTextColor(itst->hDC, GetSysColor(txc));  
+
+	SetTextColor(itst->hDC, GetSysColor(txc));
 	SetBkColor(itst->hDC, bgc);
 
 	GetTextMetrics(itst->hDC, &tm);
 
 	y = (itst->rcItem.bottom + itst->rcItem.top - tm.tmHeight) / 2;
 	x = LOWORD(GetDialogBaseUnits( )) / 4;
-			
-	SendMessage(itst->hwndItem, CB_GETLBTEXT, itst->itemID, (LPARAM)data);				
-	ExtTextOut(itst->hDC, 3*x, y, ETO_CLIPPED | ETO_OPAQUE, &itst->rcItem, 
+
+	data[0] = L'\0';
+	SendMessage(itst->hwndItem, CB_GETLBTEXT, itst->itemID, (LPARAM)data);
+	ExtTextOut(itst->hDC, 3*x, y, ETO_CLIPPED | ETO_OPAQUE, &itst->rcItem,
 		data, (u32)(wcslen(data)), NULL);
 
 }
@@ -296,7 +293,9 @@ void _draw_static(
 		case ODT_BUTTON:
 
         if ( itst->itemState & ODS_DISABLED ) state = DSS_DISABLED;
-        if ( itst->itemState & ODS_SELECTED )
+        /* Check for selected (pressed) OR checked (toggle) state */
+        if ( (itst->itemState & ODS_SELECTED) ||
+             (SendMessage(itst->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED) )
 		{
 			edge = BDR_SUNKENOUTER;
 			x++; y++;
@@ -363,12 +362,15 @@ void _draw_static(
 		if ( itst->itemState & ODS_FOCUS )
 		{
 			modify_rect( rc, 1, 2, -2, -2 );
-			if ( itst->itemState & ODS_SELECTED )
+			if ( (itst->itemState & ODS_SELECTED) ||
+			     (SendMessage(itst->hwndItem, BM_GETCHECK, 0, 0) == BST_CHECKED) )
 			{
 				modify_rect( rc, 1, 1, 1, 1 );
 			}
 			DrawFocusRect( itst->hDC, &rc );
 		}
+		DrawEdge(itst->hDC, &itst->rcItem, edge, border);
+		break;
 
 		case ODT_STATIC:
 		{
@@ -377,7 +379,18 @@ void _draw_static(
 
 			if ( data[0] == L'#' )
 			{
-				GetWindowRect(GetParent(GetParent(itst->hwndItem)), &rc);
+				HWND hParent = GetParent(itst->hwndItem);
+				HWND hGrandParent = hParent ? GetParent(hParent) : NULL;
+
+				/* Use grandparent if available, otherwise fall back to parent dialog */
+				if (hGrandParent && IsWindow(hGrandParent)) {
+					GetWindowRect(hGrandParent, &rc);
+				} else if (hParent && IsWindow(hParent)) {
+					GetClientRect(hParent, &rc);
+				} else {
+					GetClientRect(itst->hwndItem, &rc);
+					rc.right += 20; /* fallback padding */
+				}
 
 				itst->rcItem.right = rc.right - rc.left - 3;
 				itst->rcItem.top = itst->rcItem.left = 1;
@@ -387,7 +400,7 @@ void _draw_static(
 				tp.iLeftMargin   += 10;
 				itst->rcItem.top += 1;
 
-				DrawTextEx(itst->hDC, data + 1, -1, &itst->rcItem, DT_END_ELLIPSIS, &tp);					
+				DrawTextEx(itst->hDC, data + 1, -1, &itst->rcItem, DT_END_ELLIPSIS, &tp);
 			}
 			else 
 			{

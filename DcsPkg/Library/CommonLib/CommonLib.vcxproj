@@ -64,21 +64,21 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <NMakePreprocessorDefinitions>_UEFI;_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <NMakePreprocessorDefinitions>_UEFI;_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <NMakeOutput>CommonLib.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>_UEFI;NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <NMakeOutput>CommonLib.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>_UEFI;NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup>
   </ItemDefinitionGroup>
@@ -92,7 +92,6 @@
     <ClCompile Include="EfiExec.c" />
     <ClCompile Include="EfiFile.c" />
     <ClCompile Include="EfiMem.c" />
-    <ClCompile Include="EfiPxe.c" />
     <ClCompile Include="EfiTouch.c" />
     <ClCompile Include="EfiTpm.c" />
     <ClCompile Include="EfiUsb.c" />

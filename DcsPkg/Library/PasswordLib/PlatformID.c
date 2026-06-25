@@ -3,6 +3,7 @@ Platform Id based on SMBIOS structures
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI
+Copyright (c) 2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials
 are licensed and made available under the terms and conditions
@@ -134,14 +135,16 @@ PlatformGetID(
 	CHAR8*                        idBuf = NULL;
 	CHAR8*                        handleSerial = NULL;
 
-	UsbGetId(handle, &handleSerial);
 	if (gSmbSystemUUID == NULL) SMBIOSGetSerials();
 	idLen += (gSmbSystemUUID == NULL) ? 0 : sizeof(*gSmbSystemUUID);
 	idLen += (gSmbSystemSerial == NULL) ? 0 : AsciiStrLen((char*)gSmbSystemSerial) + 1;
 	idLen += (gSmbSystemSKU == NULL) ? 0 : AsciiStrLen((char*)gSmbSystemSKU) + 1;
 	idLen += (gSmbBaseBoardSerial == NULL) ? 0 : AsciiStrLen((char*)gSmbBaseBoardSerial) + 1;
 	idLen += (gSmbProcessorID == NULL) ? 0 : sizeof(*gSmbProcessorID);
-	idLen += (handleSerial == NULL) ? 0 : AsciiStrLen((char*)handleSerial) + 1;
+	if (handle) { // disk serial
+		UsbGetId(handle, &handleSerial);
+		idLen += (handleSerial == NULL) ? 0 : AsciiStrLen((char*)handleSerial) + 1;
+	}
 
 	idBuf = MEM_ALLOC(idLen);
 	if (idBuf == NULL) {

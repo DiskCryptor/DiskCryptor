@@ -12,6 +12,15 @@
     <Filter Include="Resource Files">
       <UniqueIdentifier>{5745c5d9-be23-44b4-923a-3a1e4efe6cd5}</UniqueIdentifier>
     </Filter>
+    <Filter Include="crypto">
+      <UniqueIdentifier>{02879fde-0be2-4c12-852b-aae3b4195b0a}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypto\Argon2">
+      <UniqueIdentifier>{756b1dc6-064e-4ba2-8d83-da8edeab483d}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="crypto\Argon2\blake2">
+      <UniqueIdentifier>{6158f701-7831-44a7-ad35-8a1a3a6ead9c}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="cd_enc.c">
@@ -63,6 +72,54 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="mok_sup.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="dc_header.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\argon2.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\core.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\opt_avx2.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\opt_sse2.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\ref.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\blake2\blake2b.c">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\selftest.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="misc\SVariant.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="..\crypto\Argon2\argon2_mt.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="benchmark.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="tpm_20.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="tpm_sup.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="tpm_12.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="gpt_sup.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="cert_utils.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -124,6 +181,54 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\mok_sup.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\dc_header.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\argon2.h">
+      <Filter>crypto\Argon2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\core.h">
+      <Filter>crypto\Argon2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blake2b.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blake2-impl.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-opt.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-ref.h">
+      <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="misc\SVariant.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="misc\VariantDefs.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="..\crypto\Argon2\argon2_mt.h">
+      <Filter>crypto\Argon2</Filter>
+    </ClInclude>
+    <ClInclude Include="include\benchmark.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\tpm_20.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\tpm_sup.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\tpm_12.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\gpt_sup.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\cert_utils.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

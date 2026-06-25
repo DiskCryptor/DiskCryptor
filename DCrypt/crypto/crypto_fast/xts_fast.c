@@ -288,7 +288,7 @@ static void _stdcall xts_aes_twofish_serpent_decrypt(const unsigned char *in, un
 	xts_serpent_decrypt(out, out, len, offset, key);
 }
 
-void _stdcall xts_set_key(const unsigned char *key, int alg, xts_key *skey)
+int _stdcall xts_set_key(const unsigned char *key, int alg, xts_key *skey)
 {
 	switch (alg) 
 	{
@@ -351,7 +351,10 @@ void _stdcall xts_set_key(const unsigned char *key, int alg, xts_key *skey)
 			skey->encrypt = xts_aes_twofish_serpent_encrypt;
 			skey->decrypt = xts_aes_twofish_serpent_decrypt;
 		break;
+		default:
+			return 0;
 	}
+	return 1;
 }
 
 int _declspec(noinline) _stdcall xts_aes_ni_available()

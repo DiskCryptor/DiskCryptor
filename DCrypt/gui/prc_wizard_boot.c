@@ -32,9 +32,17 @@
 #include "dlg_drives_list.h"
 #include "dlg_menu.h"
 #include "hotkeys.h"
+#include "keyfiles.h"
+#include "efiinst.h"
+#include "mbrinst.h"
 
 static HWND     h_wizard;
 static HHOOK    h_hook;
+
+// Wizard instance data
+typedef struct _boot_wizard_data {
+	keyfiles_state kf_state;
+} _boot_wizard_data;
 
 void _refresh_boot_buttons(
 		HWND hwnd,
@@ -61,10 +69,15 @@ void _refresh_boot_buttons(
 		int     boot_disk_1 = -1;
 		int     boot_disk_2 = -1;
 
-		if ( dc_get_boot_disk( &boot_disk_1, &boot_disk_2 ) != ST_NF_BOOT_DEV )
+		if (__is_efi_boot) {
+			boot_disk_1 = boot_disk_2 = dc_efi_get_os_disk();
+		} else if (dc_get_boot_disk( &boot_disk_1, &boot_disk_2 ) == ST_NF_BOOT_DEV) {
+			boot_disk_1 = boot_disk_2 = -1;
+		}
+		if (boot_disk_1 != -1)
 		{
 			force_small = (
-				( boot_disk_1 == sel_disk || boot_disk_2 == sel_disk ) && 
+				( boot_disk_1 == sel_disk || boot_disk_2 == sel_disk ) &&
 				( dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &flags, sizeof(flags)) == NO_ERROR ) && ( flags.load_flags & DST_SMALL_MEM )
 			);
 		}
@@ -75,6 +88,9 @@ void _refresh_boot_buttons(
 		{
 			remove = TRUE;
 			update = dc_get_ldr_config( sel_disk, &conf ) == ST_OK && (int)conf.ldr_ver < (conf.sign1 == 0 ? DC_UEFI_VER : DC_BOOT_VER);
+#ifdef _DEBUG
+			update = TRUE;
+#endif
 		}
 	}
 
@@ -110,6 +126,11 @@ int _init_boot_config(
 
 	_tab_data *d_tab = NULL;
 	_wnd_data *wnd;
+
+	// Get wizard data from parent dialog
+	HWND h_wizard = GetParent(GetParent(hwnd));
+	_boot_wizard_data *wiz_data = wnd_get_long(h_wizard, GWL_USERDATA);
+	keyfiles_state *kf_state = wiz_data ? &wiz_data->kf_state : NULL;
 
 	int rlt;
 	int isefi = -1;
@@ -179,15 +200,15 @@ int _init_boot_config(
 	///////////////////////////////////////////////////////////////
 
 		_sub_class(GetDlgItem(wnd->dlg[0], IDC_BT_USE_OSK), SUB_STATIC_PROC, HWND_NULL);
-		_set_check(wnd->dlg[0], IDC_BT_USE_OSK, conf->logon_type & LDR_LT_PIC_PASS);
+		_set_check(wnd->dlg[0], IDC_BT_USE_OSK, conf->logon_type & LDR_LT_USE_OSK);
 
-		EnableWindow(
-			GetDlgItem(hwnd, IDC_BT_USE_OSK), isefi == 1 ? TRUE : FALSE
-			);
+		// DX-ToDo: add old real mode OSK support
+		EnableWindow( GetDlgItem(wnd->dlg[0], IDC_BT_USE_OSK), isefi == 1 ? TRUE : FALSE );
 
-		_init_combo(
-			GetDlgItem(wnd->dlg[0], IDC_COMBO_KBLAYOUT), kb_layouts, conf->kbd_layout, FALSE, -1
-			);
+		_init_combo( GetDlgItem(wnd->dlg[0], IDC_COMBO_KBLAYOUT), kb_layouts, conf->kbd_layout, FALSE, -1 );
+
+		EnableWindow( GetDlgItem(wnd->dlg[0], IDC_COMBO_KDF), isefi == 1 ? TRUE : FALSE );
+		_init_combo( GetDlgItem(wnd->dlg[0], IDC_COMBO_KDF), kdf_names_ex, conf->header_kdf, FALSE, -1 );
 	}
 	///////////////////////////////////////////////////////////////
 	/////// AUTHENTICATION PAGE ///////////////////////////////////
@@ -196,8 +217,23 @@ int _init_boot_config(
 		HWND h_auth_combo = GetDlgItem( wnd->dlg[1], IDC_COMBO_AUTH_TYPE );
 		HWND h_msg = GetDlgItem( wnd->dlg[1], IDE_RICH_BOOTMSG );
 
-		//_init_combo( h_auth_combo, auth_type, conf->logon_type, TRUE, LDR_LT_GET_PASS | LDR_LT_EMBED_KEY | LDR_LT_PIC_PASS);
 		_init_combo(h_auth_combo, auth_type, conf->logon_type, TRUE, LDR_LT_GET_PASS | LDR_LT_EMBED_KEY);
+
+		if (kf_state)
+		{
+			_keyfiles_wipe(kf_state);
+			_keyfiles_init(kf_state);
+			kf_state->mix_mode = conf->keyfile_mixer;
+			if (!is_all_zeros(conf->emb_key, sizeof(conf->emb_key))) {
+				_list_key_files* new_node = secure_alloc(sizeof(_list_key_files));
+				_snwprintf(new_node->path, countof(new_node->path), L"Embedded Keyfile %08X", calc_crc32(conf->emb_key, sizeof(conf->emb_key)));
+				new_node->is_virtual = TRUE;
+				new_node->virtual_size = sizeof(conf->emb_key);
+				new_node->virtual_data = secure_alloc( new_node->virtual_size );
+				memcpy(new_node->virtual_data, conf->emb_key, sizeof(conf->emb_key));
+				_insert_tail_list(&kf_state->head, &new_node->next);
+			}
+		}
 
 		_sub_class( GetDlgItem(wnd->dlg[1], IDC_BT_ENTER_PASS_MSG), SUB_STATIC_PROC, HWND_NULL );
 		_set_check( wnd->dlg[1], IDC_BT_ENTER_PASS_MSG, conf->logon_type & LDR_LT_MESSAGE );
@@ -240,7 +276,7 @@ int _init_boot_config(
 
 		_init_combo(
 			GetDlgItem(wnd->dlg[2], IDC_COMBO_METHOD),
-			conf->options & LDR_OP_EXTERNAL ? boot_type_ext : boot_type_all, conf->boot_type, FALSE, -1
+			conf->options & LDR_OP_EXTERNAL ? boot_type_ext : (__is_efi_boot ? boot_type_efi : boot_type_all), conf->boot_type, FALSE, -1
 		);
 
 		_list_part_by_disk_id(
@@ -265,7 +301,7 @@ int _init_boot_config(
 		_sub_class( GetDlgItem(wnd->dlg[3], IDC_BT_ACTION_NOPASS), SUB_STATIC_PROC, HWND_NULL );
 		_set_check( wnd->dlg[3], IDC_BT_ACTION_NOPASS, conf->options & LDR_OP_NOPASS_ERROR );
 
-		_init_combo( GetDlgItem(wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT), bad_pass_act, conf->error_type, TRUE, -1 );
+		_init_combo( GetDlgItem(wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT), __is_efi_boot ? bad_pass_act_efi : bad_pass_act, conf->error_type, TRUE, -1 );
 
 		SetWindowTextA( err_mes, conf->err_msg );
 		SendMessage( err_mes, EM_EXLIMITTEXT, 0, sizeof(conf->err_msg) - 1 );
@@ -291,6 +327,10 @@ int _init_boot_config(
 		SendMessage(go_mes, EM_EXLIMITTEXT, 0, sizeof(conf->ago_msg) - 1);
 
 		SendMessage(GetDlgItem(wnd->dlg[4], IDE_RICH_AUTH_MSG), EM_SETBKGNDCOLOR, 0, _cl(COLOR_BTNFACE, LGHT_CLR));
+
+		_sub_class( GetDlgItem(wnd->dlg[4], IDC_BT_BLOCK_UNENCRYPTED), SUB_STATIC_PROC, HWND_NULL );
+		EnableWindow(GetDlgItem(wnd->dlg[4], IDC_BT_BLOCK_UNENCRYPTED), isefi == 1 ? TRUE : FALSE); 
+		_set_check( wnd->dlg[4], IDC_BT_BLOCK_UNENCRYPTED, (conf->options & LDR_OP_BLOCK_UNENC) != 0 );
 
 		_sub_class( GetDlgItem(wnd->dlg[4], IDC_SET_VERBOSE), SUB_STATIC_PROC, HWND_NULL );
 		EnableWindow(GetDlgItem(wnd->dlg[4], IDC_SET_VERBOSE), isefi == 1 ? TRUE : FALSE); 
@@ -340,6 +380,11 @@ int _save_boot_config(
 	int rlt = ST_OK;
 	int isefi = -1;
 
+	// Get wizard data from parent dialog
+	HWND h_wizard = GetParent(GetParent(hwnd));
+	_boot_wizard_data *wiz_data = wnd_get_long(h_wizard, GWL_USERDATA);
+	keyfiles_state *kf_state = wiz_data ? &wiz_data->kf_state : NULL;
+
 	wnd = wnd_get_long( GetDlgItem(hwnd, IDT_BOOT_TAB), GWL_USERDATA );
 
 	if ( !wnd )
@@ -356,9 +401,11 @@ int _save_boot_config(
 
 		BOOL use_osk = _get_check(wnd->dlg[2], IDC_BT_USE_OSK);
 
-		set_flag(conf->logon_type, LDR_LT_PIC_PASS, use_osk);
+		set_flag(conf->logon_type, LDR_LT_USE_OSK, use_osk);
 
 		conf->kbd_layout = _get_combo_val( GetDlgItem( wnd->dlg[0], IDC_COMBO_KBLAYOUT ), kb_layouts );
+
+		conf->header_kdf = _get_combo_val(GetDlgItem(wnd->dlg[0], IDC_COMBO_KDF), kdf_names_ex);
 	}
 	///////////////////////////////////////////////////////////////
 	/////// AUTHENTICATION PAGE ///////////////////////////////////
@@ -371,9 +418,8 @@ int _save_boot_config(
 		int timeout = _get_combo_val( GetDlgItem(wnd->dlg[1], IDC_COMBO_AUTH_TMOUT), auth_tmount );
 
 		BOOL show_text = _get_check( wnd->dlg[1], IDC_BT_ENTER_PASS_MSG );
-		BOOL embed_key = _get_combo_val( auth_combo, auth_type) & LDR_LT_EMBED_KEY;
+		//BOOL embed_key = _get_combo_val( auth_combo, auth_type) & LDR_LT_EMBED_KEY;
 
-		//conf->logon_type &= ~( LDR_LT_GET_PASS | LDR_LT_EMBED_KEY | LDR_LT_PIC_PASS);
 		conf->logon_type &= ~(LDR_LT_GET_PASS | LDR_LT_EMBED_KEY);
 		conf->logon_type |= _get_combo_val( auth_combo, auth_type );
 
@@ -391,29 +437,79 @@ int _save_boot_config(
 		set_flag( conf->options, LDR_OP_EPS_TMO, timeout != 0 );
 		set_flag( conf->options, LDR_OP_TMO_STOP, _get_check(wnd->dlg[1], IDC_BT_CANCEL_TMOUT) );
 
-		if ( embed_key )
+		//if ( embed_key )
+		//{
+		//if ( _keyfiles_count(KEYLIST_EMBEDDED) )
+		int kf_count = kf_state ? _keyfiles_count(kf_state) : 0;
+		if ( kf_count > 0)
 		{
-			if ( _keyfiles_count(KEYLIST_EMBEDDED) )
-			{
-				int   keysize;
-				byte *keyfile;
+			conf->keyfile_mixer = kf_state->mix_mode;
 
-				memset( conf->emb_key, 0, sizeof(conf->emb_key) );
-				set_flag( conf->logon_type, LDR_LT_EMBED_KEY, 0 );
-
-				if ( load_file(_first_keyfile(KEYLIST_EMBEDDED)->path, &keyfile, &keysize) != ST_OK )
-				{
-					__msg_e( hwnd, L"Keyfile not loaded\n" );
-					rlt = ST_ERROR;
-				} else 
-				{
-					memcpy( &conf->emb_key, keyfile, sizeof(conf->emb_key) );
-					set_flag( conf->logon_type, LDR_LT_EMBED_KEY, 1 );
-				}				
-				burn(keyfile, keysize);
-				free(keyfile);							
+			int is_efi = IsWindowEnabled( GetDlgItem(wnd->dlg[0], IDC_COMBO_KDF) ); // MBR loader supports only Pkcs5.2 SHA-512
+			if (!is_efi && conf->keyfile_mixer != KEYFILE_MIX_LEGACY) {
+				__msg_e(hwnd, L"MBR bootloader supporty only Additive (Legacy) key file mixing");
+				return ST_ERROR;
 			}
-		} else {
+
+			memset( conf->emb_key, 0, sizeof(conf->emb_key) );
+			//set_flag( conf->logon_type, LDR_LT_EMBED_KEY, 0 );
+
+			_list_key_files *first_kf = _first_keyfile(kf_state);
+			if (kf_count == 1 && first_kf->is_virtual && first_kf->virtual_size == 64) // == SHA512_DIGEST_SIZE
+			{
+				memcpy( &conf->emb_key, first_kf->virtual_data, sizeof(conf->emb_key) );
+			}
+			else
+			{
+				BOOLEAN kf_is_raw = FALSE;
+
+				if (kf_count == 1)
+				{
+					HANDLE h_file = CreateFile(first_kf->path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+					if (h_file != INVALID_HANDLE_VALUE)
+					{
+						if (GetFileSize(h_file, NULL) == 64) // == sizeof(conf->emb_key) // == SHA512_DIGEST_SIZE
+						{
+							kf_is_raw = TRUE;
+
+							if (!ReadFile(h_file, conf->emb_key, sizeof(conf->emb_key), NULL, NULL))
+							{
+								__msg_e( hwnd, L"Keyfile not loaded\n" );
+								rlt = ST_ERROR;
+							}
+						}
+						CloseHandle(h_file);
+					}
+				}
+
+				//if (kf_count == 1 && !kf_is_raw && conf->keyfile_mixer == KEYFILE_MIX_LEGACY)
+				//{
+				//	__msg_e( hwnd, L"Embedded keyfile must be 64 byte size\n" );
+				//	rlt = ST_ERROR;
+				//}
+				//else
+
+				if ( !kf_is_raw )
+				{
+					dc_pass pass;
+					memset(&pass, 0, sizeof(pass));
+
+					rlt = __mix_keyfiles_pass(&pass, kf_state);
+
+					if (rlt != ST_OK)
+					{
+						__msg_e(hwnd, L"Keyfiles not loaded\n");
+					}
+					else
+					{
+						memcpy( &conf->emb_key, pass.pass, sizeof(conf->emb_key) );
+					}
+					burn(&pass, sizeof(pass));
+				}
+			}
+		}
+		//}
+		else {
 			memset(conf->emb_key, 0, sizeof(conf->emb_key));
 		}
 	}
@@ -459,7 +555,7 @@ int _save_boot_config(
 		BOOL show_err    = _get_check( wnd->dlg[3], IDC_BT_BAD_PASS_MSG );
 		BOOL act_no_pass = _get_check( wnd->dlg[3], IDC_BT_ACTION_NOPASS );
 
-		conf->error_type = _get_combo_val( GetDlgItem(wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT), bad_pass_act );
+		conf->error_type = _get_combo_val( GetDlgItem(wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT), __is_efi_boot ? bad_pass_act_efi : bad_pass_act );
 
 		set_flag( conf->error_type, LDR_ET_MESSAGE, show_err );
 		set_flag( conf->options, LDR_OP_NOPASS_ERROR, act_no_pass );
@@ -489,6 +585,10 @@ int _save_boot_config(
 				GetDlgItem(wnd->dlg[4], IDE_RICH_AUTH_MSG), conf->ago_msg, sizeof(conf->ago_msg)
 			);
 		}
+
+		set_flag( 
+			conf->options, LDR_OP_BLOCK_UNENC, _get_check(wnd->dlg[4], IDC_BT_BLOCK_UNENCRYPTED)
+			);
 
 		set_flag( 
 			conf->options, LDR_OP_DEBUG, _get_check(wnd->dlg[4], IDC_SET_VERBOSE)
@@ -544,22 +644,25 @@ int _save_boot_config(
 }
 
 
-static 
-LRESULT 
-CALLBACK 
+static
+LRESULT
+CALLBACK
 _get_msg_proc(
 		int    code,
 		WPARAM wparam,
 		LPARAM lparam
 	)
 {
-	MSG *p_msg = pv(lparam);
-
-	if ( p_msg->message >= WM_KEYFIRST && p_msg->message <= WM_KEYLAST )
+	if ( code >= 0 )
 	{
-		if ( TranslateAccelerator( h_wizard, __hacc, p_msg ) )
+		MSG *p_msg = pv(lparam);
+
+		if ( p_msg->message >= WM_KEYFIRST && p_msg->message <= WM_KEYLAST )
 		{
-			p_msg->message = WM_NULL;
+			if ( TranslateAccelerator( h_wizard, __hacc, p_msg ) )
+			{
+				p_msg->message = WM_NULL;
+			}
 		}
 	}
 	return (
@@ -674,7 +777,14 @@ _wizard_boot_dlg_proc(
 			EndDialog( hwnd, IDCANCEL );
 		case WM_DESTROY:
 		{
-			_keyfiles_wipe(KEYLIST_EMBEDDED);
+			_boot_wizard_data *wiz_data = wnd_get_long(hwnd, GWL_USERDATA);
+
+			if (wiz_data)
+			{
+				_keyfiles_wipe(&wiz_data->kf_state);
+				free(wiz_data);
+				wnd_set_long(hwnd, GWL_USERDATA, NULL);
+			}
 
 			__lists[HBOT_WIZARD_BOOT_DEVS] = HWND_NULL;
 			__lists[HBOT_PART_LIST_BY_ID]  = HWND_NULL;
@@ -683,10 +793,22 @@ _wizard_boot_dlg_proc(
 
 		case WM_INITDIALOG:
 		{
+			_boot_wizard_data *wiz_data;
+
 			// Initialize saved state
 			saved_type = -1;
 			saved_item_idx = -1;
 			saved_path[0] = 0;
+
+			// Allocate and initialize wizard instance data
+			wiz_data = malloc(sizeof(_boot_wizard_data));
+			if (wiz_data == NULL)
+			{
+				EndDialog(hwnd, IDCANCEL);
+				return 0L;
+			}
+			_keyfiles_init(&wiz_data->kf_state);
+			wnd_set_long(hwnd, GWL_USERDATA, wiz_data);
 
 			h_wizard = hwnd;
 			h_hook   = SetWindowsHookEx( WH_GETMESSAGE, (HOOKPROC)_get_msg_proc, NULL, GetCurrentThreadId( ) );

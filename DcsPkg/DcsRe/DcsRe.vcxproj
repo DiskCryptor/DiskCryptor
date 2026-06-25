@@ -64,21 +64,21 @@
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <NMakePreprocessorDefinitions>_UEFI;_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
     <NMakePreprocessorDefinitions>_UEFI;_DEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <NMakeOutput>DcsRe.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>_UEFI;NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <NMakeOutput>DcsRe.exe</NMakeOutput>
     <NMakePreprocessorDefinitions>_UEFI;NDEBUG;$(NMakePreprocessorDefinitions)</NMakePreprocessorDefinitions>
-    <IncludePath>F:\Projects\DCmod\edk2\MdePkg\Include\X64;F:\Projects\DCmod\edk2\MdePkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Include;F:\Projects\DCmod\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
+    <IncludePath>C:\Projects\edk2\MdePkg\Include\X64;C:\Projects\edk2\MdePkg\Include;C:\Projects\edk2\DcsPkg\Include;C:\Projects\edk2\DcsPkg\Library\VeraCryptLib</IncludePath>
   </PropertyGroup>
   <ItemDefinitionGroup>
   </ItemDefinitionGroup>

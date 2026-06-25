@@ -34,7 +34,7 @@
 #define HWND_NULL			( ( HWND ) - 1 )
 
 #define MAIN_SHEETS			2
-#define WZR_MAX_STEPS		4
+#define WZR_MAX_STEPS		5
 
 typedef struct __dspeed 
 {	
@@ -114,13 +114,26 @@ typedef struct _bench_item
 
 } bench_item;
 
-typedef struct _dlgpass 
+#define PF_MOUNT_OPTIONS    0x01
+#define PF_SHOW_SKIP_UNUSED	0x02
+#define PF_NEW_PASS_ONLY	0x04
+#define PF_NO_KEY_SLOTS	    0x08
+#define PF_CAN_USE_BACKUP   0x10
+#define PF_SHOW_CACHE_TAG   0x20
+#define PF_RAW_PASSWORD     0x40
+
+typedef struct _dlgpass
 {
+	const wchar_t *caption;  // dialog title (NULL = use default)
 	_dnode  *node;
+	int	     flags;
 	dc_pass *pass;
 	dc_pass *new_pass;
 	wchar_t *mnt_point;
-	int		mnt_ro;
+	int		 mnt_ro;
+	int		 skip_unused;  // user selected skip unused sectors
+	int		 clear_slots;  // clear key slots when changing password
+	int		 use_backup;   // use backup header when mounting
 
 } dlgpass, *pdlgpass;
 
@@ -133,15 +146,6 @@ typedef struct __wz_sheets
 	HWND first_tab_hwnd;
 
 } _wz_sheets;
-
-INT_PTR 
-CALLBACK
-_install_dlg_proc(
-		HWND   hwnd,
-		UINT   message,
-		WPARAM wparam,
-		LPARAM lparam
-	);
 
 void _dlg_about(
 		HWND hwnd

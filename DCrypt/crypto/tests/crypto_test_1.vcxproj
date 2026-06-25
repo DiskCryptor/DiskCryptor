@@ -58,7 +58,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)crypto\crypto_fast;$(SolutionDir)include</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -78,7 +78,7 @@
     </Midl>
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)crypto\crypto_fast;$(SolutionDir)include</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -96,7 +96,7 @@
     <Midl />
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(SolutionDir)crypto\crypto_fast;$(SolutionDir)include</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -110,7 +110,16 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\Argon2\blake2\blake2b.c" />
+    <ClCompile Include="..\Argon2\argon2.c" />
+    <ClCompile Include="..\Argon2\argon2_mt.c" />
+    <ClCompile Include="..\Argon2\core.c" />
+    <ClCompile Include="..\Argon2\opt_avx2.c" />
+    <ClCompile Include="..\Argon2\opt_sse2.c" />
+    <ClCompile Include="..\Argon2\ref.c" />
+    <ClCompile Include="test_alloc.c" />
     <ClCompile Include="aes_test.c" />
+    <ClCompile Include="argon2_test.c" />
     <ClCompile Include="crc32_test.c" />
     <ClCompile Include="crypto_tests.c" />
     <ClCompile Include="pkcs5_test.c" />
@@ -122,7 +131,15 @@
     <ClCompile Include="xts_test.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="..\Argon2\blake2\blake2b.h" />
+    <ClInclude Include="..\Argon2\blake2\blake2-impl.h" />
+    <ClInclude Include="..\Argon2\blake2\blamka-round-ref.h" />
+    <ClInclude Include="..\Argon2\blake2\blamka-round-opt.h" />
+    <ClInclude Include="..\Argon2\argon2.h" />
+    <ClInclude Include="..\Argon2\argon2_mt.h" />
+    <ClInclude Include="..\Argon2\core.h" />
     <ClInclude Include="aes_test.h" />
+    <ClInclude Include="argon2_test.h" />
     <ClInclude Include="crc32_test.h" />
     <ClInclude Include="pkcs5_test.h" />
     <ClInclude Include="serpent_test.h" />

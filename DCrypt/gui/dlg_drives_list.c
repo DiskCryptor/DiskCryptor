@@ -1,7 +1,7 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
-	* Copyright (c) 2019-2020
+	* Copyright (c) 2019-2026
 	* DavidXanatos <info@diskcryptor.org>
 	* Copyright (c) 2007-2010
 	* ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
@@ -24,6 +24,8 @@
 
 #include "main.h"
 #include "dlg_drives_list.h"
+#include "efiinst.h"
+#include "gpt_sup.h"
 
 static
 void _set_device_item(
@@ -63,16 +65,19 @@ void _set_device_item(
 
 	_snwprintf( s_hdd, countof(s_hdd), L"HardDisk %d", num );
 
-	if (mbr_ldr && efi_ldr) wcscpy(s_ldr, L"MBR + EFI installed)");
+	/* Check if DCS is installed to a dedicated ESP */
+	int has_dcs_esp = efi_ldr ? (dc_find_dcs_esp(num) > 0) : 0;
+
+	if (mbr_ldr && efi_ldr) wcscpy(s_ldr, has_dcs_esp ? L"MBR + ESP installed" : L"MBR + EFI installed");
 	else if (mbr_ldr)		wcscpy(s_ldr, L"MBR installed");
-	else if (efi_ldr)		wcscpy(s_ldr, L"EFI installed");
+	else if (efi_ldr)		wcscpy(s_ldr, has_dcs_esp ? L"ESP installed" : L"EFI installed");
 	else					wcscpy(s_ldr, L"none");
 
 	if (efi_ldr)
 	{
 		has_bme = dc_efi_is_bme_set(num);
 		has_shim = dc_efi_is_shim_set(num);
-		replaced_ms = dc_efi_is_msft_boot_replaced(num);
+		replaced_ms = dc_efi_is_msft_boot_replaced(num, -1);
 		if (has_shim)
 			wcscat(s_ldr, L", shim");
 		if (has_bme)
@@ -194,7 +199,11 @@ void _load_diskdrives(
 			_list_set_item_text( __lists[HMAIN_DRIVES], item, subitem++, s_display );
 
 			_list_set_item_text( __lists[HMAIN_DRIVES], item, subitem++, mnt->mnt.label );
-			_list_set_item_text( __lists[HMAIN_DRIVES], item, subitem++, mnt->mnt.fs );
+			if (mnt->mnt.info.status.flags & F_FS_RAW) 
+				_list_set_item_text(__lists[HMAIN_DRIVES], item, subitem++, L"RAW");
+			else 
+				_list_set_item_text(__lists[HMAIN_DRIVES], item, subitem++, mnt->mnt.fs);
+
 
 			_get_status_text( mnt, s_display, countof(s_display) );
 			_list_set_item_text( __lists[HMAIN_DRIVES], item, subitem++, s_display );
@@ -220,15 +229,29 @@ void _load_diskdrives(
 				}
 				if ( mnt->mnt.info.status.flags & F_SYSTEM )
 				{
-					if ( wcslen(s_boot) ) 
+					if ( wcslen(s_boot) )
 					{
 						wcscat(s_boot, L", ");
 					}
 					wcscat( s_boot, L"sys" );
-				}			
-				if ( wcslen(s_boot) && mnt->mnt.info.status.flags & F_ENABLED ) 
+				}
+				/* Check if volume contains DCS bootloader files */
+				if ( __is_efi_boot )
 				{
-					boot_enc = FALSE; 
+					wchar_t vol_root[MAX_PATH];
+					_snwprintf(vol_root, MAX_PATH, L"%s\\", mnt->mnt.info.w32_device);
+					if ( dc_is_dcs_on_partition(vol_root) )
+					{
+						if ( wcslen(s_boot) )
+						{
+							wcscat(s_boot, L", ");
+						}
+						wcscat( s_boot, L"dcs" );
+					}
+				}
+				if ( wcslen(s_boot) && mnt->mnt.info.status.flags & F_ENABLED )
+				{
+					boot_enc = FALSE;
 				}
 				_list_set_item_text( __lists[HMAIN_DRIVES], item, subitem++, s_boot );
 			}
@@ -260,7 +283,7 @@ void _list_devices(
 	int is_gpt;
 	int mbr_ldr, efi_ldr;
 
-	ldr_config conf;
+	//ldr_config conf;
 	_dnode *root = malloc(sizeof(_dnode));
 
 	memset( root, 0, sizeof(_dnode) );
@@ -269,7 +292,11 @@ void _list_devices(
 	_init_list_headers( h_list, _boot_headers );
 	ListView_DeleteAllItems( h_list );
 
-	dc_get_boot_disk( &boot_disk_1, &boot_disk_2 );
+	if (__is_efi_boot) {
+		boot_disk_1 = boot_disk_2 = dc_efi_get_os_disk();
+	} else {
+		dc_get_boot_disk( &boot_disk_1, &boot_disk_2 );
+	}
 	if ( !fixed )
 	{
 		for ( node = __drives.flink;
@@ -289,7 +316,8 @@ void _list_devices(
 					is_gpt = (dc_is_gpt_disk(drv->root.dsk_num) == 1);
 					//mbr_ldr = (dc_get_mbr_config(drv->root.dsk_num, NULL, &conf) == ST_OK);
 					mbr_ldr = (dc_has_dc_mbr(drv->root.dsk_num) == ST_OK);
-					efi_ldr = (dc_get_efi_config(drv->root.dsk_num, NULL, &conf) == ST_OK);
+					//efi_ldr = (dc_get_efi_config(drv->root.dsk_num, NULL, &conf) == ST_OK);
+					efi_ldr = (dc_is_dcs_on_disk(drv->root.dsk_num) == 1);
 
 					_set_device_item(
 							h_list, lvcount++, drv->root.dsk_num, st->mnt_point, 
@@ -312,7 +340,8 @@ void _list_devices(
 					is_gpt = (dc_is_gpt_disk(k) == 1);
 					//mbr_ldr = (dc_get_mbr_config(k, NULL, &conf) == ST_OK);
 					mbr_ldr = (dc_has_dc_mbr(k) == ST_OK);
-					efi_ldr = (dc_get_efi_config(k, NULL, &conf) == ST_OK);
+					//efi_ldr = (dc_get_efi_config(k, NULL, &conf) == ST_OK);
+					efi_ldr = (dc_is_dcs_on_disk(k) == 1);
 
 					_set_device_item(
 							h_list, lvcount++, k, NULL, k == sel ? root : NULL, TRUE, 

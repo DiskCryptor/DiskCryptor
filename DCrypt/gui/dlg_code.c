@@ -1,7 +1,7 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
-	* Copyright (c) 2019-2020
+	* Copyright (c) 2019-2026
 	* DavidXanatos <info@diskcryptor.org>
 	* Copyright (c) 2007-2010
 	* ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
@@ -69,14 +69,24 @@ _colinfo _benchmark_headers[ ] =
 	{ STR_NULL }
 };
 
+_colinfo _kdf_benchmark_headers[ ] =
+{
+	{ L"KDF",		160,	LVCFMT_LEFT,	FALSE	},
+	{ L"Memory",	60,		LVCFMT_RIGHT,	FALSE	},
+	{ L"Iter",		40,		LVCFMT_RIGHT,	FALSE	},
+	{ L"Time",		80,		LVCFMT_RIGHT,	FALSE	},
+	{ STR_NULL }
+};
+
 wchar_t *_info_table_items[ ] =
 {
 	L"Symbolic Link",
 	L"Device",
 	STR_SPACE,
 	L"Cipher",
-	L"Encryption mode",
-	L"Pkcs5.2 prf",
+	//L"Encryption mode",
+	L"Header KDF",
+	L"Header Format",
 	STR_NULL
 };
 
@@ -108,13 +118,44 @@ _static_view pass_pe_ctls[ ] =
 
 const _init_list cipher_names[ ] =
 {
-	{ CF_AES,					L"AES"					},
-	{ CF_TWOFISH,				L"Twofish"				},
-	{ CF_SERPENT,				L"Serpent"				},
-	{ CF_AES_TWOFISH,			L"AES-Twofish"			},
-	{ CF_TWOFISH_SERPENT,		L"Twofish-Serpent"		},
-	{ CF_SERPENT_AES,			L"Serpent-AES"			},
-	{ CF_AES_TWOFISH_SERPENT,	L"AES-Twofish-Serpent"	},
+	{ CF_AES,					L"AES (XTS Mode)"					},
+	{ CF_TWOFISH,				L"Twofish (XTS Mode)"				},
+	{ CF_SERPENT,				L"Serpent (XTS Mode)"				},
+	{ CF_AES_TWOFISH,			L"AES-Twofish (XTS Mode)"			},
+	{ CF_TWOFISH_SERPENT,		L"Twofish-Serpent (XTS Mode)"		},
+	{ CF_SERPENT_AES,			L"Serpent-AES (XTS Mode)"			},
+	{ CF_AES_TWOFISH_SERPENT,	L"AES-Twofish-Serpent (XTS Mode)"	},
+	{ 0, STR_NULL }
+};
+
+const _init_list kdf_names_ex[] =
+{
+    { KDF_DEFAULT, L"Standard Pkcs5.2 & Default Argon2id" },
+    { KDF_ALL, L"Try all KDF's    >>> Very Slow <<<"      },
+
+    {  0, L"Pkcs5.2 SHA-512 (0 - Legacy)"				  }, //    2ms
+
+    {  1, L"Argon2id (1 - Minimum) [64 MiB]"			  }, //   33ms
+    {  2, L"Argon2id (2 - Low) [128 MiB]"				  }, //   62ms
+    {  3, L"Argon2id (3 - Moderate) [192 MiB]"			  }, //  115ms
+    {  4, L"Argon2id (4 - Standard) [256 MiB]"			  }, //  154ms
+    {  5, L"Argon2id (5 - Recommended) [384 MiB]"		  }, //  281ms
+    {  6, L"Argon2id (6 - Enhanced) [512 MiB]"			  }, //  379ms
+    {  7, L"Argon2id (7 - Hardened) [768 MiB]"			  }, //  579ms
+    {  8, L"Argon2id (8 - High Cost) [1024 MiB]"		  }, //  943ms
+    {  9, L"Argon2id (9 - Very High Cost) [1536 MiB]"	  }, // 1506ms
+    { 10, L"Argon2id (10 - Extreme Cost) [2048 MiB]"	  }, // 2185ms
+
+    {  0, STR_NULL }
+};
+
+/* kdf_names points to kdf_names_ex[2], skipping the "Automatic" entries */
+const _init_list *kdf_names = &kdf_names_ex[2];
+
+const _init_list keyfile_mix_modes[ ] =
+{
+	{ KEYFILE_MIX_LEGACY,		L"Additive (Legacy)"			},
+	{ KEYFILE_MIX_HASHED,		L"Canonical (Recommended)"		},
 	{ 0, STR_NULL }
 };
 
@@ -138,10 +179,10 @@ const _init_list kb_layouts[ ] =
 const _init_list auth_type[ ] =
 {
 	{ LDR_LT_GET_PASS,										L"Password request"						},
-	//{ LDR_LT_GET_PASS | LDR_LT_PIC_PASS,					L"Password request (on screen keyboard)"},
-	{ LDR_LT_GET_PASS | LDR_LT_EMBED_KEY,					L"Password and bootauth keyfile"		},
-	//{ LDR_LT_GET_PASS | LDR_LT_EMBED_KEY | LDR_LT_PIC_PASS,	L"Password and bootauth keyfile (osk)"	},
-	{ LDR_LT_EMBED_KEY,										L"Embedded bootauth keyfile only"		},
+	{ LDR_LT_GET_PASS | LDR_LT_USB_KEY,						L"Password and USB keyfile"				},
+	{ LDR_LT_USB_KEY,										L"USB keyfile only"		                },
+	{ LDR_LT_GET_PASS | LDR_LT_EMBED_KEY,					L"Password and Embedded keyfile"		},
+	{ LDR_LT_EMBED_KEY,										L"Embedded keyfile only"		        },
 	{ 0, STR_NULL }
 };
 
@@ -176,6 +217,15 @@ const _init_list boot_type_ext[ ] = // external
 	{ 0, STR_NULL }
 };
 
+const _init_list boot_type_efi[ ] =
+{
+	{ LDR_BT_MBR_FIRST,		L"First disk"									},
+	{ LDR_BT_AP_PASSWORD,	L"First partition with appropriate password"	},
+	{ LDR_BT_DISK_ID,		L"Specified partition"							},
+	{ LDR_BT_MBR_BOOT,		L"Boot disk"									},
+	{ 0, STR_NULL }
+};
+
 const _init_list boot_type_all[ ] =
 {
 	{ LDR_BT_MBR_FIRST,		L"First disk"									},
@@ -183,6 +233,16 @@ const _init_list boot_type_all[ ] =
 	{ LDR_BT_DISK_ID,		L"Specified partition"							},
 	{ LDR_BT_MBR_BOOT,		L"Boot disk"									},
 	{ LDR_BT_ACTIVE,		L"Active partition"								},
+	{ 0, STR_NULL }
+};
+
+const _init_list bad_pass_act_efi[ ] =
+{
+	{ FALSE,				L"Halt system"					},
+	{ LDR_ET_REBOOT,		L"Reboot system"				},
+	{ LDR_ET_EXIT_TO_BIOS,	L"Exit to Firmware"				},
+	{ LDR_ET_RETRY,			L"Retry authentication"			},
+	{ LDR_ET_MBR_BOOT,		L"Load Boot Disk"				},
 	{ 0, STR_NULL }
 };
 

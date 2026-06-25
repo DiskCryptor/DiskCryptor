@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
     * Copyright (c) 2007-2008 
     * ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -146,3 +148,44 @@ void dc_dbg_init()
 #endif /* DBG_HAL_DISPLAY */
 }
 
+
+void DumpHex(const char* prefix, const void* data, size_t size)
+{
+	const unsigned char* bytes = (const unsigned char*)data;
+
+	for (size_t i = 0; i < size; i += 32)
+	{
+		char line[256];
+		int offset = 0;
+
+		if (prefix)
+			offset += sprintf_s(line + offset, countof(line) - offset, "%s", prefix);
+
+		offset += sprintf_s(line + offset, countof(line) - offset, "%04X: ", (unsigned int)i);
+
+		for (size_t j = 0; j < 32; ++j)
+		{
+			if (i + j < size)
+				offset += sprintf_s(line + offset, countof(line) - offset, "%02X ", bytes[i + j]);
+			else
+				offset += sprintf_s(line + offset, countof(line) - offset, "   ");
+		}
+
+		offset += sprintf_s(line + offset, countof(line) - offset, " |");
+
+		for (size_t j = 0; j < 32; ++j)
+		{
+			if (i + j < size)
+			{
+				unsigned char c = bytes[i + j];
+				offset += sprintf_s(line + offset, countof(line) - offset, "%c", (c >= 32 && c <= 126) ? c : '.');
+			}
+			else
+				offset += sprintf_s(line + offset, countof(line) - offset, " ");
+		}
+
+		offset += sprintf_s(line + offset, countof(line) - offset, "|");
+
+		DbgMsg("%s\n", line);
+	}
+}

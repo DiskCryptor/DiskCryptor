@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
     * Copyright (c) 2007-2014
     * ntldr <ntldr@diskcryptor.net> PGP key ID - 0x1B6A24550F33E44A
     *
@@ -163,7 +165,7 @@ NTSTATUS dc_pnp_irp(dev_hook *hook, PIRP irp)
 		case IRP_MN_STOP_DEVICE:
 			dc_set_pnp_state(hook, Stopped);
 			status = dc_forward_irp_sync(hook, irp);
-			
+
 			if (NT_SUCCESS(status) == FALSE && hook->pnp_state == Stopped) {
 				dc_restore_pnp_state(hook);
 			}
@@ -197,7 +199,8 @@ NTSTATUS dc_add_device(PDRIVER_OBJECT drv_obj, PDEVICE_OBJECT pdo_dev)
 		goto cleanup;
 	}
 	memset( (hook = (dev_hook*)hook_dev->DeviceExtension), 0, sizeof(dev_hook));
-	
+	hook->pending_shrink_sectors = -1;
+
 	// get device object name
 	if (high_dev->DeviceType == FILE_DEVICE_CD_ROM)
 	{

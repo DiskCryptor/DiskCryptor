@@ -1,7 +1,7 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
-	* Copyright (c) 2019-2023
+	* Copyright (c) 2019-2026
 	* DavidXanatos <info@diskcryptor.org>
     * Copyright (c) 2007-2014
     * ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
@@ -43,6 +43,7 @@
 #include "minifilter.h"
 #include "crypto_functions.h"
 #include "bootloader.h"
+#include "verify.h"
 
 /* function types declaration */
 DRIVER_INITIALIZE DriverEntry;
@@ -122,18 +123,27 @@ static NTSTATUS dc_dispatch_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 	return hookdev_procs[irp_sp->MajorFunction](hook, irp);
 }
 
+static void dc_cleanup()
+{
+	/* clear cached passwords */
+	if ( !(dc_conf_flags & CONF_CACHE_PASSWORD) && !(dc_boot_flags & (BDB_BF_HDR_FOUND | BDB_BF_PASS_CACHE)) ) {
+		dc_clean_pass_cache();
+	}
+
+	/* clear cached boot keys */
+	dc_clean_boot_keys();
+}
+
 static void dc_automount_thread(void *param)
 {
 	/* wait 0.5 sec */
 	dc_delay(500);
 
 	/* complete automounting */
-	dc_mount_all(NULL, 0);
+	dc_mount_all(NULL, 0, NULL);
 
-	/* clear cached passwords */
-	if ( (dc_conf_flags & CONF_CACHE_PASSWORD) == 0 && (dc_boot_flags & BDB_BF_HDR_FOUND) == 0 ) {
-		dc_clean_pass_cache();
-	}
+	dc_cleanup();
+
 	PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
@@ -146,8 +156,8 @@ static void dc_reinit_routine(PDRIVER_OBJECT drv_obj, void *context, u32 count)
 
 	if (dc_conf_flags & CONF_AUTOMOUNT_BOOT) {
 		start_system_thread(dc_automount_thread, NULL, NULL);
-	} else if ( (dc_boot_flags & BDB_BF_HDR_FOUND) == 0 ) {
-		dc_clean_pass_cache();
+	} else {
+		dc_cleanup();
 	}
 }
 
@@ -179,8 +189,10 @@ static void dc_load_config(PUNICODE_STRING reg_path)
 
 		status = ZwQueryValueKey(key_2, &u_name, KeyValuePartialInformation, info, sizeof(buff), &bytes);
 		if (NT_SUCCESS(status) == FALSE) break;
+		
 		/* copy config data */
 		memcpy(&dc_conf_flags, info->Data, sizeof(dc_conf_flags));
+
 	} while (0);
 
 	if (key_2 != NULL) ZwClose(key_2);
@@ -281,6 +293,7 @@ NTSTATUS
 
 	mm_init();
 	dc_load_config(RegistryPath);
+	dc_verify_cert();
 	dc_init_encryption();
 	dc_init_devhook(); 
 	dc_init_mount();

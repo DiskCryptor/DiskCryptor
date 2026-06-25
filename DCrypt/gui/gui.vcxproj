@@ -142,6 +142,7 @@
     </ClCompile>
     <ResourceCompile>
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
     <Link>
       <AdditionalDependencies>comctl32.lib;shlwapi.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -170,6 +171,7 @@
     </ClCompile>
     <ResourceCompile>
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
     <Link>
       <AdditionalDependencies>user32.lib;advapi32.lib;shell32.lib;gdi32.lib;comctl32.lib;comdlg32.lib;shlwapi.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -200,6 +202,7 @@
     </ClCompile>
     <ResourceCompile>
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
+      <PreprocessorDefinitions>_DEBUG;%(PreprocessorDefinitions)</PreprocessorDefinitions>
     </ResourceCompile>
     <Link>
       <AdditionalDependencies>user32.lib;advapi32.lib;shell32.lib;gdi32.lib;comctl32.lib;comdlg32.lib;shlwapi.lib;ntdll.lib;%(AdditionalDependencies)</AdditionalDependencies>
@@ -333,8 +336,12 @@
     <ClCompile Include="prc_main.c" />
     <ClCompile Include="prc_options.c" />
     <ClCompile Include="prc_pass.c" />
+    <ClCompile Include="secure_desktop.c" />
     <ClCompile Include="prc_wizard_boot.c" />
     <ClCompile Include="prc_wizard_encrypt.c" />
+    <ClCompile Include="prc_header.c" />
+    <ClCompile Include="prc_tpm.c" />
+    <ClCompile Include="prc_wait.c" />
     <ClCompile Include="stat.c" />
     <ClCompile Include="subs.c" />
     <ClCompile Include="threads.c" />
@@ -356,8 +363,12 @@
     <ClInclude Include="include\prc_main.h" />
     <ClInclude Include="include\prc_options.h" />
     <ClInclude Include="include\prc_pass.h" />
+    <ClInclude Include="include\secure_desktop.h" />
     <ClInclude Include="include\prc_wizard_boot.h" />
     <ClInclude Include="include\prc_wizard_encrypt.h" />
+    <ClInclude Include="include\prc_header.h" />
+    <ClInclude Include="include\prc_tpm.h" />
+    <ClInclude Include="include\prc_wait.h" />
     <ClInclude Include="include\stat.h" />
     <ClInclude Include="include\subs.h" />
     <ClInclude Include="include\threads.h" />
@@ -377,7 +388,7 @@
     <None Include="check_mask.bmp" />
     <None Include="disk.bmp" />
     <None Include="disk_mask.bmp" />
-    <None Include="icon.ico.ico" />
+    <None Include="dcrypt.ico" />
     <None Include="undisk.bmp" />
     <None Include="undisk_mask.bmp" />
   </ItemGroup>

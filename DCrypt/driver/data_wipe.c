@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
     * Copyright (c) 2007-2008 
     * ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -124,7 +126,9 @@ int dc_wipe_init(wipe_ctx *ctx, void *hook, int max_size, int method, int cipher
 			}
 			/* generate random key */
 			cp_rand_bytes(key, sizeof(key));
-			xts_set_key(key, cipher, ctx->key);
+			if (!xts_set_key(key, cipher, ctx->key)) {
+				resl = ST_INVALID_PARAM; break;
+			}
 		}
 		ctx->hook = hook;
 		ctx->size = max_size;

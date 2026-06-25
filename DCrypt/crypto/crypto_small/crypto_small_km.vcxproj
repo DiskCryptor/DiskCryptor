@@ -81,7 +81,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="aes_small.c" />
-    <ClCompile Include="crc32.c" />
+    <ClCompile Include="..\crc32.c" />
     <ClCompile Include="serpent_small.c" />
     <ClCompile Include="sha512_pkcs5_2_small.c" />
     <ClCompile Include="sha512_small.c" />
@@ -102,7 +102,7 @@
   <ItemGroup>
     <ClInclude Include="aes_padlock_small.h" />
     <ClInclude Include="aes_small.h" />
-    <ClInclude Include="crc32.h" />
+    <ClInclude Include="..\crc32.h" />
     <ClInclude Include="serpent_small.h" />
     <ClInclude Include="sha512_pkcs5_2_small.h" />
     <ClInclude Include="sha512_small.h" />

@@ -3,6 +3,7 @@
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI 
+Copyright (c) 2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials
 are licensed and made available under the terms and conditions
@@ -302,6 +303,30 @@ InfoBluetooth() {
 	XmlTag(fInfo, "BluetoothHC", TRUE, NULL, " count=\"%d\"", gBluetoothHcCount, NULL);
 }
 
+VOID
+InfoCon() {
+	EFI_STATUS res;
+	UINTN i;
+	UINTN cols;
+	UINTN rows;
+	EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL *conOut = gST->ConOut;
+	if (conOut == NULL) {
+		XmlTag(fInfo, "Console", TRUE, NULL, " available=\"0\"", NULL);
+		return;
+	}
+	XmlTag(fInfo, "Console", FALSE, NULL, " modes=\"%d\" current=\"%d\"", conOut->Mode->MaxMode, conOut->Mode->Mode, NULL);
+	FileAsciiPrint(fInfo, "\n");
+	gXmlTabs++;
+	for (i = 0; i < (UINTN)conOut->Mode->MaxMode; ++i) {
+		res = conOut->QueryMode(conOut, i, &cols, &rows);
+		if (!EFI_ERROR(res)) {
+			XmlTag(fInfo, "TextMode", TRUE, NULL,
+				" index=\"%d\" cols=\"%d\" rows=\"%d\"", i, cols, rows, NULL);
+		}
+	}
+	XmlEndTag(fInfo, "Console");
+}
+
 /**
 The actual entry point for the application.
 
@@ -344,6 +369,7 @@ DcsInfoMain(
 	InfoUsbDevices();
 	InfoTouch();
 	InfoGraph();
+	InfoCon();
 	InfoBluetooth();
 	XmlEndTag(fInfo, "PlatformInfo");
 

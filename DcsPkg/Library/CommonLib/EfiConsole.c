@@ -3,6 +3,7 @@ EFI console helpers routines/wrappers
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov, Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI
+Copyright (c) 2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials are licensed and made available
 under the terms and conditions of the GNU Lesser General Public License, version 3.0 (LGPL-3.0).
@@ -16,6 +17,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/BaseMemoryLib.h>
 #include <Library/PrintLib.h>
 #include <Protocol/SimpleTextOut.h>
+#include <Protocol/SimpleTextIn.h>
 #include <Protocol/ConsoleControl.h>
 #include <Protocol/Speaker.h>
 
@@ -37,41 +39,45 @@ PrintBytes(
 	}
 }
 
-/*
-#define DUMP_MAX_LINE_LEN 1024
-typedef struct _DUMP_STATE {
-	CHAR8    line[DUMP_MAX_LINE_LEN];
-
-} DUMP_STATE;
-
 VOID
-DumpBytes(
-	IN UINT8* Data,
-	IN UINT32 Size)
+DumpHex(
+	IN VOID*  Data,
+	IN INTN   Size)
 {
-	UINT32 i;
-	CHAR8 text[17];
-	UINTN addr = 0;
-	for (i = 0; i < Size; ++i) {
-		if ((addr & 0x0F) == 0) {
-			SetMem(text, sizeof(text) - 1, ' ');
-			text[16] = 0;
-			OUT_PRINT(L"%08X: ", addr);
+	UINT8* ptr = (UINT8*)Data;
+	INTN   offset = 0;
+	INTN   i;
+	CHAR8  ascii[17];
+
+	ascii[16] = '\0';
+
+	while (offset < Size) {
+		// Print address
+		OUT_PRINT(L"%08X  ", offset);
+
+		// Print hex values and build ASCII representation
+		for (i = 0; i < 16; i++) {
+			if (offset + i < Size) {
+				UINT8 val = ptr[offset + i];
+				OUT_PRINT(L"%02X ", (UINTN)val);
+				// Printable ASCII range: 0x20 (space) to 0x7E (~)
+				ascii[i] = (val >= 0x20 && val <= 0x7E) ? (CHAR8)val : '.';
+			} else {
+				OUT_PRINT(L"   ");
+				ascii[i] = ' ';
+			}
+			// Add extra space after 8 bytes for readability
+			if (i == 7) {
+				OUT_PRINT(L" ");
+			}
 		}
-		UINT32 val = Data[i];
-		OUT_PRINT(L"%02X ", val);
-		if (val > 31 && val < 127) {
-			text[i & 0x0F] = (CHAR8)(val & 0x0FF);
-		}
-		addr++;
-		if ((addr & 0x0F) == 0) {
-			OUT_PRINT(L"|%a|", text);
-		}
-	}
-	if (addr & 0x0F) != 0) {
+
+		// Print ASCII representation
+		OUT_PRINT(L" |%a|\n", ascii);
+
+		offset += 16;
 	}
 }
-*/
 
 //////////////////////////////////////////////////////////////////////////
 // Input
@@ -122,7 +128,8 @@ KeyWait(
    gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
    gBS->SetTimer(InputEvents[1], TimerPeriodic, 10000000);
    while (mDelay > 0) {
-      OUT_PRINT(Prompt, mDelay);
+      //OUT_PRINT(Prompt, mDelay);
+      AttrPrintEx(-1, -1, Prompt, mDelay);
       gBS->WaitForEvent(2, InputEvents, &EventIndex);
       if (EventIndex == 0) {
 			if (EFI_ERROR(gST->ConIn->ReadKeyStroke(gST->ConIn, &key))) {
@@ -134,7 +141,8 @@ KeyWait(
          mDelay--;
       }
    }
-   OUT_PRINT(Prompt, mDelay);
+   //OUT_PRINT(Prompt, mDelay);
+   AttrPrintEx(-1, -1, Prompt, mDelay);
    gBS->CloseEvent(InputEvents[1]);
    return key;
 }
@@ -180,10 +188,10 @@ ConsoleShowTip(
 }
 
 
-VOID 
+BOOLEAN
 GetLine (
-   UINTN    *length, 
-   CHAR16   *line, 
+   UINTN    *length,
+   CHAR16   *line,
    CHAR8    *asciiLine,
    UINTN    line_max,
    UINT8    show)
@@ -195,6 +203,15 @@ GetLine (
       key = GetKey();
 		// Remove dirty chars 0.1s
 		FlushInputDelay(100000);
+
+      // Check for ESC - abort input
+      if (key.ScanCode == SCAN_ESC) {
+         OUT_PRINT(L"\n");
+         if (length != NULL) *length = 0;
+         if (line != NULL) line[0] = '\0';
+         if (asciiLine != NULL) asciiLine[0] = '\0';
+         return FALSE;
+      }
 
       if ((count >= line_max &&
          key.UnicodeChar != CHAR_BACKSPACE) ||
@@ -233,6 +250,7 @@ GetLine (
    // Set end of line
    if (line != NULL) line[count] = '\0';
    if (asciiLine != NULL) asciiLine[count] = '\0';
+   return TRUE;
 }
 
 int
@@ -520,6 +538,74 @@ DcsMenuPrint(
 	OUT_PRINT(L"]:");
 }
 
+
+//////////////////////////////////////////////////////////////////////////
+// Console initialization
+//////////////////////////////////////////////////////////////////////////
+
+//EFI_STATUS
+//InitConsole() {
+//	EFI_STATUS res;
+//	EFI_HANDLE* handles = NULL;
+//	UINTN handleCount = 0;
+//
+//	// Check if ConOut is already valid
+//	if (gST != NULL && gST->ConOut != NULL && gST->ConOut->Mode != NULL) {
+//		// Console already initialized, just reset it to ensure it's in a good state
+//		gST->ConOut->Reset(gST->ConOut, FALSE);
+//		if (gST->ConIn != NULL) {
+//			gST->ConIn->Reset(gST->ConIn, FALSE);
+//		}
+//		return EFI_SUCCESS;
+//	}
+//
+//	// ConOut not available, try to find and connect SimpleTextOutput protocol
+//	if (gST == NULL || gST->ConOut == NULL) {
+//		res = EfiGetHandles(ByProtocol, &gEfiSimpleTextOutProtocolGuid, NULL, &handles, &handleCount);
+//		if (!EFI_ERROR(res) && handleCount > 0) {
+//			EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL* textOut = NULL;
+//			for (UINTN i = 0; i < handleCount; i++) {
+//				res = gBS->HandleProtocol(handles[i], &gEfiSimpleTextOutProtocolGuid, (VOID**)&textOut);
+//				if (!EFI_ERROR(res) && textOut != NULL && textOut->Mode != NULL) {
+//					// Found a valid text output, set it on the system table
+//					if (gST != NULL) {
+//						gST->ConOut = textOut;
+//						gST->ConsoleOutHandle = handles[i];
+//						textOut->Reset(textOut, FALSE);
+//					}
+//					break;
+//				}
+//			}
+//			MEM_FREE(handles);
+//			handles = NULL;
+//		}
+//	}
+//
+//	// Try to find and connect SimpleTextInput protocol for ConIn
+//	if (gST != NULL && gST->ConIn == NULL) {
+//		res = EfiGetHandles(ByProtocol, &gEfiSimpleTextInProtocolGuid, NULL, &handles, &handleCount);
+//		if (!EFI_ERROR(res) && handleCount > 0) {
+//			EFI_SIMPLE_TEXT_INPUT_PROTOCOL* textIn = NULL;
+//			for (UINTN i = 0; i < handleCount; i++) {
+//				res = gBS->HandleProtocol(handles[i], &gEfiSimpleTextInProtocolGuid, (VOID**)&textIn);
+//				if (!EFI_ERROR(res) && textIn != NULL) {
+//					gST->ConIn = textIn;
+//					gST->ConsoleInHandle = handles[i];
+//					textIn->Reset(textIn, FALSE);
+//					break;
+//				}
+//			}
+//			MEM_FREE(handles);
+//		}
+//	}
+//
+//	// Verify we have a working console
+//	if (gST == NULL || gST->ConOut == NULL) {
+//		return EFI_NOT_READY;
+//	}
+//
+//	return EFI_SUCCESS;
+//}
 
 //////////////////////////////////////////////////////////////////////////
 // Console control

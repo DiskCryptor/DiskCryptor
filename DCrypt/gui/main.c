@@ -1,6 +1,6 @@
 /*  *
     * DiskCryptor - open source partition encryption tool
-	* Copyright (c) 2019-2020
+	* Copyright (c) 2019-2026
 	* DavidXanatos <info@diskcryptor.org>
 	* Copyright (c) 2007-2010 
 	* ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
@@ -28,6 +28,7 @@
 
 #include "rand.h"
 #include "prc_keyfiles.h"
+#include "secure_desktop.h"
 
 #pragma warning(disable : 4995)
 
@@ -111,7 +112,7 @@ static DWORD _dc_upd_bootloader( )
 	
 	if ( dc_get_ldr_config( -1, &conf ) != ST_OK ) return NO_ERROR;
 	if ( __is_efi_boot ) {
-		status = dc_update_efi_boot(-1);
+		status = dc_update_efi_boot(-1, -1);
 	}
 	else {
 		status = dc_update_boot(-1);
@@ -289,6 +290,11 @@ int WINAPI wWinMain(
 	_log( L"%0.8X dc version", ver );
 #endif
 
+#ifdef  _DEBUG
+	//__msg_i( HWND_DESKTOP, L"DiskCryptor v%S debug build", DC_FILE_VER );
+#endif // ! _DEBUG
+
+#ifndef _DEBUG
 	if ( ver < DC_DRIVER_VER )
 	{
 		if ( ( rlt = _drv_action(DA_UPDATE, ver) ) != NO_ERROR )
@@ -297,6 +303,7 @@ int WINAPI wWinMain(
 		}
 		return 0;
 	}
+#endif
 
 	if ( ver > DC_DRIVER_VER )
 	{
@@ -357,6 +364,7 @@ int WINAPI wWinMain(
 		return 0;		
 	}
 	InitializeCriticalSection( &crit_sect );
+	secure_desktop_init();
 
 #ifdef LOG_FILE
 	_log( L"initialize critical section" );
@@ -365,10 +373,8 @@ int WINAPI wWinMain(
 	_init_list_head( &__drives );
 	_init_list_head( &__action );
 
-	_init_keyfiles_list( );
-
 #ifdef LOG_FILE
-	_log( L"init keyfiles list" );
+	_log( L"init complete" );
 #endif
 	{
 		HWND   h_dialog;
@@ -403,6 +409,7 @@ int WINAPI wWinMain(
 		DestroyAcceleratorTable( __hacc );
 	}
 
+	secure_desktop_cleanup();
 	return TRUE;
 }
 

@@ -212,7 +212,7 @@
   </ItemDefinitionGroup>
   <ItemGroup>
     <ClCompile Include="aes_key.c" />
-    <ClCompile Include="crc32.c" />
+    <ClCompile Include="..\crc32.c" />
     <ClCompile Include="serpent.c" />
     <ClCompile Include="sha512.c" />
     <ClCompile Include="sha512_hmac.c" />
@@ -429,7 +429,7 @@
     <ClInclude Include="aes_asm.h" />
     <ClInclude Include="aes_key.h" />
     <ClInclude Include="aes_padlock.h" />
-    <ClInclude Include="crc32.h" />
+    <ClInclude Include="..\crc32.h" />
     <ClInclude Include="serpent.h" />
     <ClInclude Include="sha512.h" />
     <ClInclude Include="sha512_hmac.h" />

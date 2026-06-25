@@ -386,6 +386,33 @@ static int efi_cmd_set(int argc, wchar_t *argv[])
 	return resl;
 }
 
+static int efi_cmd_del(int argc, wchar_t *argv[])
+{
+	int      resl = ST_OK;
+	wchar_t *var_name = argv[3];
+	wchar_t *var_guid = get_param(L"-guid");
+
+	if (var_guid == NULL) {
+		var_guid = (wchar_t*)efi_var_guid;
+	}
+
+	// Delete variable by setting it with NULL buffer and 0 size
+	if (!SetFirmwareEnvironmentVariableW(var_name, var_guid, NULL, 0)) {
+		DWORD err = GetLastError();
+		if (err == ERROR_ENVVAR_NOT_FOUND) {
+			wprintf(L"Variable '%s' not found\n", var_name);
+			resl = ST_NF_FILE;
+		} else {
+			wprintf(L"Error deleting variable '%s': %d (0x%08X)\n", var_name, err, err);
+			resl = ST_ERROR;
+		}
+	} else {
+		wprintf(L"Variable '%s' deleted successfully\n", var_name);
+	}
+
+	return resl;
+}
+
 static int efi_cmd_dump(int argc, wchar_t *argv[])
 {
 	int      resl;
@@ -1376,6 +1403,11 @@ int efi_menu(int argc, wchar_t* argv[])
 
 		if ((argc >= 4) && (wcscmp(argv[2], L"-set") == 0)) {
 			resl = efi_cmd_set(argc, argv);
+			break;
+		}
+
+		if ((argc >= 4) && (wcscmp(argv[2], L"-del") == 0)) {
+			resl = efi_cmd_del(argc, argv);
 			break;
 		}
 

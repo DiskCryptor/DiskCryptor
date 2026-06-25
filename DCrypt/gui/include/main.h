@@ -66,15 +66,17 @@ int _set_boot_loader_mbr(
 int _set_boot_loader_efi(
 		HWND  hwnd,
 		int   dsk_num,
-		int  is_shim
+		int   is_shim,
+		int   add_esp,  /* -1 = ask user, 0 = no (use Windows ESP), 1 = yes (use dedicated DCS ESP) */
+		int   add_bme    /* -1 = ask user, 0 = no, 1 = yes */
 	);
 
 BOOL _is_boot_device(
-		vol_inf *vol 
+		vol_inf *vol
 	);
 
-BOOL _is_removable_media( 
-		int dsk_num 
+BOOL _is_removable_media(
+		int dsk_num
 	);
 
 void _activate_page( );

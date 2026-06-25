@@ -42,6 +42,7 @@
   MemoryAllocationLib
   CommonLib
   DcsCfgLib
+  MiscUtilsLib
 
 [Guids]
   gEfiGlobalVariableGuid

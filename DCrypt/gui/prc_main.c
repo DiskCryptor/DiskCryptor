@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
 	* Copyright (c) 2007-2010
 	* ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -19,8 +21,10 @@
 */
 
 #include <windows.h>
+#include <commctrl.h>
 
 #include "main.h"
+#include "dcconst.h"
 #include "prc_main.h"
 
 #include "dlg_drives_list.h"
@@ -33,6 +37,10 @@
 #include "prc_common.h"
 #include "prc_options.h"
 #include "prc_wizard_boot.h"
+#include "prc_header.h"
+#include "prc_tpm.h"
+#include "prc_wait.h"
+#include "tpm_sup.h"
 
 static int _dlg_height;
 static int _dlg_width;
@@ -40,6 +48,14 @@ static int _dlg_width;
 static int _dlg_right;
 static int _dlg_left;
 static int _dlg_bottom;
+
+static HWND __h_statusbar;
+static int  __cached_count = 0;  /* Cached password count from status bar update */
+
+/* Forward declarations */
+static int _count_mounted_volumes(void);
+void _update_status_bar(void);
+static ULONG _get_system_volume_flags(void);
 
 void _init_main_dlg(
 		HWND hwnd
@@ -49,7 +65,7 @@ void _init_main_dlg(
 	wchar_t      display[MAX_PATH];
 
 	_snwprintf(
-		display, countof(display), L"%s %S", DC_NAME, DC_FILE_VER
+		display, countof(display), L"%s %s%S", DC_NAME, __config.load_flags & DST_PRO_ENABLED ? L"Pro " : L"", DC_PRODUCT_VER
 		);
 
 	SetWindowText( hwnd, display );
@@ -62,6 +78,12 @@ void _init_main_dlg(
 	mnitem.fMask = MIIM_FTYPE;
 	mnitem.fType = MFT_RIGHTJUSTIFY;
 	SetMenuItemInfo( GetMenu( hwnd ), ID_HOMEPAGE, FALSE, &mnitem );
+
+	/* Disable TPM menu item if no TPM is present */
+	if ( dc_tpm_get_version() <= 0 )
+	{
+		EnableMenuItem( GetMenu( hwnd ), ID_TOOLS_TPM, MF_BYCOMMAND | MF_GRAYED );
+	}
 
 	SendMessage( GetDlgItem( hwnd, IDC_DRIVES_HEAD ), WM_SETFONT, (WPARAM)__font_bold, 0 );
 	{
@@ -91,6 +113,112 @@ void _init_main_dlg(
 			}
 		}
 	}
+
+	/* Create status bar */
+	__h_statusbar = CreateWindowEx(
+		0, STATUSCLASSNAME, NULL,
+		WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
+		0, 0, 0, 0,
+		hwnd, (HMENU)IDC_STATUSBAR, __hinst, NULL
+	);
+
+	/* Set up status bar parts */
+	{
+		int parts[3] = { 150, 300, -1 };
+		SendMessage(__h_statusbar, SB_SETPARTS, 3, (LPARAM)parts);
+	}
+
+	/* Initial status bar update */
+	_update_status_bar();
+
+	/* Force layout update to account for status bar */
+	{
+		RECT rc;
+		GetClientRect(hwnd, &rc);
+		SendMessage(hwnd, WM_SIZE, SIZE_RESTORED, MAKELONG(rc.right, rc.bottom));
+	}
+}
+
+
+static int _count_mounted_volumes(void)
+{
+	list_entry *node;
+	list_entry *sub;
+	int count = 0;
+
+	for (node = __drives.flink; node != &__drives; node = node->flink)
+	{
+		_dnode *root = contain_record(node, _dnode, list);
+		for (sub = root->root.vols.flink; sub != &root->root.vols; sub = sub->flink)
+		{
+			_dnode *mnt = contain_record(sub, _dnode, list);
+			if (mnt->mnt.info.status.flags & F_ENABLED)
+			{
+				count++;
+			}
+		}
+	}
+	return count;
+}
+
+/* Get the system volume's status flags, or 0 if not found */
+static ULONG _get_system_volume_flags(void)
+{
+	vol_inf volinfo;
+
+	if (dc_first_volume(&volinfo) == ST_OK)
+	{
+		do
+		{
+			if (volinfo.status.flags & F_SYSTEM)
+			{
+				return volinfo.status.flags;
+			}
+		} while (dc_next_volume(&volinfo) == ST_OK);
+	}
+	return 0;
+}
+
+
+void _update_status_bar(void)
+{
+	wchar_t text[256];
+	DC_FLAGS flags;
+	wchar_t *boot_mode = L"Unknown";
+	int mounted_count;
+
+	if (!__h_statusbar)
+		return;
+
+	mounted_count = _count_mounted_volumes();
+	dc_enum_passwords(NULL, 0, &__cached_count);
+
+	if (dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &flags, sizeof(flags)) == NO_ERROR)
+	{
+		if (flags.load_flags & DST_UEFI_BOOT)
+		{
+			if (flags.load_flags & DST_BOOTLOADER)
+				boot_mode = L"UEFI (DCS Boot)";
+			else
+				boot_mode = L"UEFI";
+		}
+		else
+		{
+			if (flags.load_flags & DST_BOOTLOADER)
+				boot_mode = L"BIOS (DC Boot)";
+			else
+				boot_mode = L"BIOS";
+		}
+	}
+
+	_snwprintf(text, countof(text), L"Mounted Volumes: %d", mounted_count);
+	SendMessage(__h_statusbar, SB_SETTEXT, 0, (LPARAM)text);
+
+	_snwprintf(text, countof(text), L"Cached Passwords: %d", __cached_count);
+	SendMessage(__h_statusbar, SB_SETTEXT, 1, (LPARAM)text);
+
+	_snwprintf(text, countof(text), L"Boot: %s", boot_mode);
+	SendMessage(__h_statusbar, SB_SETTEXT, 2, (LPARAM)text);
 }
 
 
@@ -259,8 +387,9 @@ _main_dialog_proc(
 			int height = HIWORD(lparam);
 			int width  = LOWORD(lparam);
 			int k;
+			int statusbar_height = 0;
 
-			_size_move_ctls _resize[ ] = 
+			_size_move_ctls _resize[ ] =
 			{
 				{ -1, IDC_DISKDRIVES,   FALSE, 0, 0 },
 				{ -1, IDC_STATIC_LIST,  TRUE,  0, 0 },
@@ -271,8 +400,18 @@ _main_dialog_proc(
 			{
 				{ IDC_STATIC_LIST, IDC_MAIN_TAB,    TRUE,  0, 6 },
 				{ IDC_STATIC_LIST, IDT_INFO,        FALSE, 0, 3 },
-				{ IDT_INFO,        IDC_LINE_BOTTOM, TRUE,  0, 2 }
+				//{ IDT_INFO,        IDC_LINE_BOTTOM, TRUE,  0, 2 }
 			};
+
+			/* Resize status bar and get its height */
+			if (__h_statusbar)
+			{
+				RECT sb_rect;
+				SendMessage(__h_statusbar, WM_SIZE, 0, 0);
+				GetWindowRect(__h_statusbar, &sb_rect);
+				statusbar_height = sb_rect.bottom - sb_rect.top;
+			}
+
 			{
 				int c_size_hide = _main_headers[1].width;
 				int c_size_show = c_size_hide - GetSystemMetrics(SM_CXVSCROLL);
@@ -290,6 +429,10 @@ _main_dialog_proc(
 			{
 				return 0L;
 			}
+
+			/* Adjust height to account for status bar */
+			height -= statusbar_height;
+
 			for ( k = 0; k < countof(_resize); k++ )
 			{
 				_resize_ctl(
@@ -331,6 +474,40 @@ _main_dialog_proc(
 		}
 		break;
 
+		case WM_INITMENUPOPUP :
+		{
+			HMENU hMenu = (HMENU)wparam;
+			ULONG sys_flags = _get_system_volume_flags();
+			BOOL  sys_unencrypted = (sys_flags == 0) || IS_BLOCK_UNENC_HDDS_DISABLED(sys_flags);
+
+			/* when os disk is encrypted, the driver can not be removed */
+			EnableMenuItem(hMenu, ID_TOOLS_DRIVER_REMOVE,
+				MF_BYCOMMAND | (sys_unencrypted ? MF_ENABLED : MF_GRAYED));
+
+			/* Disable "Block unencrypted HDDs" when system disk is unencrypted */
+			EnableMenuItem(hMenu, ID_BLOCK_HDD,
+				MF_BYCOMMAND | (sys_unencrypted ? MF_GRAYED : MF_ENABLED));
+
+			/* Disable "Clear Cached Passwords" when cache is empty */
+			EnableMenuItem(hMenu, ID_TOOLS_CLEARCACHE,
+				MF_BYCOMMAND | (__cached_count == 0 ? MF_GRAYED : MF_ENABLED));
+
+			/* update menu checkmarks based on configuration */
+			if (dc_load_config(&__config) == ST_OK) {
+				
+				CheckMenuItem( GetMenu( hwnd ), ID_PROTECT_RAW,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_PROTECT_RAW_VOLUMES ? MF_CHECKED : MF_UNCHECKED) );
+
+				CheckMenuItem( GetMenu( hwnd ), ID_BLOCK_REMOVABLE,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_BLOCK_UNENC_REMOVABLE ? MF_CHECKED : MF_UNCHECKED) );
+				CheckMenuItem( GetMenu( hwnd ), ID_BLOCK_HDD,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_BLOCK_UNENC_HDDS ? MF_CHECKED : MF_UNCHECKED) );
+				CheckMenuItem( GetMenu( hwnd ), ID_BLOCK_CDROM,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_BLOCK_UNENC_CDROM ? MF_CHECKED : MF_UNCHECKED) );
+			}
+		}
+		break;
+
 		case WM_NOTIFY :
 		{
 			if ( wparam == IDT_INFO )
@@ -360,13 +537,20 @@ _main_dialog_proc(
 				}
 				if ( ((NMHDR *)lparam)->code == LVN_ITEMACTIVATE )
 				{
-					BOOL mount = 
-						( !(sel->mnt.info.status.flags & F_ENABLED) ) && 
-						( sel->mnt.fs[0] == '\0' );
-					
-					if (! mount )
+					if ((sel->mnt.info.status.flags & F_ENABLED) || sel->mnt.fs[0] != '\0')
 					{
-						if (! sel->is_root ) __execute( mnt->info.status.mnt_point );
+						if (! sel->is_root )
+						{
+							/* If Ctrl is held and volume is encrypted, open header config dialog */
+							if ( (GetKeyState(VK_CONTROL) & 0x8000) && (sel->mnt.info.status.flags & F_ENABLED) )
+							{
+								_dlg_header_config_volume(__dlg, sel);
+							}
+							else
+							{
+								__execute( mnt->info.status.mnt_point );
+							}
+						}
 					} else {
 						_menu_mount( sel );
 					}
@@ -431,6 +615,7 @@ _main_dialog_proc(
 										{
 											AppendMenu( h_popup, MF_SEPARATOR, 0, NULL );
 											AppendMenu( h_popup, MF_STRING, ID_VOLUMES_CHANGEPASS, IDS_CHPASS );
+											AppendMenu( h_popup, MF_STRING, ID_TOOLS_HEADER_CONFIG, IDS_HEADCFG );
 										}
 										if ( !(act && act->status == ACT_RUNNING) )
 										{
@@ -451,7 +636,7 @@ _main_dialog_proc(
 											}
 											AppendMenu( h_popup, MF_STRING, ID_VOLUMES_DECRYPT, IDS_DECRYPT );
 										}
-									}								
+									}
 								}
 							} else 
 							{
@@ -462,9 +647,10 @@ _main_dialog_proc(
 										AppendMenu( h_popup, MF_STRING, ID_VOLUMES_MOUNT, IDS_MOUNT );
 									}
 								} else {
-									if ( *mnt->fs == '\0' )
+									if ( *mnt->fs == '\0' || (GetKeyState(VK_CONTROL) & 0x8000))
 									{
 										AppendMenu( h_popup, MF_STRING, ID_VOLUMES_MOUNT, IDS_MOUNT );
+										//AppendMenu( h_popup, MF_STRING, ID_TOOLS_HEADER_CONFIG, IDS_HEADCFG );
 									} else {
 										AppendMenu( h_popup, MF_STRING, ID_VOLUMES_ENCRYPT, IDS_ENCRYPT );
 									}
@@ -503,7 +689,9 @@ _main_dialog_proc(
 							case ID_VOLUMES_UNMOUNT		: _menu_unmount(sel);	break;
 							case ID_VOLUMES_MOUNT		: _menu_mount(sel);		break;
 
-							case ID_VOLUMES_CHANGEPASS	: _menu_change_pass(sel); break;						
+							case ID_VOLUMES_CHANGEPASS	: _menu_change_pass(sel); break;
+
+							case ID_TOOLS_HEADER_CONFIG	: _menu_header_config(sel); break;
 						}
 						if ( item )
 						{
@@ -559,7 +747,19 @@ _main_dialog_proc(
 			}
 			break;
 
-			case ID_TOOLS_DRIVER :
+			case ID_TOOLS_DRIVER_UPDATE :
+			{
+				int rlt;
+				if ( (rlt = _drv_action(DA_UPDATE, 0)) != NO_ERROR )
+				{
+					__error_s( __dlg, L"Error update DiskCryptor driver", -rlt );
+				} else {
+					return 0L;
+				}
+			}
+			break;
+
+			case ID_TOOLS_DRIVER_REMOVE :
 			{
 				if ( __msg_q( __dlg, L"Remove DiskCryptor driver?") )
 				{
@@ -576,15 +776,65 @@ _main_dialog_proc(
 
 			case ID_TOOLS_BENCHMARK : _dlg_benchmark( __dlg ); break;
 			case ID_HELP_ABOUT :      _dlg_about( __dlg ); break;
+
+			case ID_PROTECT_RAW :
+			{
+				/* Toggle CONF_PROTECT_RAW_VOLUMES flag */
+				__config.conf_flags ^= CONF_PROTECT_RAW_VOLUMES;
+				dc_save_config(&__config);
+
+				/* Update menu checkmark */
+				CheckMenuItem( GetMenu( hwnd ), ID_PROTECT_RAW,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_PROTECT_RAW_VOLUMES ? MF_CHECKED : MF_UNCHECKED) );
+			}
+			break;
+
+			case ID_BLOCK_REMOVABLE :
+			{
+				/* Toggle CONF_BLOCK_UNENC_REMOVABLE flag */
+				__config.conf_flags ^= CONF_BLOCK_UNENC_REMOVABLE;
+				dc_save_config(&__config);
+
+				/* Update menu checkmark */
+				CheckMenuItem( GetMenu( hwnd ), ID_BLOCK_REMOVABLE,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_BLOCK_UNENC_REMOVABLE ? MF_CHECKED : MF_UNCHECKED) );
+			}
+			break;
 			
-			case ID_HOMEPAGE : __execute( DC_HOMEPAGE ); break;			
+			case ID_BLOCK_HDD :
+			{
+				/* Toggle CONF_BLOCK_UNENC_HDDS flag */
+				__config.conf_flags ^= CONF_BLOCK_UNENC_HDDS;
+				dc_save_config(&__config);
+
+				/* Update menu checkmark */
+				CheckMenuItem( GetMenu( hwnd ), ID_BLOCK_HDD,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_BLOCK_UNENC_HDDS ? MF_CHECKED : MF_UNCHECKED) );
+			}
+			break;
+
+			case ID_BLOCK_CDROM :
+			{
+				/* Toggle CONF_BLOCK_UNENC_CDROM flag */
+				__config.conf_flags ^= CONF_BLOCK_UNENC_CDROM;
+				dc_save_config(&__config);
+
+				/* Update menu checkmark */
+				CheckMenuItem( GetMenu( hwnd ), ID_BLOCK_CDROM,
+					MF_BYCOMMAND | (__config.conf_flags & CONF_BLOCK_UNENC_CDROM ? MF_CHECKED : MF_UNCHECKED) );
+			}
+			break;
+
+			case ID_HOMEPAGE : __execute( DC_HOMEPAGE ); break;
+			case ID_HELP_DONATE : __execute( L"https://diskcryptor.org/go.php?to=donate" ); break;
+			case ID_HELP_FORUM : __execute( DC_FORUMPAGE ); break;
 			case ID_EXIT :
 			{
 				SendMessage( hwnd, WM_CLOSE, 0, 1 );
 			}
 			break;
 
-			case IDC_BTN_WIZARD : _menu_wizard(node); break;
+			//case IDC_BTN_WIZARD : _menu_wizard(node); break;
 			case ID_VOLUMES_DELETE_MNTPOINT :
 			{
 				wchar_t *mnt_point = node->mnt.info.status.mnt_point;				
@@ -619,9 +869,16 @@ _main_dialog_proc(
 
 			case ID_VOLUMES_CHANGEPASS : _menu_change_pass( node ); break;
 			case ID_TOOLS_CLEARCACHE :   _menu_clear_cache( ); break;
+			case ID_TOOLS_CACHEPASSWORD : _menu_cache_password( ); break;
+
+			case ID_TOOLS_TPM: _dlg_tpm(__dlg); break;
+			//case ID_TOOLS_MOK: _dlg_mok(__dlg); break;
 
 			case ID_VOLUMES_BACKUPHEADER :  _menu_backup_header( node ); break;
 			case ID_VOLUMES_RESTOREHEADER : _menu_restore_header( node ); break;
+
+			case ID_TOOLS_HEADER_CONFIG : _menu_header_config( node ); break;
+			case ID_TOOLS_HEADER_FILE :   _menu_header_file( ); break;
 
 			case ID_TOOLS_ENCRYPT_CD: _menu_encrypt_cd( ); break;
 
@@ -677,10 +934,10 @@ _main_dialog_proc(
 		{
 			switch (wparam) 
 			{
-				case 0 : 
+				case 0 :
 				{
 					int mount_cnt;
-					dc_mount_all(NULL, &mount_cnt, 0); 
+					_wait_dc_mount_all(__dlg, NULL, &mount_cnt, 0, L"Mounting all volumes...");
 				}
 				break;
 

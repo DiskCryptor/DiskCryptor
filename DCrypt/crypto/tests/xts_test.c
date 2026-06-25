@@ -4,7 +4,7 @@
 	#include "xts_small.h"
 #else
 	#include "xts_fast.h"
-	#include "crc32.h"
+	#include "../crc32.h"
 #endif
 
 static const struct { /* see IEEE 1619 */

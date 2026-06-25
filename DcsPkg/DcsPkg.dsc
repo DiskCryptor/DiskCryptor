@@ -51,6 +51,9 @@
   IntrinsicLib|CryptoPkg/Library/IntrinsicLib/IntrinsicLib.inf
   OpensslLib|CryptoPkg/Library/OpensslLib/OpensslLib.inf
   BaseCryptLib|CryptoPkg/Library/BaseCryptLib/BaseCryptLib.inf
+  PeCoffLib|MdePkg/Library/BasePeCoffLib/BasePeCoffLib.inf
+  PeCoffExtraActionLib|MdePkg/Library/BasePeCoffExtraActionLibNull/BasePeCoffExtraActionLibNull.inf
+  SafeIntLib|MdePkg/Library/BaseSafeIntLib/BaseSafeIntLib.inf
 
   Tpm12CommandLib|SecurityPkg/Library/Tpm12CommandLib/Tpm12CommandLib.inf
   Tpm12DeviceLib|SecurityPkg/Library/Tpm12DeviceLibTcg/Tpm12DeviceLibTcg.inf
@@ -72,6 +75,7 @@
   RngLib|MdePkg/Library/BaseRngLib/BaseRngLib.inf
   DcsCfgLib|DcsPkg/Library/DcsCfgLib/DcsCfgLib.inf
   DcsIntLib|DcsPkg/Library/DcsIntLib/DcsIntLib.inf
+  MiscUtilsLib|DcsPkg/MiscUtilsLib/MiscUtilsLib.inf
   DiskCryptorLib|DcsPkg/Library/DiskCryptorLib/DiskCryptorLib.inf
 
 # Architecture-specific overrides
@@ -109,3 +113,4 @@
   DcsPkg/DcsInfo/DcsInfo.inf
   DcsPkg/DcsBml/DcsBml.inf
   DcsPkg/LegacySpeaker/LegacySpeaker.inf
+  DcsPkg/DcsTpm/DcsTpm.inf

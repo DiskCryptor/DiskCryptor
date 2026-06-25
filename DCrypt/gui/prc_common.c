@@ -26,11 +26,86 @@
 #include "prc_common.h"
 
 #include "prc_keyfiles.h"
+
+// Helper to get keyfiles_state from a tab page's parent wizard dialog
+// Tab pages are children of IDC_TAB which is a child of the wizard dialog
+// For nested tabs (boot config), we need to go up 4 levels instead of 2
+static keyfiles_state *_get_wizard_keyfiles(HWND hwnd)
+{
+	HWND h_parent = hwnd;
+
+	// Walk up parent chain looking for wizard dialog with keyfiles_state
+	// Standard wizard tabs: page -> IDC_TAB -> wizard (2 levels)
+	// Boot config nested tabs: page -> IDC_BOOT_TAB -> DLG_BOOT_CONF -> IDC_TAB -> wizard (4 levels)
+	for (int i = 0; i < 5 && h_parent; i++)
+	{
+		h_parent = GetParent(h_parent);
+		if (h_parent && i >= 1)  // Start checking from 2nd parent
+		{
+			void *wiz_data = wnd_get_long(h_parent, GWL_USERDATA);
+			if (wiz_data)
+			{
+				// Verify this looks like wizard data by checking the window class
+				// The wizard dialogs have IDC_TAB as direct child
+				if (GetDlgItem(h_parent, IDC_TAB) != NULL)
+				{
+					return (keyfiles_state *)wiz_data;
+				}
+			}
+		}
+	}
+	return NULL;
+}
 #include "prc_wizard_boot.h"
 #include "dlg_menu.h"
 #include "pass.h"
 #include "threads.h"
 #include "dlg_drives_list.h"
+#include "volume_header.h"
+#include "secure_desktop.h"
+
+
+void update_entropy_tooltip(HWND hwnd, HWND hCtrl, int entropy)
+{
+	static HWND hTooltip = NULL;
+	wchar_t tip_text[64];
+
+	/* Skip tooltip operations on secure desktop - the static hTooltip handle
+	   may point to a window on the default desktop, causing cross-desktop
+	   message deadlocks */
+	if (is_secure_desktop_active())
+		return;
+
+	_snwprintf(tip_text, countof(tip_text), L"Entropy: %d bits", entropy);
+
+	if (!hTooltip || !IsWindow(hTooltip))
+	{
+		TOOLINFO ti = { sizeof(TOOLINFO) };
+
+		hTooltip = CreateWindowEx(0, TOOLTIPS_CLASS, NULL,
+			WS_POPUP | TTS_ALWAYSTIP | TTS_NOPREFIX,
+			CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT,
+			hwnd, NULL, __hinst, NULL);
+
+		if (hTooltip)
+		{
+			ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+			ti.hwnd = hwnd;
+			ti.uId = (UINT_PTR)hCtrl;
+			ti.lpszText = tip_text;
+			SendMessage(hTooltip, TTM_ADDTOOL, 0, (LPARAM)&ti);
+		}
+	}
+	else
+	{
+		TOOLINFO ti = { sizeof(TOOLINFO) };
+		ti.uFlags = TTF_IDISHWND | TTF_SUBCLASS;
+		ti.hwnd = hwnd;
+		ti.uId = (UINT_PTR)hCtrl;
+		ti.lpszText = tip_text;
+		SendMessage(hTooltip, TTM_UPDATETIPTEXT, 0, (LPARAM)&ti);
+	}
+}
 
 INT_PTR
 CALLBACK
@@ -157,7 +232,7 @@ _tab_proc(
 								}
 							}
 
-							if ( wcsstr(tmpb, L"EFI") != NULL )
+							if ( wcsstr(tmpb, L"EFI") != NULL || wcsstr(tmpb, L"ESP") != NULL )
 							{
 								AppendMenu(popup, MF_SEPARATOR, 0, NULL);
 
@@ -166,10 +241,13 @@ _tab_proc(
 								else
 									AppendMenu(popup, MF_STRING, ID_BOOT_ADD_BME, IDS_BOOTADDBME);
 
-								if ( wcsstr(tmpb, L", ms") != NULL )
-									AppendMenu(popup, MF_STRING, ID_BOOT_RESTORE_MS, IDS_BOOTRESTOREMS);
-								else
-									AppendMenu(popup, MF_STRING, ID_BOOT_REPLACE_MS, IDS_BOOTREPLACEMS);
+								if (wcsstr(tmpb, L"ESP") == NULL) 
+								{
+									if (wcsstr(tmpb, L", ms") != NULL)
+										AppendMenu(popup, MF_STRING, ID_BOOT_RESTORE_MS, IDS_BOOTRESTOREMS);
+									else
+										AppendMenu(popup, MF_STRING, ID_BOOT_REPLACE_MS, IDS_BOOTREPLACEMS);
+								}
 							}
 
 							AppendMenu(popup, MF_SEPARATOR, 0, NULL);
@@ -277,11 +355,26 @@ _tab_proc(
 			}
 			if ( ctl_wnd == GetDlgItem(hwnd, IDC_USE_KEYFILES) )
 			{
+				keyfiles_state *kf_state = _get_wizard_keyfiles(hwnd);
+
 				SendMessage(
 					hwnd, WM_COMMAND, MAKELONG(IDE_PASS, EN_CHANGE), (LPARAM)GetDlgItem(hwnd, IDE_PASS)
 					);
 
 				EnableWindow(GetDlgItem(hwnd, IDB_USE_KEYFILES), _get_check(hwnd, IDC_USE_KEYFILES));
+				if (kf_state && _keyfiles_count(kf_state) == 0) {
+					if (IsDlgButtonChecked(hwnd, IDC_RADIO_HDR_V2) == BST_CHECKED)
+						kf_state->mix_mode = KEYFILE_MIX_HASHED;
+					else
+						kf_state->mix_mode = KEYFILE_MIX_LEGACY;
+				}
+				return 1L;
+			}
+			if ( ctl_wnd == GetDlgItem(hwnd, IDC_CHECK_SKIP_UNUSED) )
+			{
+				BOOL skip_enabled = _get_check(hwnd, IDC_CHECK_SKIP_UNUSED);
+				EnableWindow(GetDlgItem(hwnd, IDC_COMBO_PASSES), !skip_enabled);
+				EnableWindow(GetDlgItem(hwnd, IDC_STATIC_PASSES_LIST), !skip_enabled);
 				return 1L;
 			}
 			{
@@ -311,20 +404,30 @@ _tab_proc(
 
 			switch (id)
 			{
-				case IDB_USE_KEYFILES :
+				case IDB_USE_KEYFILES : // encrypt dialog
 				{
-					wchar_t text[MAX_PATH];
-					int     keylist;
+					keyfiles_state *kf_state = _get_wizard_keyfiles(hwnd);
+					if (kf_state)
+					{
+						_dlg_keyfiles( hwnd, kf_state, TRUE );
+					}
 
-					GetWindowText( GetDlgItem(hwnd, IDC_USE_KEYFILES), text, countof(text) );
-					keylist = wcscmp(text, IDS_USE_KEYFILE) == 0 ? KEYLIST_EMBEDDED : KEYLIST_CURRENT;
+					SendMessage( hwnd, WM_COMMAND, MAKELONG(IDE_PASS, EN_CHANGE), (LPARAM)GetDlgItem(hwnd, IDE_PASS) );
 
-					_dlg_keyfiles( hwnd, keylist );
+				}
+				break;
 
-					SendMessage(
-						hwnd, WM_COMMAND, MAKELONG(IDE_PASS, EN_CHANGE), (LPARAM)GetDlgItem(hwnd, IDE_PASS)
-						);
+				case IDB_SECURE_PASS_ENTRY : // secure password entry on wizard password page
+				{
+					// Forward to parent wizard dialog
+					SendMessage( GetParent(GetParent(hwnd)), WM_COMMAND, MAKELONG(IDB_SECURE_PASS_ENTRY, 0), 0 );
+				}
+				break;
 
+				case IDB_GET_CERT : // Get certificate button on Support tab
+				{
+					// Forward to parent options dialog
+					SendMessage( GetParent(GetParent(hwnd)), WM_COMMAND, MAKELONG(IDB_GET_CERT, 0), 0 );
 				}
 				break;
 
@@ -334,9 +437,40 @@ _tab_proc(
 				}
 				break;
 
-				case IDB_BT_CONF_EMB_KEY : 
+				case IDB_BT_CONF_EMB_KEY : // bootloader config dialog
 				{
-					_dlg_keyfiles( hwnd, KEYLIST_EMBEDDED );
+					keyfiles_state *kf_state = _get_wizard_keyfiles(hwnd);
+					if (kf_state)
+					{
+						_dlg_keyfiles( hwnd, kf_state, TRUE );
+					}
+				}
+				break;
+
+				case IDB_EXPORT_EMB_KEY : // export embedded keyfile
+				{
+					keyfiles_state *kf_state = _get_wizard_keyfiles(hwnd);
+					_list_key_files *keyfile = kf_state ? _first_keyfile( kf_state ) : NULL;
+					if ( keyfile && keyfile->is_virtual && keyfile->virtual_size == 64 ) // == SHA512_DIGEST_SIZE
+					{
+						wchar_t s_file[MAX_PATH] = { L"keyfile.key" };
+						if ( _save_file_dialog( hwnd, s_file, countof(s_file), L"Export embedded keyfile" ) )
+						{
+							int rlt = save_file( s_file, keyfile->virtual_data, keyfile->virtual_size );
+							if ( rlt == ST_OK )
+							{
+								__msg_i( hwnd, L"Embedded keyfile exported successfully to:\n%s", s_file );
+							}
+							else
+							{
+								__error_s( hwnd, L"Error exporting keyfile", rlt );
+							}
+						}
+					}
+					else
+					{
+						__msg_w( hwnd, L"No embedded keyfile configured.\n\nUse 'Config embedded keyfile' to set up a 64-byte keyfile first." );
+					}
 				}
 				break;
 
@@ -449,11 +583,11 @@ _tab_proc(
 				case IDC_MBR_BOOT:
 				{
 					int is_efi = _get_check(hwnd, IDC_EFI_BOOT);
-				
+
 					if (is_efi != __is_efi_boot)
 					{
 						wchar_t message[1024];
-						swprintf_s(message, _countof(message), 
+						swprintf_s(message, _countof(message),
 							L"This windows installation is setup for %s boot, it won't be able to boot with a different bootloader type.\n"
 							L"Do you want to select the correct bootloader type?"
 							, __is_efi_boot ? L"EFI" : L"MBR");
@@ -472,6 +606,49 @@ _tab_proc(
 					ShowWindow(GetDlgItem(hwnd, IDC_USE_SHIM_BOOT), is_efi ? SW_SHOW : SW_HIDE);
 				}
 				break;
+
+				case IDC_RADIO_HDR_V1:
+				case IDC_RADIO_HDR_V2:
+				{
+					BOOL is_v2 = IsDlgButtonChecked(hwnd, IDC_RADIO_HDR_V2) == BST_CHECKED;
+					EnableWindow(GetDlgItem(hwnd, IDC_STATIC_HDR_SLOTS), is_v2);
+					EnableWindow(GetDlgItem(hwnd, IDC_EDIT_HDR_SLOTS), is_v2);
+
+					/* Update KDF combo in password dialog only if user hasn't changed it */
+					{
+						HWND h_tab = GetParent(hwnd);
+						HWND h_child = GetWindow(h_tab, GW_CHILD);
+						while (h_child) {
+							HWND h_kdf = GetDlgItem(h_child, IDC_COMBO_KDF);
+							if (h_kdf) {
+								int cur_kdf = _get_combo_val(h_kdf, kdf_names);
+								/* Only change if KDF is at its default value for the other header type */
+								if ((is_v2 && cur_kdf == 0) || (!is_v2 && cur_kdf == KDF_ARGON_DEFAULT)) {
+									SendMessage(h_kdf, CB_RESETCONTENT, 0, 0);
+									_init_combo(h_kdf, kdf_names, is_v2 ? KDF_ARGON_DEFAULT : 0, FALSE, -1);
+								}
+								break;
+							}
+							h_child = GetWindow(h_child, GW_HWNDNEXT);
+						}
+					}
+
+					if (!(__config.load_flags & DST_PRO_ENABLED)) {
+						is_v2 = FALSE;
+					}
+
+					EnableWindow(GetDlgItem(hwnd, IDC_COMBO_HDR_SIZE), is_v2);
+					EnableWindow(GetDlgItem(hwnd, IDC_CHECK_BAK_HEADER), is_v2);
+					if (!is_v2) {
+						/* Select default header size (2 KiB) in combo box */
+						SendMessage(GetDlgItem(hwnd, IDC_COMBO_HDR_SIZE), CB_SETCURSEL, 0, 0);
+					} else {
+						/* Trigger recalculation of header size */
+						SendMessage(hwnd, WM_COMMAND, MAKELONG(IDC_EDIT_HDR_SLOTS, EN_CHANGE),
+							(LPARAM)GetDlgItem(hwnd, IDC_EDIT_HDR_SLOTS));
+					}
+				}
+				break;
 			}
 
 			switch (code) 
@@ -483,14 +660,16 @@ _tab_proc(
 						case IDC_COMBO_AUTH_TYPE :
 						{
 							BOOL b_pass   = _get_combo_val( (HWND)lparam, auth_type ) & LDR_LT_GET_PASS;
-							BOOL b_keyfie = _get_combo_val( (HWND)lparam, auth_type ) & LDR_LT_EMBED_KEY;
+							//BOOL b_keyfie = _get_combo_val( (HWND)lparam, auth_type ) & LDR_LT_EMBED_KEY;
 
 							_enb_but_this( hwnd, IDC_COMBO_AUTH_TYPE, b_pass );
 
 							EnableWindow( GetDlgItem(hwnd, IDC_STATIC_AUTH_TYPE), TRUE );
 							EnableWindow( GetDlgItem(hwnd, IDC_CNT_BOOTMSG), FALSE );
 
-							EnableWindow( GetDlgItem(hwnd, IDB_BT_CONF_EMB_PASS), b_keyfie );
+							//EnableWindow( GetDlgItem(hwnd, IDB_BT_CONF_EMB_KEY), b_keyfie );
+							EnableWindow( GetDlgItem(hwnd, IDB_BT_CONF_EMB_KEY), TRUE );
+							EnableWindow( GetDlgItem(hwnd, IDB_EXPORT_EMB_KEY), TRUE );
 
 							if ( b_pass )
 							{
@@ -567,10 +746,20 @@ _tab_proc(
 
 							EnableWindow( GetDlgItem(hwnd, IDC_USE_SMALL_BOOT), !ext_loader );
 							EnableWindow( GetDlgItem(hwnd, IDB_BOOT_PREF), ext_loader );
+
+							/* Enable/disable EFI checkboxes based on selection */
+							EnableWindow( GetDlgItem(hwnd, IDC_CHECK_CREATE_ESP), !ext_loader );
+							EnableWindow( GetDlgItem(hwnd, IDC_CHECK_CREATE_BME), !ext_loader );
 						}
 						break;
 
 						case IDC_COMBO_KBLAYOUT :
+						{
+							SendMessage( hwnd, WM_COMMAND, MAKELONG(IDE_PASS, EN_CHANGE), lparam );
+						}
+						break;
+
+						case IDC_COMBO_KDF :
 						{
 							SendMessage( hwnd, WM_COMMAND, MAKELONG(IDE_PASS, EN_CHANGE), lparam );
 						}
@@ -683,6 +872,47 @@ _tab_proc(
 						}
 						break;
 
+						case IDC_EDIT_HDR_SLOTS :
+						{
+							if (IsDlgButtonChecked(hwnd, IDC_RADIO_HDR_V2) == BST_CHECKED && (__config.load_flags & DST_PRO_ENABLED)) {
+								int slot_count = GetDlgItemInt(hwnd, IDC_EDIT_HDR_SLOTS, NULL, FALSE);
+								u32 head_len;
+								int i;
+
+								if (slot_count < 1) slot_count = 1;
+								if (slot_count > KEY_SLOT_MAX) slot_count = KEY_SLOT_MAX;
+
+								head_len = DC_BASE_SIZE + slot_count * (PKCS_DERIVE_MAX + sizeof(dc_slot_info));
+								if (head_len < DC_AREA_SIZE)
+									head_len = DC_AREA_SIZE;
+								else {
+									unsigned long index;
+									if (_BitScanReverse(&index, head_len - 1))
+										head_len = 1ul << (index + 1);
+								}
+
+								/* Find and select the matching size in combo box, but only if larger than current */
+								{
+									HWND h_combo = GetDlgItem(hwnd, IDC_COMBO_HDR_SIZE);
+									int count = (int)SendMessage(h_combo, CB_GETCOUNT, 0, 0);
+									int cur_sel = (int)SendMessage(h_combo, CB_GETCURSEL, 0, 0);
+									u32 cur_val = (cur_sel >= 0) ? (u32)SendMessage(h_combo, CB_GETITEMDATA, cur_sel, 0) : 0;
+
+									/* Only change selection if current size is too small */
+									if (cur_val < head_len) {
+										for (i = 0; i < count; i++) {
+											u32 val = (u32)SendMessage(h_combo, CB_GETITEMDATA, i, 0);
+											if (val >= head_len) {
+												SendMessage(h_combo, CB_SETCURSEL, i, 0);
+												break;
+											}
+										}
+									}
+								}
+							}
+						}
+						break;
+
 						case IDE_PASS :
 						case IDE_CONFIRM :
 						{
@@ -691,37 +921,47 @@ _tab_proc(
 							int kb_layout = -1;
 							int idx_status;
 							int entropy;
+							int header_kdf;
 
 							dc_pass *pass;
+							HWND hProgress;
 
-							if (IsWindowEnabled(GetDlgItem(hwnd, IDC_COMBO_KBLAYOUT))) 
+							if (IsWindowEnabled(GetDlgItem(hwnd, IDC_COMBO_KBLAYOUT)))
 							{
 								kb_layout = _get_combo_val(GetDlgItem(hwnd, IDC_COMBO_KBLAYOUT), kb_layouts);
-							}			
+							}
+							header_kdf = _get_combo_val(GetDlgItem(hwnd, IDC_COMBO_KDF), kdf_names);
 							pass = _get_pass(hwnd, IDE_PASS);
 
-							_draw_pass_rating(hwnd, pass, kb_layout, &entropy);
+							_draw_pass_rating(hwnd, pass, kb_layout, header_kdf, &entropy);
 							secure_free(pass);
 
-							SendMessage(
-									GetDlgItem(hwnd, IDP_BREAKABLE),
-									PBM_SETPOS,
-									(WPARAM)entropy, 0
-								);						
+							hProgress = GetDlgItem(hwnd, IDP_BREAKABLE);
+							SendMessage(hProgress, PBM_SETPOS, (WPARAM)entropy, 0);
+							update_entropy_tooltip(hwnd, hProgress, entropy);
 
 							if ( IsWindowVisible(GetDlgItem(hwnd, IDE_PASS)) )
 							{
 								dc_pass *pass   = _get_pass(hwnd, IDE_PASS);
-								dc_pass *verify = _get_pass(hwnd, IDE_CONFIRM);
-	
-								int keylist = _get_check( hwnd, IDC_USE_KEYFILES ) ? KEYLIST_CURRENT : KEYLIST_NONE;
+								dc_pass *verify = NULL;
+								BOOL confirm_visible = IsWindowVisible(GetDlgItem(hwnd, IDE_CONFIRM));
 
-								correct = _input_verify( pass, verify, keylist, kb_layout, &idx_status );
-						
+								/* Only get confirm password if the field is visible */
+								if (confirm_visible)
+									verify = _get_pass(hwnd, IDE_CONFIRM);
+
+								keyfiles_state *kf_state = _get_check( hwnd, IDC_USE_KEYFILES ) ? _get_wizard_keyfiles(hwnd) : NULL;
+
+								correct = _input_verify( pass, verify, kf_state, kb_layout, &idx_status );
+
 								secure_free( pass );
-								secure_free( verify );
+								if (verify)
+									secure_free( verify );
 
-								SetWindowText( GetDlgItem(hwnd, IDC_PASS_STATUS), _get_text_name(idx_status, pass_status) );
+								/* Only update status if visible */
+								if (IsWindowVisible(GetDlgItem(hwnd, IDC_PASS_STATUS)))
+									SetWindowText( GetDlgItem(hwnd, IDC_PASS_STATUS), _get_text_name(idx_status, pass_status) );
+
 								EnableWindow( GetDlgItem(GetParent(GetParent(hwnd)), IDOK), correct );
 							}
 							return 1L;	
@@ -736,12 +976,17 @@ _tab_proc(
 
 		case WM_CTLCOLOREDIT :
 		case WM_CTLCOLORSTATIC :
-		case WM_CTLCOLORLISTBOX : 
+		case WM_CTLCOLORLISTBOX :
 		{
 			COLORREF bgcolor, fn = 0;
-		
+
 			dc = (HDC)wparam;
-			SetBkMode(dc, TRANSPARENT);
+
+			/* Multiline edit controls need OPAQUE mode to properly redraw */
+			if ((message == WM_CTLCOLOREDIT) && (GetWindowLong((HWND)lparam, GWL_STYLE) & ES_MULTILINE))
+				SetBkMode(dc, OPAQUE);
+			else
+				SetBkMode(dc, TRANSPARENT);
 
 			if ( WM_CTLCOLORSTATIC == message )
 			{
@@ -752,7 +997,8 @@ _tab_proc(
 					{
 						fn = pass_gr_ctls[k].color;
 					}
-					if ( pass_pe_ctls[k].hwnd == (HWND)lparam )
+					// pass_pe_ctls has fewer entries, check terminator
+					if ( pass_pe_ctls[k].id != -1 && pass_pe_ctls[k].hwnd == (HWND)lparam )
 					{
 						fn = pass_pe_ctls[k].color;
 					}

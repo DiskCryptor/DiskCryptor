@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
 	* Copyright (c) 2007-2010
 	* ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -24,6 +26,9 @@
 #include "stat.h"
 
 #include "threads.h"
+
+#include "dc_header.h"
+#include "prc_header.h"
 
 void _get_time_period(
 		__int64  begin,
@@ -291,6 +296,7 @@ void _update_info_table(
 	BOOL		 idt_inf_enb = FALSE;
 	BOOL		 idt_act_enb = FALSE;
 	BOOL		 crypt_info;
+	wchar_t      buff[96], buff2[32];
 
 	int k = 0;
 
@@ -322,21 +328,60 @@ void _update_info_table(
 				__lists[HMAIN_INFO], 3, 1, !crypt_info ? STR_EMPTY : _get_text_name( node->mnt.info.status.crypt.cipher_id, cipher_names )
 				);
 	
-			_list_set_item_text( __lists[HMAIN_INFO], 4, 1, !crypt_info ? STR_EMPTY : IDS_MODE_NAME );
-			_list_set_item_text( __lists[HMAIN_INFO], 5, 1, !crypt_info ? STR_EMPTY : IDS_PRF_NAME );
+			if ( crypt_info )
+			{
+				//wchar_t *kdf_name = _get_text_name(node->mnt.info.status.crypt.head_kdf, kdf_names);
+				//_list_set_item_text( __lists[HMAIN_INFO], 4, 1, kdf_name ? kdf_name : STR_EMPTY); 
+				if (node->mnt.info.status.crypt.head_kdf > 0) {
+					u32 memory_cost, time_cost;
+					argon2_mk_params_um(node->mnt.info.status.crypt.head_kdf, &memory_cost, &time_cost, NULL);
+					_snwprintf(buff, countof(buff), L"Argon2id v1.3 [%dMiB, t=%d]", memory_cost / 1024, time_cost);
+					_list_set_item_text( __lists[HMAIN_INFO], 4, 1, buff );
+				} else {
+					_list_set_item_text( __lists[HMAIN_INFO], 4, 1, IDS_PRF_NAME );
+				}
+
+				if (node->mnt.info.status.crypt.version == DC_HDR_VERSION_2) {
+					_format_hdr_size(node->mnt.info.status.crypt.head_len, buff2, countof(buff2), TRUE);
+					wcscpy(buff, L"v2 (");
+					wcscat_s(buff, countof(buff), buff2);
+					if (node->mnt.info.status.flags & F_HEAD_BACKUP) {
+						wcscat_s(buff, countof(buff), L", backedup");
+					}
+					wcscat_s(buff, countof(buff), L")");
+				}
+				else {
+					wcscpy(buff, L"v1");
+				}
+
+				wcscat_s(buff, countof(buff), L" [");
+				if (node->mnt.info.status.flags & F_PROTECT_DCSYS) {
+					wcscat_s(buff, countof(buff), L"storage: file");
+				} else if (!(node->mnt.info.status.flags & F_CDROM)){
+					wcscat_s(buff, countof(buff), L"storage: part. end");
+				}
+				wcscat_s(buff, countof(buff), L"]");
+
+				_list_set_item_text( __lists[HMAIN_INFO], 5, 1, buff );
+			}
+			else
+			{
+				_list_set_item_text( __lists[HMAIN_INFO], 4, 1, STR_EMPTY );
+				_list_set_item_text( __lists[HMAIN_INFO], 5, 1, STR_EMPTY );
+			}
 
 			idt_inf_enb = TRUE;
 
 			if ( act )
 			{
 				EnableWindow(GetDlgItem(
-					wnd->dlg[1], IDC_STATIC_PASSES_LIST), ACT_DECRYPT != act->act
+					wnd->dlg[1], IDC_STATIC_PASSES_LIST), ACT_DECRYPT != act->act && !is_ssd && act->wp_mode != WP_SKIP_UNUSED
 					);
 				EnableWindow(GetDlgItem(
 					wnd->dlg[1], IDC_STATIC_SECTOR), ACT_RUNNING == act->status
 					);
 				EnableWindow(GetDlgItem(
-					wnd->dlg[1], IDC_COMBO_PASSES), ACT_DECRYPT != act->act && !is_ssd
+					wnd->dlg[1], IDC_COMBO_PASSES), ACT_DECRYPT != act->act && !is_ssd && act->wp_mode != WP_SKIP_UNUSED
 					);
 				EnableWindow(GetDlgItem(
 					wnd->dlg[1], IDB_ACT_PAUSE), ACT_RUNNING == act->status

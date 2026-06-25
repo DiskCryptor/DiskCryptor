@@ -24,5 +24,7 @@ DWORD dc_api dc_install_driver();
 DWORD dc_api dc_remove_driver();
 DWORD dc_api dc_update_driver();
 
+int dc_api install_dc_offline(const wchar_t* windows_path);
+int dc_api remove_dc_offline(const wchar_t* windows_path);
 
 #endif

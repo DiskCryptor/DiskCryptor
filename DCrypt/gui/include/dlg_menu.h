@@ -49,19 +49,27 @@ void _menu_change_pass(
 	);
 
 void _menu_clear_cache( );
+void _menu_cache_password( );
+
 void _menu_about( );
 
 void _menu_backup_header( 
 		_dnode *node 
 	);
 
-void _menu_restore_header( 
-		_dnode *node 
+void _menu_restore_header(
+		_dnode *node
 	);
 
-void _menu_wizard( 
-		_dnode *node 
+void _menu_header_config(
+		_dnode *node
 	);
+
+void _menu_header_file( );
+
+//void _menu_wizard( 
+//		_dnode *node 
+//	);
 
 int _menu_set_loader_mbr(
 		HWND     hwnd,

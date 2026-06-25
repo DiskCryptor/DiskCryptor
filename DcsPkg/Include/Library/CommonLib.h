@@ -3,6 +3,7 @@ EFI common library (helpers)
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI 
+Copyright (c) 2019-2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials are licensed and made available
 under the terms and conditions of the GNU Lesser General Public License, version 3.0 (LGPL-3.0).
@@ -28,13 +29,14 @@ https://opensource.org/licenses/LGPL-3.0
 // Custom error codes
 //////////////////////////////////////////////////////////////////////////
 
-#define EFI_DCS_SHUTDOWN_REQUESTED	ENCODE_ERROR(0xDC50001)
-#define EFI_DCS_REBOOT_REQUESTED	ENCODE_ERROR(0xDC50002)
-#define EFI_DCS_HALT_REQUESTED		ENCODE_ERROR(0xDC50003)
-#define EFI_DCS_USER_CANCELED		ENCODE_ERROR(0xDC50004)
-#define EFI_DCS_POSTEXEC_REQUESTED	ENCODE_ERROR(0xDC50005)
-#define EFI_DCS_USER_TIMEOUT		ENCODE_ERROR(0xDC50006)
-#define EFI_DCS_DATA_NOT_FOUND		ENCODE_ERROR(0xDC50007)
+#define EFI_DCS_SHUTDOWN_REQUESTED	ENCODE_ERROR(0x0DC5001)
+#define EFI_DCS_REBOOT_REQUESTED    ENCODE_ERROR(0x0DC5002)
+#define EFI_DCS_HALT_REQUESTED	    ENCODE_ERROR(0x0DC5003)
+#define EFI_DCS_USER_CANCELED       ENCODE_ERROR(0x0DC5004)
+#define EFI_DCS_POSTEXEC_REQUESTED  ENCODE_WARNING(0x0DC5005)
+#define EFI_DCS_USER_TIMEOUT        ENCODE_ERROR(0x0DC5006)
+#define EFI_DCS_DATA_NOT_FOUND      ENCODE_ERROR(0x0DC5007)
+#define EFI_DCS_INPUT_REQUIRED      ENCODE_WARNING(0x0DC5008)
 
 //////////////////////////////////////////////////////////////////////////
 // Check error 
@@ -354,11 +356,17 @@ TouchGetIO(
 
 #define OUT_PRINT(format, ...) AttrPrintEx(-1,-1, format, ##__VA_ARGS__)
 #define ERR_PRINT(format, ...) AttrPrintEx(-1,-1, L"%E" format L"%N" , ##__VA_ARGS__)
+#define RED_PRINT(format, ...) AttrPrintEx(-1,-1, L"%O" format L"%N" , ##__VA_ARGS__)
 
 VOID
 PrintBytes(
 	IN UINT8* Data,
 	IN UINTN Size);
+
+VOID
+DumpHex(
+	IN VOID*  Data,
+	IN INTN   Size);
 
 EFI_STATUS
 ConsoleGetOutput(
@@ -389,7 +397,7 @@ ConsoleShowTip(
 	IN CHAR16* tip,
 	IN UINTN   delay);
 
-VOID
+BOOLEAN
 GetLine(
    UINTN    *length,
    CHAR16   *line,
@@ -798,6 +806,76 @@ FileCopy(
 	);
 
 //////////////////////////////////////////////////////////////////////////
+// File Picker
+//////////////////////////////////////////////////////////////////////////
+
+/**
+ * Volume specification for custom volume lists
+ */
+typedef struct {
+    EFI_HANDLE  Handle;       // Volume handle (must have SimpleFileSystem)
+    CHAR16      *DisplayName; // Custom display name (NULL = auto-generate)
+} FILE_PICKER_VOLUME;
+
+/**
+ * File picker configuration
+ */
+typedef struct {
+    FILE_PICKER_VOLUME  *Volumes;      // Array of volumes (NULL = auto-discover from gFSHandles)
+    UINTN               VolumeCount;   // Number of volumes (0 if auto-discover)
+    CONST CHAR16        **Extensions;  // NULL-terminated array of extensions (e.g., {L".efi", NULL})
+                                       // NULL = show all files
+    CHAR16              *Title;        // Custom title (NULL = default)
+} FILE_PICKER_CONFIG;
+
+/**
+ * Initialize file picker configuration with defaults
+ */
+VOID
+FilePickerInitConfig(
+    OUT FILE_PICKER_CONFIG  *Config
+);
+
+/**
+ * Display file picker UI with full configuration
+ *
+ * @param[in]  Config          Configuration for the picker (NULL = use defaults)
+ * @param[out] SelectedHandle  Receives the handle of the volume containing the selected file
+ * @param[out] SelectedPath    Receives the allocated path string (caller must MEM_FREE)
+ *
+ * @retval EFI_SUCCESS              File was selected successfully
+ * @retval EFI_DCS_USER_CANCELED    User pressed ESC to cancel
+ * @retval EFI_NOT_FOUND            No accessible volumes found
+ * @retval EFI_OUT_OF_RESOURCES     Memory allocation failed
+ * @retval EFI_INVALID_PARAMETER    Output pointers are NULL
+ */
+EFI_STATUS
+EFIAPI
+FilePickerShow(
+    IN  CONST FILE_PICKER_CONFIG  *Config   OPTIONAL,
+    OUT EFI_HANDLE                *SelectedHandle,
+    OUT CHAR16                    **SelectedPath
+);
+
+/**
+ * Simplified file picker for common use cases
+ *
+ * @param[in]  Extensions       NULL-terminated array of extensions (e.g., {L".efi", NULL})
+ *                              Pass NULL to show all files
+ * @param[in]  Title            Title string for the picker UI (NULL for default)
+ * @param[out] SelectedHandle   Receives the volume handle
+ * @param[out] SelectedPath     Receives the allocated path (caller must MEM_FREE)
+ */
+EFI_STATUS
+EFIAPI
+FilePickerSelectFile(
+    IN  CONST CHAR16  **Extensions    OPTIONAL,
+    IN  CONST CHAR16  *Title          OPTIONAL,
+    OUT EFI_HANDLE    *SelectedHandle,
+    OUT CHAR16        **SelectedPath
+);
+
+//////////////////////////////////////////////////////////////////////////
 // Exec
 //////////////////////////////////////////////////////////////////////////
 
@@ -815,48 +893,5 @@ ConnectAllEfi(
 VOID
 EfiCpuHalt();
 
-//////////////////////////////////////////////////////////////////////////
-// PXE
-//////////////////////////////////////////////////////////////////////////
-
-extern BOOLEAN gPxeBoot;
-//extern struct _EFI_PXE_BASE_CODE_PROTOCOL* gPxeProtocol;
-extern BOOLEAN gPxeUseIPv6;
-extern EFI_IP_ADDRESS gPxeServerIp;
-
-EFI_STATUS
-PxeDownloadFile(
-	IN  CHAR16*  FilePath,
-	OUT VOID**   Buffer,
-	OUT UINTN*   BufferSize
-	);
-
-EFI_STATUS
-PxeUploadFile(
-	IN CHAR16*  FilePath,
-	IN VOID*    Buffer,
-	IN UINTN    BufferSize
-	);
-
-EFI_STATUS
-PxeFileExist(
-	IN CHAR16* FilePath
-	);
-
-EFI_STATUS
-PxeExec(
-	IN CHAR16* path
-	);
-
-EFI_STATUS
-PxeFileCopy(
-	IN CHAR16* src,
-	IN EFI_FILE* dstroot,
-	IN CHAR16* dst,
-	IN UINTN bufSz
-	);
-
-EFI_STATUS
-InitPxe2();
 
 #endif

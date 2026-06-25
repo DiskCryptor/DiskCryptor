@@ -19,10 +19,14 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/DevicePathLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/PrintLib.h>
+#include "../DcsTpm/DcsTpmProto.h"
+#ifndef NO_BML
 #include <Protocol/DcsBmlProto.h>
+#endif
 #include <DcsConfig.h>
 #include <Guid/Gpt.h>
 #include <Guid/GlobalVariable.h>
+#include "../MiscUtilsLib/MiscUtilsLib.h"
 
 EFI_GUID          ImagePartGuid;
 EFI_GUID          *gEfiExecPartGuid = &ImagePartGuid;
@@ -30,7 +34,7 @@ CHAR16            *gEfiExecCmdDefault = L"\\EFI\\Microsoft\\Boot\\Bootmgfw_ms.vc
 CHAR16            *gEfiExecCmdMS = L"\\EFI\\Microsoft\\Boot\\Bootmgfw.efi";
 CHAR16            *gEfiExecCmd = NULL;
 CHAR8             gDoExecCmdMsg[256];
-CONST CHAR8* 	  g_szMsBootString = "bootmgfw.pdb";
+CONST CHAR8*      g_szMsBootString = "bootmgfw.pdb";
 
 //////////////////////////////////////////////////////////////////////////
 // EFI boot
@@ -45,11 +49,11 @@ DoExecCmd()
 		res = FileOpenRoot(gFileRootHandle, &gFileRoot);
 		if (!EFI_ERROR(res)) {
 #ifndef NO_BML
-      UINT32 lockFlags = 0;
-      // Lock EFI boot variables
-      InitBml();
-      lockFlags = ConfigReadInt("DcsBmlLockFlags", BML_LOCK_SETVARIABLE | BML_SET_BOOTNEXT | BML_UPDATE_BOOTORDER);
-      BmlLock(lockFlags);
+			UINT32 lockFlags = 0;
+			// Lock EFI boot variables
+			InitBml();
+			lockFlags = ConfigReadInt("DcsBmlLockFlags", BML_LOCK_SETVARIABLE | BML_SET_BOOTNEXT | BML_UPDATE_BOOTORDER);
+			BmlLock(lockFlags);
 #endif
 			res = EfiExec(NULL, gEfiExecCmd);
 			if (EFI_ERROR(res))
@@ -95,6 +99,57 @@ ExecMSWindowsLoader()
 		ERR_PRINT(L"Could not find the original Windows loader\r\n");
 
 		return EFI_NOT_READY;
+	}
+}
+
+//////////////////////////////////////////////////////////////////////////
+// Boot Menu - Boot from File (using CommonLib File Picker)
+//////////////////////////////////////////////////////////////////////////
+
+/**
+ * Main boot menu entry point - uses generalized file picker from CommonLib
+ */
+STATIC EFI_STATUS
+BootMenuShow(
+	VOID
+)
+{
+	EFI_STATUS      res;
+	EFI_HANDLE      volumeHandle;
+	CHAR16          *selectedPath = NULL;
+	CONST CHAR16    *efiExtensions[] = { L".efi", NULL };
+
+	for (;;) {
+		res = FilePickerSelectFile(efiExtensions, L"Select Boot File", &volumeHandle, &selectedPath);
+		if (EFI_ERROR(res)) {
+			if (res == EFI_DCS_USER_CANCELED) {
+				gST->ConOut->ClearScreen(gST->ConOut);
+				return EFI_ABORTED;
+			}
+			if (res == EFI_NOT_FOUND) {
+				ERR_PRINT(L"No bootable volumes found\n");
+				KeyWait(L"Press any key to continue...", 5, 0, 0);
+			}
+			return res;
+		}
+
+		// Execute selected .efi file
+		gST->ConOut->ClearScreen(gST->ConOut);
+		OUT_PRINT(L"Booting %s...\n", selectedPath);
+		gBS->Stall(1000000);
+
+		res = EfiExec(volumeHandle, selectedPath);
+
+		MEM_FREE(selectedPath);
+		selectedPath = NULL;
+
+		if (EFI_ERROR(res)) {
+			ERR_PRINT(L"Failed to boot: %r\n", res);
+			KeyWait(L"Press any key to continue...", 5, 0, 0);
+			// Loop back to allow another selection
+		} else {
+			return EFI_SUCCESS;
+		}
 	}
 }
 
@@ -182,7 +237,7 @@ DcsBootMain(
 	}
 	InitConfig(CONFIG_FILE_PATH); // Initialize Config
 
-	if (gConfigDebug) {
+	if (gConfigDebug && !IsPxeBoot()) {
 		OUT_PRINT(L"Root Device: ");
 		EfiPrintDevicePath(gFileRootHandle);
 		OUT_PRINT(L"\n");
@@ -192,7 +247,7 @@ DcsBootMain(
 	// BML installed?
 	if (EFI_ERROR(InitBml())) { // if not
 		// Install the Boot Menu Lock
-		if (gPxeBoot) {
+		if (IsPxeBoot()) {
 			PxeExec(sDcsBmlEfi);
 		} else {
 			EfiExec(NULL, sDcsBmlEfi);
@@ -203,7 +258,7 @@ DcsBootMain(
 #endif
 
 	// Dump platform info
-	if (ConfigReadInt("CollectPlatformInfo", 0) && !gPxeBoot &&
+	if (ConfigReadInt("CollectPlatformInfo", 0) && !IsPxeBoot() &&
 		EFI_ERROR(FileExist(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\PlatformInfo")) &&
 		!EFI_ERROR(FileExist(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\DcsInfo.dcs"))) {
 		OUT_PRINT(L"Collecting Platform information...\n");
@@ -216,14 +271,14 @@ DcsBootMain(
 	}
 
 	// Load all drivers
-	if (gPxeBoot) {
+	if (IsPxeBoot()) {
 		PxeExec(L"\\EFI\\" DCS_DIRECTORY L"\\LegacySpeaker.dcs"); // driver for ordinary speaker (beep)
 	} else {
 		EfiExec(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\LegacySpeaker.dcs"); // driver for ordinary speaker (beep)
 	}
 
 	// Get boot partition GUID - not valid for PXE or ISO boot
-	if (!gPxeBoot) {
+	if (!IsPxeBoot()) {
 		res = EfiGetPartGUID(gFileRootHandle, &ImagePartGuid);
 		if (EFI_ERROR(res)) {
 			// No partition GUID found (e.g., booting from ISO with FAT image only)
@@ -235,81 +290,93 @@ DcsBootMain(
 
 	// set default boot partition and file
 	EfiSetVar(L"DcsExecPartGuid", NULL, &ImagePartGuid, sizeof(EFI_GUID), EFI_VARIABLE_BOOTSERVICE_ACCESS);
-	EfiSetVar(L"DcsExecCmd", NULL, gEfiExecCmdDefault, (StrLen(gEfiExecCmdDefault) + 1) * 2, EFI_VARIABLE_BOOTSERVICE_ACCESS);
-
+	if (!EFI_ERROR(FileExist(NULL, gEfiExecCmdDefault))) {
+		EfiSetVar(L"DcsExecCmd", NULL, gEfiExecCmdDefault, (StrLen(gEfiExecCmdDefault) + 1) * 2, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+	} else {
+		EfiSetVar(L"DcsExecCmd", NULL, gEfiExecCmdMS, (StrLen(gEfiExecCmdMS) + 1) * 2, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+	}
+	
 	// Authorize
 	gBS->SetWatchdogTimer(0, 0, 0, NULL);
-	if (gPxeBoot) {
+	if (IsPxeBoot()) {
 		res = PxeExec(L"\\EFI\\" DCS_DIRECTORY L"\\DcsInt.dcs");
 	} else {
 		res = EfiExec(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\DcsInt.dcs");
 	}
 
-	if (EFI_ERROR(res) && (res != EFI_DCS_POSTEXEC_REQUESTED)) {
-
-      // Clear DcsExecPartGuid before execute OS to avoid problem in VirtualBox with reboot.
-      EfiSetVar(L"DcsExecPartGuid", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
-      EfiSetVar(L"DcsExecCmd", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
-      // ERR_PRINT(L"\nDcsInt.efi %r\n",res);
-	  if (res == EFI_DCS_SHUTDOWN_REQUESTED)
-	  {
-		res = EFI_SUCCESS;
-		gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
-	  }
-	  else if (res == EFI_DCS_REBOOT_REQUESTED)
-	  {
-		res = EFI_SUCCESS;
-		gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, NULL);
-	  }
-	  else if (res == EFI_DCS_HALT_REQUESTED)
-	  {
-		  KeyWait(L"Halting Cpu in %02d s\r", 10, 0, 0);
-		  EfiCpuHalt();
-	  }
-	  else if (res == EFI_DCS_USER_CANCELED)
-	  {
-		  /* If user cancels password prompt, call original Windows loader */
-		  res = ExecMSWindowsLoader();
-	  }
-      return res;
+	if (gConfigDebug) {
+		ERR_PRINT(L"\nDcsInt.efi %r\n",res);
+		gBS->Stall(100000);
 	}
 
-	res = EfiGetVar(L"DcsExecPartGuid", NULL, &gEfiExecPartGuid, &len, &attr);
-	if (EFI_ERROR(res)) {
+	// Get user boot partition and file
+	if (EFI_ERROR(EfiGetVar(L"DcsExecPartGuid", NULL, &gEfiExecPartGuid, &len, &attr))) {
 		gEfiExecPartGuid = &ImagePartGuid;
 	}
-	
-	pEfiExecPartBackup = gEfiExecPartGuid;
+	if (EFI_ERROR(EfiGetVar(L"DcsExecCmd", NULL, &gEfiExecCmd, &len, &attr))) {
+		gEfiExecCmd = NULL;
+	}
+	// Clear DcsExecPartGuid before execute OS to avoid problem in VirtualBox with reboot.
+	EfiSetVar(L"DcsExecPartGuid", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+	EfiSetVar(L"DcsExecCmd", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
 
-	res = EfiGetVar(L"DcsExecCmd", NULL, &gEfiExecCmd, &len, &attr);
 	if (EFI_ERROR(res)) {
-		gEfiExecCmd = gEfiExecCmdDefault;
+
+		if (res == EFI_DCS_SHUTDOWN_REQUESTED)
+		{
+			res = EFI_SUCCESS;
+			gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
+		}
+		else if (res == EFI_DCS_REBOOT_REQUESTED)
+		{
+			res = EFI_SUCCESS;
+			gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, NULL);
+		}
+		else if (res == EFI_DCS_HALT_REQUESTED)
+		{
+			KeyWait(L"Halting Cpu in %02d s\r", 10, 0, 0);
+			EfiCpuHalt();
+		}
+		else if (res == EFI_DCS_USER_CANCELED)
+		{
+			/* If user cancels password prompt, call original Windows loader */
+			res = ExecMSWindowsLoader();
+		}
+		return res;
 	}
 
-	searchOnESP = CompareGuid(gEfiExecPartGuid, &ImagePartGuid) &&
-		EFI_ERROR(FileExist(NULL, gEfiExecCmd));
-		
-	searchMsOnESP = CompareGuid(gEfiExecPartGuid, &ImagePartGuid) &&
-		EFI_ERROR(FileExist(NULL, gEfiExecCmdMS));
-		
+	// Find new start partition
+	ConnectAllEfi(); // this applies the installed IO hook
+	InitBio();
+	InitFS();
+
+	if (res == EFI_DCS_INPUT_REQUIRED) {
+		res = BootMenuShow();
+		if(EFI_ERROR(res))
+			return EFI_ABORTED;
+		return EFI_SUCCESS;
+	}
+
+	if (!gEfiExecCmd) {
+		if (!EFI_ERROR(FileExist(NULL, gEfiExecCmdDefault))) {
+			gEfiExecCmd = gEfiExecCmdDefault;
+		} else {
+			gEfiExecCmd = gEfiExecCmdMS;
+		}
+	}
+
 	if (gConfigDebug) {
 		OUT_PRINT(L"DcsExecPartGuid %g\n", gEfiExecPartGuid);
 		OUT_PRINT(L"DcsExecCmd %s\n", gEfiExecCmd);
-	}
-
-    // Clear DcsExecPartGuid before execute OS to avoid problem in VirtualBox with reboot.
-    EfiSetVar(L"DcsExecPartGuid", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
-    EfiSetVar(L"DcsExecCmd", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
-
-	// Find new start partition
-    ConnectAllEfi(); // this applies the installed IO hook
-	InitBio();
-	res = InitFS();
-
-	if (gConfigDebug) {
+	
 		KeyWait(L"Attempting to boot Windows in %02d s\r", 30, 0, 0);
 		OUT_PRINT(L"\n");
 	}
+
+	pEfiExecPartBackup = gEfiExecPartGuid;
+
+	searchOnESP = CompareGuid(gEfiExecPartGuid, &ImagePartGuid) && EFI_ERROR(FileExist(NULL, gEfiExecCmd));
+	searchMsOnESP = CompareGuid(gEfiExecPartGuid, &ImagePartGuid) && EFI_ERROR(FileExist(NULL, gEfiExecCmdMS));
 
 	while (1)
 	{
@@ -355,8 +422,9 @@ DcsBootMain(
 		else
 			break;
 	}
+
 	ERR_PRINT(L"%a\nStatus -  %r", gDoExecCmdMsg, res);
 	KeyWait(L"Halting Cpu in %02d s\r", 10, 0, 0);
 	EfiCpuHalt();
-    return EFI_INVALID_PARAMETER;
+	return EFI_INVALID_PARAMETER;
 }

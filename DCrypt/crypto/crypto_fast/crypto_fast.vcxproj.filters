@@ -24,7 +24,7 @@
     <ClCompile Include="aes_key.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="crc32.c">
+    <ClCompile Include="..\crc32.c">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="serpent.c">
@@ -62,7 +62,7 @@
     <ClInclude Include="aes_padlock.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="crc32.h">
+    <ClInclude Include="..\crc32.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="serpent.h">

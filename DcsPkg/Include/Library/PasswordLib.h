@@ -3,7 +3,7 @@ Password library
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI 
-Copyright (c) 2019. DiskCryptor, David Xanatos
+Copyright (c) 2019-2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials are licensed and made available 
 under the terms and conditions of the GNU Lesser General Public License, version 3.0 (LGPL-3.0).
@@ -41,7 +41,7 @@ extern UINTN	gPictPwdBmpSize;
 
 extern int		gPlatformLocked;
 extern int		gTPMLocked;
-extern int      gTPMLockedInfoDelay;
+extern int		gTPMLockedInfoDelay;
 extern int		gSCLocked;
 
 enum AskPwdType {
@@ -51,13 +51,15 @@ enum AskPwdType {
 };
 
 enum AskPwdRetCode {
+	AskPwdRetStatus = -2,  // Update status line
+	AskPwdRetNone   = -1,  // No action, continue
 	AskPwdRetCancel = 0,
 	AskPwdRetLogin  = 1,
 	AskPwdRetChange = 2,
 	AskPwdForcePass = 3,
-	AskPwdRetSetParams = 4,
-	AskPwdRetHelp   = 5,
-	AskPwdRetTimeout
+	AskPwdRetTimeout= 4,
+	AskPwdRetShow   = 5,
+	AskPwdRetCodeMax
 };
 
 VOID
@@ -72,12 +74,41 @@ AskPictPwdInt(
 
 VOID
 AskConsolePwdInt(
+	IN  CONST char* msg,
 	OUT UINT32   *length,
 	OUT VOID     *asciiLine,
 	OUT INT32    *retCode,
 	IN  UINTN    length_max,
 	IN  UINT8    show,
 	IN  BOOLEAN  wide
+	);
+
+VOID
+AskConsolePwdEx(
+  IN  CONST char* msg,
+  OUT UINT32   *length,
+  OUT VOID     *asciiLine,
+  OUT INT32    *retCode,
+  IN  UINTN    length_max,
+  IN  UINT8    show,
+  IN  BOOLEAN  wide,
+  IN  INT32 (*FuncHandler)(IN EFI_INPUT_KEY key, IN VOID *Param),
+  IN  VOID (*GetStatus)(IN CHAR16* statusStr, IN UINTN statusStrLen, IN VOID *Param),
+  IN  VOID *Param
+  );
+
+VOID
+AskTouchPwdEx(
+	IN  CONST char* msg,
+	OUT UINT32*  pwdLen,
+	OUT VOID*    pwd,
+	OUT INT32*   retCode,
+	IN  UINTN    pwdMax,
+	IN  UINT8    show,
+	IN  BOOLEAN  wide,
+	IN  INT32 (*KeyFilter)(IN EFI_INPUT_KEY key, IN VOID *Param),
+	IN  VOID (*GetStatus)(IN CHAR16* statusStr, IN UINTN statusStrLen, IN VOID *Param),
+	IN  VOID *Param
 	);
 
 extern EFI_GUID*                     gSmbSystemUUID;        // Universal unique ID 
@@ -96,12 +127,6 @@ extern CHAR8*                        gSmbBiosDate;             // BIOS date
 
 EFI_STATUS
 SMBIOSGetSerials();
-
-EFI_STATUS
-PlatformGetIDCRC(
-	IN  EFI_HANDLE  handle,
-	OUT UINT32      *crc32
-	);
 
 EFI_STATUS
 PlatformGetID(

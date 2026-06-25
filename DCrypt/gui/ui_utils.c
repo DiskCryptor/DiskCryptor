@@ -23,6 +23,7 @@
 
 #include "main.h"
 #include "ui_utils.h"
+#include "efiinst.h"
 
 #include "hotkeys.h"
 
@@ -762,8 +763,8 @@ BOOL _is_icon_show(
 }
 
 
-BOOL _is_boot_device( 
-		vol_inf *vol 
+BOOL _is_boot_device(
+		vol_inf *vol
 	)
 {
 	wchar_t boot_dev[MAX_PATH];

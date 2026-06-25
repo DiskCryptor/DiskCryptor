@@ -274,7 +274,6 @@
 #define IDC_PART_LIST_BY_ID             1152
 #define IDC_COMBO_AUTH_TYPE             1152
 #define IDC_BT_ENTER_PASS_MSG           1154
-#define IDB_BT_CONF_EMB_PASS            1156
 #define IDB_BT_CONF_EMB_KEY             1156
 #define IDE_RICH_BOOTMSG                1157
 #define IDC_COMBO_AUTH_TMOUT            1158
@@ -349,6 +348,17 @@
 #define IDC_CNT_GOODMSG                 1224
 #define IDC_CNT_AUTOMSG                 1225
 #define IDC_BT_USE_OSK                  1226
+#define IDC_COMBO_KDF                   1227
+#define IDC_COMBO_KDF_CURRENT           1228
+#define IDC_COMBO_KDF_NEW               1236
+#define IDC_KDF_LABEL                   1229
+#define IDC_KDF_LABEL_CURRENT           1230
+#define IDC_CHECK_SKIP_UNUSED           1231
+#define IDC_USE_KEY_SLOTS               1232
+#define IDE_KEY_SLOT_INDEX              1233
+#define IDC_CLEAR_KEY_SLOTS             1234
+#define IDC_CHECK_USE_BACKUP            1235
+#define IDC_BT_BLOCK_UNENCRYPTED        1237
 #define ID_FILE_EXIT                    40001
 #define ID_VOLUMES_ENCRYPT              40002
 #define ID_VOLUMES_DECRYPT              40003
@@ -378,7 +388,7 @@
 #define ID_VOLUMES_UNMOUNTALL           40027
 #define ID_HELP_ABOUT                   40028
 #define ID_VOLUMES_CHANGEPASS           40029
-#define ID_TOOLS_CLEARCACHEDPASSWORDS   40030
+#define ID_TOOLS_CACHEPASSWORD          40030
 #define ID_TOOLS_CLEARCACHE             40031
 #define ID_TOOLS_SETTINGS               40032
 #define ID_TOOLS_BOOTOPTIONS            40033
@@ -428,14 +438,180 @@
 #define ID_BOOT_DEL_BME					40079
 #define ID_BOOT_REPLACE_MS				40080
 #define ID_BOOT_RESTORE_MS				40081
+#define ID_PROTECT_RAW					40082
+#define ID_TOOLS_DRIVER_REMOVE			40083
+#define ID_TOOLS_DRIVER_UPDATE			40084
+#define ID_TOOLS_HEADER_CONFIG			40085
+#define ID_TOOLS_HEADER_FILE			40086
+#define ID_TOOLS_TPM					40087
+#define ID_BLOCK_REMOVABLE				40088
+#define ID_BLOCK_HDD					40089
+#define ID_BLOCK_CDROM					40090
+#define ID_HELP_DONATE					40091
+#define ID_HELP_FORUM					40092
+#define ID_TOOLS_MOK 					40093
+
+// Wizard Keys Dialog (Header Configuration)
+#define IDD_DIALOG_HEADER                 178
+#define DLG_KEYS_SLOTS                  179
+#define DLG_HEADER_PROPS                180
+#define DLG_KEYS_SLOT_EDIT              181
+
+// Key Slots Tab
+#define IDC_KEYS_SLOT_LIST              1240
+#define IDC_BTN_SET_SLOT_PASS           1241
+#define IDC_BTN_TEST_SLOT_PASS          1248
+#define IDC_BTN_EDIT_SLOT               1242
+#define IDC_BTN_TOGGLE_SLOT             1247
+#define IDC_BTN_CLEAR_SLOT              1243
+#define IDC_BTN_SET_BOOT_PASS           1246
+
+// Slot Editor View
+#define IDC_EDIT_SLOT_NAME              1244
+#define IDC_HEAD_SLOT_EDIT              1245
+
+// Properties Tab
+#define IDC_EDIT_DISK_ID                1250
+//#define IDC_EDIT_VOLUME_GUID            1251
+//#define IDC_BTN_GEN_GUID                1252
+#define IDC_RADIO_V1                    1253
+#define IDC_RADIO_V2                    1254
+#define IDC_EDIT_SLOT_COUNT             1255
+#define IDC_CHECK_EXT_HEADER            1256
+#define IDT_KEYS_TAB                    1257
+#define IDC_KEYS_TAB                    1258
+#define IDC_BTN_APPLY                   1259
+#define IDC_HEAD_VERSION                1260
+#define IDC_HEAD_PROPS                  1261
+#define IDC_STATIC_DISK_ID              1262
+//#define IDC_STATIC_VOLUME_GUID          1263
+#define IDC_STATIC_SLOT_COUNT           1264
+#define IDC_STATIC_HEADER_SIZE          1265
+#define IDC_STATIC_VOLUME_NOTE          1267
+#define IDC_EDIT_VOLUME_NOTE            1268
+#define IDC_HEAD_HDR_OPTIONS            1269
+#define IDC_RADIO_HDR_V1                1270
+#define IDC_RADIO_HDR_V2                1271
+#define IDC_STATIC_HDR_SLOTS            1272
+#define IDC_EDIT_HDR_SLOTS              1273
+#define IDC_STATIC_HDR_SIZE             1274
+#define IDC_COMBO_HDR_SIZE              1275
+#define IDC_STATIC_HDR_LABEL            1276
+#define IDC_EDIT_HDR_LABEL              1277
+#define IDC_CHECK_BAK_HEADER            1278
+#define IDC_STATIC_STORAGE_SIZE         1283
+#define IDC_EDIT_STORAGE_SIZE           1284
+
+// Layout Change Controls (Properties Tab)
+#define IDC_COMBO_HDR_SIZE_PROPS        1285
+#define IDC_CHECK_HDR_BACKUP            1286
+#define IDC_RADIO_STORAGE_FILE          1287
+#define IDC_RADIO_STORAGE_END           1288
+#define IDC_BTN_CHANGE_LAYOUT           1289
+
+// Keyfiles Dialog
+#define IDC_COMBO_KEYFILE_MIX           1290
+#define IDC_STATIC_KEYFILE_MIX          1291
+#define IDB_ADD_VIRTUAL                 1292
+#define IDB_ADD_HARDWARE                1293
+#define IDR_MENU_ADD_HARDWARE           192
+//#define IDD_DIALOG_VIRTUAL_KEYFILE      183
+//#define IDE_VIRTUAL_KEYFILE_TEXT        1293
+//#define IDE_VIRTUAL_KEYFILE_NAME        1294
+
+// Benchmark Dialog
+#define IDC_LIST_BENCHMARK_KDF          1280
+#define IDC_STATIC_CIPHER_BENCH         1281
+#define IDC_STATIC_KDF_BENCH            1282
+#define IDB_CANCEL_TEST                 1283
+#define WM_BENCHMARK_RESULT             (WM_USER + 100)
+
+// Status Bar
+#define IDC_STATUSBAR                   1295
+
+// Tag Selection Dialog
+#define DLG_SELECT_TAG                  182
+#define IDC_COMBO_SELECT_TAG            1296
+#define IDC_COMBO_SELECT_KDF            1297
+
+// Cache Tag in Password Dialog
+#define IDC_STATIC_CACHE_TAG            1298
+#define IDE_CACHE_TAG                   1299
+
+// Export embedded keyfile button
+#define IDB_EXPORT_EMB_KEY              1300
+
+// TPM Secret Loading (Add Virtual split button)
+#define IDB_ADD_TPM_SECRET              1303
+#define IDM_TPM_ADD_VIRTUAL             1304
+#define IDM_TPM_NV_BACKUP               1305
+#define IDM_TPM_SRK_BACKUP              1306
+#define IDM_TPM_FILE_BACKUP             1307
+#define IDR_MENU_ADD_VIRTUAL            185
+
+// TPM Configuration Dialog
+#define IDD_DIALOG_TPM                  186
+#define IDT_TPM_TAB                     1310
+#define IDC_TPM_TAB                     1311
+#define IDC_TPM_ENTRY_LIST              1312
+#define IDB_TPM_ADD_ENTRY               1313
+#define IDB_TPM_REMOVE_ENTRY            1314
+#define IDB_TPM_LOAD_TO_CACHE           1322
+#define IDC_TPM_VERSION                 1315
+#define IDC_TPM_VENDOR                  1316
+#define IDC_TPM_LOCKOUT                 1317
+#define IDR_MENU_TPM_ADD                187
+#define IDM_TPM_ADD_PRIMARY_NV          40089
+#define IDM_TPM_ADD_RECOVERY_NV         40090
+#define IDM_TPM_ADD_RECOVERY_FILE       40091
+#define IDM_TPM_ADD_BACKUP_FILE         40092
+
+// TPM Dialog child dialogs
+#define DLG_TPM_ENTRIES                 188
+#define DLG_TPM_INFO                    189
+#define DLG_TPM_PCRS                    190
+#define IDC_TPM_PCR_LIST                1318
+#define DLG_TPM_NV                      191
+#define IDC_TPM_NV_LIST                 1319
+
+// EFI Boot wizard checkboxes
+#define IDC_CHECK_CREATE_ESP            1320
+#define IDC_CHECK_CREATE_BME            1321
+
+// Security options
+#define IDC_SECURE_DESKTOP              1323
+#define IDB_SECURE_PASS_ENTRY           1324
+
+// Summary page controls
+#define IDC_SUMMARY_HEAD                1325
+#define IDC_SUMMARY_CIPHER              1326
+#define IDC_SUMMARY_KDF                 1327
+#define IDC_SUMMARY_WIPE                1328
+#define IDC_SUMMARY_HEADER              1329
+#define IDC_SUMMARY_NOTICE              1330
+
+// Support Tab Dialog
+#define DLG_CONF_SUPPORT                177
+
+// Support Tab Controls
+#define IDC_HEAD_SUPPORT                1410
+#define IDE_SERIAL_KEY                  1411
+#define IDB_GET_CERT                    1412
+#define IDE_CERTIFICATE                 1413
+#define IDC_CERT_INFO                   1414
+
+// Wait dialog for cancellable KDF operations
+#define IDD_DIALOG_WAIT                 1500
+#define IDC_WAIT_TEXT                   1501
+#define IDC_WAIT_CANCEL                 1502
 
 // Next default values for new objects
-// 
+//
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        177
-#define _APS_NEXT_COMMAND_VALUE         40079
-#define _APS_NEXT_CONTROL_VALUE         1219
+#define _APS_NEXT_RESOURCE_VALUE        186
+#define _APS_NEXT_COMMAND_VALUE         40087
+#define _APS_NEXT_CONTROL_VALUE         1308
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

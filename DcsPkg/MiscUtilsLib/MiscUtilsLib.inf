@@ -1,0 +1,63 @@
+## @file
+#  MiscUtilsLib - Miscellaneous utility functions for DiskCryptor UEFI
+#
+#  This library provides utility functions including:
+#  - Base64 decoding
+#  - Case-insensitive string comparison
+#  - SMBIOS UUID retrieval
+#  - Console input/output helpers
+#  - Memory management macros
+#  - EFI variable helpers
+#  - PXE boot support (TFTP download/upload)
+#
+#  SPDX-License-Identifier: MIT
+#
+#  Copyright (c) 2024-2026 David Xanatos
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = MiscUtilsLib
+  FILE_GUID                      = 7A3E9D1C-5F42-4B8A-9C6E-2D1F8A7B3C5E
+  MODULE_TYPE                    = UEFI_DRIVER
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = MiscUtilsLib
+
+[Sources]
+  MiscUtilsLib.c
+  MiscUtilsLib.h
+  Base64.c
+  EfiPxe.c
+  verify.h
+  verify.c
+  ec_dsa.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  DcsPkg/DcsPkg.dec
+  CryptoPkg/CryptoPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  UefiLib
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  DevicePathLib
+  DebugLib
+  PrintLib
+  BaseCryptLib
+
+[Guids]
+  gEfiSmbiosTableGuid            ## CONSUMES
+  gEfiSmbios3TableGuid           ## CONSUMES
+  gEfiFileInfoGuid               ## CONSUMES
+  gEfiGlobalVariableGuid         ## CONSUMES
+
+[Protocols]
+  gEfiBlockIoProtocolGuid
+  gEfiPxeBaseCodeProtocolGuid    ## SOMETIMES_CONSUMES
+  gEfiLoadedImageProtocolGuid    ## CONSUMES
+  gEfiSimpleFileSystemProtocolGuid ## SOMETIMES_CONSUMES

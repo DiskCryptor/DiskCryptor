@@ -19,6 +19,7 @@
   MODULE_TYPE                    = DXE_RUNTIME_DRIVER
   VERSION_STRING                 = 1.0
   ENTRY_POINT                    = DcsBmlMain
+  UNLOAD_IMAGE                   = DcsBmlUnload
 
 #
 # The following information is for reference only and not required by the build tools.

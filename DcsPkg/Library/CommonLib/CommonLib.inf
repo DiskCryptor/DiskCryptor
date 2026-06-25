@@ -31,11 +31,11 @@
   EfiVar.c
   EfiFile.c
   EfiConsole.c
+  EfiFilePicker.c
   KbMapper.c
   EfiAttrPrint.c
   EfiBeep.c
   EfiExec.c
-  EfiPxe.c
   EfiUsb.c
   EfiTouch.c
   EfiBluetooth.c
@@ -72,9 +72,12 @@
   gEfiAbsolutePointerProtocolGuid
   gEfiGraphicsOutputProtocolGuid
   gEfiSimpleTextOutProtocolGuid
+  gEfiSimpleTextInProtocolGuid
   gEfiBluetoothIoProtocolGuid
   gEfiBluetoothHcProtocolGuid
   gEfiBluetoothConfigProtocolGuid
   gEfiTcgProtocolGuid
   gEfiTcg2ProtocolGuid
   gEfiPxeBaseCodeProtocolGuid
+  gEfiDcsTpmProtocolGuid
+  gEfiDcsLdrProtocolGuid

@@ -39,7 +39,7 @@
     <ClCompile Include="sha512_pkcs5_2_small.c">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="crc32.c">
+    <ClCompile Include="..\crc32.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -68,7 +68,7 @@
     <ClInclude Include="sha512_pkcs5_2_small.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="crc32.h">
+    <ClInclude Include="..\crc32.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

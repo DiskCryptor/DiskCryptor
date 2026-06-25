@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
     * Copyright (c) 2010-2013
     * ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -146,7 +148,6 @@ NTSTATUS dc_fill_device_info(dev_hook *hook)
 	hook->dsk_size  = dev_length;
 	hook->bps       = dg.BytesPerSector;
 	hook->max_chunk = dc_get_device_mtl(hook);
-	hook->head_len  = max(sizeof(dc_header), hook->bps);
 
 	if ( (hook->flags & (F_REMOVABLE | F_CDROM | F_SSD)) == 0 ) {
 		if ( dc_is_this_ssd(hook) ) hook->flags |= F_SSD;

@@ -1,6 +1,6 @@
 /*  *
     * DiskCryptor - open source partition encryption tool
-	* Copyright (c) 2020
+	* Copyright (c) 2020-2026
 	* DavidXanatos <info@diskcryptor.org>
 	* Copyright (c) 2009-2013
 	* ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
@@ -59,7 +59,7 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
 		if (dc_is_driver_installed() != FALSE)
 		{
 			if (is_efi_boot) {
-				status = dc_update_efi_boot(-1);
+				status = dc_update_efi_boot(-1, -1);
 			}
 			else {
 				status = dc_update_boot(-1);
@@ -92,7 +92,7 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
 	if (_tcsicmp(lpCmdLine, _T("-unldr")) == 0)
 	{
 		if (is_efi_boot) {
-			status = dc_unset_efi_boot(-1);
+			status = dc_unset_efi_boot(-1, -1);
 		}
 		else {
 			status = dc_unset_mbr(-1);
@@ -139,7 +139,7 @@ int APIENTRY _tWinMain(HINSTANCE hInstance,
 
 		update_w10_reflect_driver();
 
-		dc_update_efi_boot(-1); // Note: this will fail and do nothing if the bootloader is not installed on the default EFI partition
+		dc_update_efi_boot(-1, -1); // Note: this will fail and do nothing if the bootloader is not installed on the default EFI partition
 	}
 
 	//LocalFree(argv);

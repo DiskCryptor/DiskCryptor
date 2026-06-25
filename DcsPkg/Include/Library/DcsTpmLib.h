@@ -113,15 +113,8 @@ typedef EFI_STATUS(*DCS_TPM_LOCK)(
 	IN  DCS_TPM_PROTOCOL   *tpm
 	);
 
-typedef VOID (*DCS_APPLY_KEY_FILE)(
-	IN OUT VOID*     password,
-	IN     CHAR8*    keyfileData,
-	IN     UINTN     keyfileDataSize
-	);
-
 typedef EFI_STATUS(*DCS_TPM_APPLY)(
 	IN  DCS_TPM_PROTOCOL   *tpm,
-	IN  DCS_APPLY_KEY_FILE applyKeyFile,
 	OUT VOID*              pwd
 	);
 

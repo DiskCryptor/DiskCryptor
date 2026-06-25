@@ -29,6 +29,7 @@
 #include "misc.h"
 #include "mbrinst.h"
 #include "efiinst.h"
+#include "gpt_sup.h"
 #include "drv_ioctl.h"
 #include "drvinst.h"
 #include "rand.h"
@@ -37,12 +38,38 @@
 #include "bootloader.h"
 #include "console.h"
 #include "w10.h"
+#include "benchmark.h"
+#include "dc_header.h"
+#include "cert_utils.h"
+#include <shlwapi.h>
+
+#pragma comment(lib, "shlwapi.lib")
 
 typedef struct _bench_item {
 	wchar_t *alg;
 	double   speed;
 
 } bench_item;
+
+/* Global abort flag for cancelling KDF operations */
+static volatile LONG g_abort_operation = 0;
+
+static BOOL WINAPI console_ctrl_handler(DWORD ctrl_type)
+{
+	switch (ctrl_type) {
+		case CTRL_C_EVENT:
+		case CTRL_BREAK_EVENT:
+			wprintf(L"\nCancelling operation...\n");
+			InterlockedExchange(&g_abort_operation, 1);
+			return TRUE;
+		case CTRL_CLOSE_EVENT:
+		case CTRL_LOGOFF_EVENT:
+		case CTRL_SHUTDOWN_EVENT:
+			InterlockedExchange(&g_abort_operation, 1);
+			return FALSE;
+	}
+	return FALSE;
+}
 
        vol_inf   volumes[MAX_VOLUMES];
        u32       vol_cnt;
@@ -63,7 +90,8 @@ static void print_usage(int subject)
 		L" -enum                           Enum all volume devices in system\n"
 		L" -info [dev]                     Display information about device\n"
 		L" -version                        Display DiskCryptor version\n"
-		L" -benchmark                      Encryption benchmark\n"
+		L" -benchmark [-um]                Encryption benchmark (-um for user-mode)\n"
+		L" -benchmark_kdf [-um]            KDF benchmark (-um for user-mode)\n"
 		L" -config                         Change program configuration\n"
 		L" -keygen [file]                  Make 64 bytes random keyfile\n"
 		L" -bsod                           Erase all keys in memory and generate BSOD\n"
@@ -78,9 +106,11 @@ static void print_usage(int subject)
 		L" -mount [dev] [param]            Mount encrypted device\n"
 		L"    -mp [mount point]            Add volume mount point\n"
 		L"    -p  [password]               Get password from command line\n"
+		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
 		L" -mountall [param]               Mount all encrypted devices\n"
 		L"    -p  [password]               Get password from command line\n"
+		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
 		L" -unmount [dev] [param]          Unmount encrypted device\n"
 		L"    -f                           Force unmount and close all opened files\n"
@@ -90,6 +120,7 @@ static void print_usage(int subject)
 		L"\n"
 		L" -encrypt [dev] [param]          Encrypt volume device\n"
 		L"    -p  [password]               Get password from command line\n"
+		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
 		L"             ======  Cipher settings:   ======\n"
 		L"    -a                           AES cipher\n"
@@ -103,9 +134,11 @@ static void print_usage(int subject)
 		L"    -dod_e                       US DoD 5220.22-M (8-306./E)          (3 passes)\n"
 		L"    -dod                         US DoD 5220.22-M (8-306./E, C and E) (7 passes)\n"
 		L"    -g                           Gutmann mode                         (35 passes)\n"
+		L"    -skip                        Skip unused sectors (experimental)\n"
 		L" -encrypt2                       Start prepared system volume encryption\n"
 		L" -decrypt [dev] [param]          Decrypt volume device\n"
 		L"    -p  [password]               Get password from command line\n"
+		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
 		L" -reencrypt [dev] [param]        Re-encrypt device with new parameters,\n"
 		L"                                 parameters are equal to -encrypt\n"
@@ -125,14 +158,18 @@ static void print_usage(int subject)
 		L"\n"
 		L" -chpass [dev] [param]           Change volume password\n"
 		L"    -op  [password]              Get old password from command line\n"
+		L"    -okdf [key derivation]       Old KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -np  [password]              Get new password from command line\n"
+		L"    -nkdf [key derivation]       New KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -okf [keyfiles path]         Old keyfiles\n"
 		L"    -nkf [keyfiles path]         New keyfiles\n"
 		L" -backup [dev] [file] [param]    Backup volume header to file\n"
 		L"    -p  [password]               Get password from command line\n"
+		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
 		L" -restore [dev] [file] [param]   Restore volume header from file\n"
 		L"    -p  [password]               Get password from command line\n"
+		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
 		L"________________________________________________________________________________\n"
 		L"\n");
@@ -141,6 +178,14 @@ static void print_usage(int subject)
 		L" -boot [action]                  Bootloader installation and configuration\n"
 		L" -efi [action]                   UEFI variables and Secure Boot management\n"
 		L" -mok [action]                   Shim MOK management (enroll, list, delete)\n"
+		L"\n"
+		L"Support certificate management:\n"
+		L" -support [action]               Support certificate management\n"
+		L"    -get_key [serial]            Download certificate using serial key\n"
+		L"                                 (format: DC20X-XXXXX-XXXXX-XXXXX-XXXXX)\n"
+		L"    -apply_cert                  Apply certificate.dat to registry\n"
+		L"    -show                        Show current certificate\n"
+		L"    -hwid                        Display hardware UUID\n"
 		L"\n"
 		L"________________________________________________________________________________\n"
 		L"\n");
@@ -163,13 +208,20 @@ static void print_usage(int subject)
 		L"		-noshim                    Don't add shim loader for secure boot, even when needed\n"
 		L"		-bme                       Add boot menu entry\n"
 		L"		-nobme                     Don't add boot menu entry\n"
+		L"		-esp                       Create dedicated DCS ESP partition (allows encrypting Windows ESP)\n"
+		L"		-noesp                     Use Windows ESP (default, cannot encrypt it)\n"
 		L"    -updefi  [hdd]               Update DCS bootloader on HDD EFI partition\n"
-		L"    -delefi  [hdd]               Delete DCS bootloader from HDD EFI partition\n"
+		L"    -delefi  [hdd] [opt]         Delete DCS bootloader from HDD EFI partition\n"
+		L"		-esp                       Also delete DCS ESP partition\n"
 		L"    -getinfo [hdd]               Print collected PlatformInfo file to console\n"
 		L"    -addbme  [hdd]               Add DCS entry to EFI boot menu\n"
 		L"    -rembme                      Remove DCS entry from EFI boot menu\n"
 		L"    -replacems [hdd]             Replace Windows Boot Manager with DCS loader\n"
 		L"    -restorems [hdd]             Restore Windows Boot Manager file (bootmgfw.efi)\n"
+		L"    -removems                    Remove Windows Boot Manager EFI boot entry\n"
+		L"    -mountesp [letter]           Mount dedicated DCS ESP to drive letter\n"
+		L"                                    to dismount use mountvol.exe [letter] /D\n"
+		//L"    -umountesp [letter]          Unmount dedicated DCS ESP from drive letter\n"
 		L"    -makerec [root par] [opt]    Setup EFI recovery DCS to bootable partition\n"
 		L"    -mkefiiso [file] [opt]       Make EFI bootloader image (.iso)\n"
 		L"    -mkefipxe [dir] [opt]        Make EFI bootloader image for PXE network booting\n"
@@ -187,6 +239,8 @@ static void print_usage(int subject)
 		L"       -guid [guid]              Variable GUID (default: global EFI GUID)\n"
 		L"       -file [path]              Load value from file\n"
 		L"       -data [string]            Set value from command line\n"
+		L"    -del [name] [opt]            Delete EFI variable\n"
+		L"       -guid [guid]              Variable GUID (default: global EFI GUID)\n"
 		L"  Secure Boot signature database tools:\n"
 		L"    -sb_info                     Show SecureBoot status and whether DCS EFI loader is properly signed\n"
 		L"    -dump -file [path]           List certificates (CN) and hashes from signature DB\n"
@@ -446,8 +500,10 @@ bgn_loop:;
 		case WP_DOD_E: wp_str = L"US DoD 5220.22-M (8-306. / E) (3 passes)"; break;
 		case WP_DOD: wp_str = L"US DoD 5220.22-M (8-306. / E, C and E) (7 passes)"; break;
 		case WP_GUTMANN: wp_str = L"Gutmann (35 passes)"; break;
+		case WP_SKIP_UNUSED: wp_str = L"Skip unused sectors"; break;
+		default: wp_str = L"None"; break;
 	}
-	
+
 	wprintf(
 		L"Encrypting progress...\n"
 		L"Old data wipe mode: %s\n\n"
@@ -525,8 +581,10 @@ bgn_loop:;
 		case WP_DOD_E: wp_str = L"US DoD 5220.22-M (8-306. / E) (3 passes)"; break;
 		case WP_DOD: wp_str = L"US DoD 5220.22-M (8-306. / E, C and E) (7 passes)"; break;
 		case WP_GUTMANN: wp_str = L"Gutmann (35 passes)"; break;
+		case WP_SKIP_UNUSED: wp_str = L"Skip unused sectors"; break;
+		default: wp_str = L"None"; break;
 	}
-	
+
 	wprintf(
 		L"Formatting progress...\n"
 		L"Old data wipe mode: %s\n\n"
@@ -672,40 +730,76 @@ int dc_set_boot_interactive(int d_num, int small_boot)
 	return resl;
 }
 
-int dc_set_efi_boot_interactive(int d_num, int add_bme, int shim)
+int dc_set_efi_boot_interactive(int d_num, int add_bme, int shim, int esp)
 {
 	int        resl;
 	int        replace_ms = 0;
 	int		   sb_no_pass;
+	int        esp_part = -1;
+	wchar_t    esp_path[MAX_PATH];
 
 	sb_no_pass = (dc_efi_is_secureboot() && !dc_efi_dcs_is_signed());
 	if (shim == -1) shim = sb_no_pass;
 
-	if (add_bme == -1) {
-		wprintf(L"Do you want to add a DCS loader boot menu entry (recommended). Y/N?\n");
-		add_bme = (tolower(_getch()) == 'y');
+	/* Ask about dedicated DCS ESP partition */
+	if (esp == -1) {
+		wprintf(L"Do you want to create a dedicated DCS ESP partition? (allows encrypting Windows ESP) Y/N?\n");
+		esp = (tolower(_getch()) == 'y');
 	}
 
-	if (add_bme == 1 && dc_efi_is_msft_on_disk(d_num))
-	{
-		wprintf(L"Note: Some EFI implementations are not adhering to the standard and always start the windows bootloader.\n");
+	if (esp == 1) {
+		/* Use dedicated DCS ESP partition */
+		wprintf(L"Setting up dedicated DCS ESP partition...\n");
 
-		if (sb_no_pass) {
-			wprintf(L"Secure Boot is enabled, hence the workaround for this issue cannot be applied.\n");
+		resl = dc_get_or_create_dcs_esp(&d_num, esp_path, &esp_part);
+		if (resl != ST_OK) {
+			wprintf(L"Failed to create DCS ESP partition\n");
+			return resl;
 		}
-		else 
+
+		wprintf(L"Using DCS ESP partition %d\n", esp_part);
+
+		/* For dedicated ESP, no need to ask about replacing MS bootloader */
+		if (add_bme == -1) {
+			wprintf(L"Do you want to add a DCS loader boot menu entry (recommended). Y/N?\n");
+			add_bme = (tolower(_getch()) == 'y');
+		}
+
+		wprintf(L"Installing EFI Disk Cryptography Services (DCS) bootloader...\n");
+
+		resl = dc_set_efi_boot(d_num, esp_part, 0, shim);
+
+		if (resl == ST_OK && add_bme == 1) {
+			resl = dc_efi_set_bme(L"DiskCrypto (DCS) loader", d_num);
+		}
+	} else {
+		/* Standard installation to Windows ESP */
+		if (add_bme == -1) {
+			wprintf(L"Do you want to add a DCS loader boot menu entry (recommended). Y/N?\n");
+			add_bme = (tolower(_getch()) == 'y');
+		}
+
+		if (add_bme == 1 && dc_efi_is_msft_on_disk(d_num))
 		{
-			wprintf(L"Do you want to replace the windows bootloader file (BOOTMGFW.EFI) with a redirection to the DCS loader as a workaround? Y/N?\n");
-			replace_ms = (tolower(_getch()) == 'y');
+			wprintf(L"Note: Some EFI implementations are not adhering to the standard and always start the windows bootloader.\n");
+
+			if (sb_no_pass) {
+				wprintf(L"Secure Boot is enabled, hence the workaround for this issue cannot be applied.\n");
+			}
+			else
+			{
+				wprintf(L"Do you want to replace the windows bootloader file (BOOTMGFW.EFI) with a redirection to the DCS loader as a workaround? Y/N?\n");
+				replace_ms = (tolower(_getch()) == 'y');
+			}
 		}
-	}
 
-	wprintf(L"Installing EFI Disk Cryptography Services (DCS) bootloader...\n");
+		wprintf(L"Installing EFI Disk Cryptography Services (DCS) bootloader...\n");
 
-	resl = dc_set_efi_boot(d_num, replace_ms, shim);
+		resl = dc_set_efi_boot(d_num, -1, replace_ms, shim);
 
-	if (resl == ST_OK && add_bme == 1) {
-		resl = dc_efi_set_bme(L"DiskCrypto (DCS) loader", d_num);
+		if (resl == ST_OK && add_bme == 1) {
+			resl = dc_efi_set_bme(L"DiskCrypto (DCS) loader", d_num);
+		}
 	}
 
 	if (shim) {
@@ -721,7 +815,7 @@ int dc_set_efi_boot_interactive(int d_num, int add_bme, int shim)
 
 static 
 dc_pass* dc_load_pass_and_keyfiles(
-		   wchar_t *p_param, wchar_t *kf_param, wchar_t *gp_msg, int confirm
+		   wchar_t *p_param, wchar_t *kdf_param, wchar_t *kf_param, wchar_t *gp_msg, int confirm
 		   )
 {
 	dc_pass *pass;
@@ -734,8 +828,10 @@ dc_pass* dc_load_pass_and_keyfiles(
 		clean_cmd_line();
 		return NULL;
 	}
+	pass->kdf = 0;
 
 	if (p_param == NULL)  p_param = L"-p";
+	if (kdf_param == NULL)  kdf_param = L"-kdf";
 	if (kf_param == NULL) kf_param = L"-kf";
 	if (gp_msg == NULL)   gp_msg = L"Enter password: ";
 	
@@ -752,6 +848,16 @@ dc_pass* dc_load_pass_and_keyfiles(
 		if (dc_get_password(confirm, pass) == 0) {
 			secure_free(pass); clean_cmd_line();
 			return NULL;
+		}
+	}
+
+	if (cmde = get_param(kdf_param))
+	{
+		pass->kdf = _wtoi(cmde);
+		if( (pass->kdf < 0) || (pass->kdf > 10) ) {
+			wprintf(L"Argon2id cost must be between 1 and 10\n");
+			secure_free(pass); pass = NULL;
+			clean = 1;
 		}
 	}
 
@@ -779,6 +885,11 @@ dc_pass* dc_load_pass_and_keyfiles(
 
 static void get_crypt_info(crypt_info *crypt)
 {
+	wchar_t *head_len;
+	wchar_t *slot_count;
+
+	memset(crypt, 0, sizeof(crypt_info));
+
 	/* get cipher */
 	if (is_param(L"-a") != 0) {
 		crypt->cipher_id = CF_AES;
@@ -803,9 +914,44 @@ static void get_crypt_info(crypt_info *crypt)
 		crypt->wp_mode = WP_DOD;
 	} else if (is_param(L"-g") != 0) {
 		crypt->wp_mode = WP_GUTMANN;
+	} else if (is_param(L"-skip") != 0) {
+		crypt->wp_mode = WP_SKIP_UNUSED;
+	}
+
+	/* get key slots count */
+	if (slot_count = get_param(L"-slots")) {
+		crypt->slot_count = (u8)_wtoi(slot_count);
+	}
+
+	/* get header length */
+	if (head_len = get_param(L"-len")) {
+		crypt->head_len = _wtoi(head_len);
+	}
+	
+	if (crypt->head_len || crypt->slot_count)
+	{
+		crypt->version = DC_HDR_VERSION_2;
+		if (crypt->head_len == 0 && crypt->slot_count > 0) {
+			crypt->head_len = DC_BASE_SIZE + crypt->slot_count * (PKCS_DERIVE_MAX + sizeof(dc_slot_info));
+			if(crypt->head_len < DC_AREA_SIZE)
+				crypt->head_len = DC_AREA_SIZE;
+			else { // round crypt->head_len up to a power of 2: 2048, 4096, 8192, ...
+				unsigned long index;
+				if(_BitScanReverse(&index, crypt->head_len - 1))
+					crypt->head_len = 1ul << (index + 1);
+			}
+		}
+	}
+
+	/* get header version */
+	if (crypt->version != 0)
+		return;
+	if (is_param(L"-v2")) {
+		crypt->version = DC_HDR_VERSION_2;
+	} else if (is_param(L"-v1")) {
+		crypt->version = DC_HDR_VERSION;
 	}
 }
-
 
 static int dc_bench_cmp(const bench_item *arg1, const bench_item *arg2)
 {
@@ -849,6 +995,9 @@ int wmain(int argc, wchar_t *argv[])
 			resl = ST_NO_ADMIN; break;
 		}
 
+		/* Register Ctrl+C handler for cancelling operations */
+		SetConsoleCtrlHandler(console_ctrl_handler, TRUE);
+
 		if (argc < 2) {
 			print_usage(0x01);
 			resl = ST_OK; break;
@@ -868,7 +1017,7 @@ int wmain(int argc, wchar_t *argv[])
 
 		if ( (argc >= 2) && (wcscmp(argv[1], L"-version") == 0) ) 
 		{
-			wprintf(L"DiskCryptor %S console\n", DC_FILE_VER);
+			wprintf(L"DiskCryptor %S console\n", DC_PRODUCT_VER);
 			resl = ST_OK; break;
 		}
 
@@ -921,7 +1070,7 @@ int wmain(int argc, wchar_t *argv[])
 			break;
 		}
 
-		if ( (argc >= 3) && (wcscmp(argv[1], L"-offline_instal") == 0) ) {
+		if ( (argc >= 3) && (wcscmp(argv[1], L"-offline_install") == 0) ) {
 			resl = install_dc_offline(argv[2]); 
 			if (resl == ST_OK) 
 				wprintf(L"DiskCryptor driver installed successfully\n");
@@ -1020,11 +1169,14 @@ int wmain(int argc, wchar_t *argv[])
 				}
 
 				wprintf(
-					L"Cipher:            %s\n"
-					L"Encryption mode:   XTS\n"
-					L"Pkcs5.2 prf:       HMAC-SHA-512\n"
+					L"Cipher:            %s (XTS Mode)\n"
+					//L"Encryption mode:   XTS\n"
+					L"Header KDF:        %s\n"
+					L"Header Format:     %s\n"
 					L"Encrypted portion: %-.3f%%\n",
 					dc_get_cipher_name(inf->status.crypt.cipher_id),
+					inf->status.crypt.head_kdf > 0 ? L"Argon2id v1.3" : L"Pkcs5.2 SHA-512",
+					inf->status.crypt.version == DC_HDR_VERSION_2 ? L"2" : L"1",
 					portion);
 			}
 
@@ -1037,7 +1189,9 @@ int wmain(int argc, wchar_t *argv[])
 			wchar_t  mnt_p[MAX_PATH];
 			dc_pass *pass;
 			wchar_t *mp_c;
+			wchar_t *slot;
 			size_t   s;
+			int 	flags = 0;
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
@@ -1053,18 +1207,30 @@ int wmain(int argc, wchar_t *argv[])
 				resl = ST_OK; break;
 			}
 
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 0);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
 			mp_c = get_param(L"-mp");
+			if (slot = get_param(L"-slot")) {
+				pass->slot = _wtoi(slot);
+			}
 
 			if (pass == NULL) {
 				resl = ST_OK; break;
 			}
 
 			if ( (mp_c != NULL) && (inf->status.mnt_point[0] == L'\\') ) {
-				resl = dc_mount_volume(inf->device, pass, MF_DELMP);
-			} else {
-				resl = dc_mount_volume(inf->device, pass, 0);
+				flags |= MF_DELMP;
 			}
+
+			if (is_param(L"-ro") != 0) {
+				flags |= MF_READ_ONLY;
+			}
+
+			if (is_param(L"-use_backup") != 0) {
+				flags |= MF_USE_BACKUP;
+			}
+
+			InterlockedExchange(&g_abort_operation, 0);
+			resl = dc_mount_volume(inf->device, pass, flags, &g_abort_operation);
 
 			if ( (resl == ST_OK) && (mp_c != NULL) )
 			{
@@ -1099,8 +1265,9 @@ int wmain(int argc, wchar_t *argv[])
 			dc_pass *pass;
 			int      n_mount;
 
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 0);
-			resl = dc_mount_all(pass, &n_mount, 0);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
+			InterlockedExchange(&g_abort_operation, 0);
+			resl = dc_mount_all(pass, &n_mount, 0, &g_abort_operation);
 
 			if (resl == ST_OK) {
 				wprintf(L"%d devices mounted\n", n_mount);
@@ -1176,13 +1343,14 @@ int wmain(int argc, wchar_t *argv[])
 		{
 			dc_pass *pass;
 
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 0);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
 
 			if (pass == NULL) {
 				resl = ST_OK; break;
 			}
 
-			resl = dc_add_password(pass);
+			InterlockedExchange(&g_abort_operation, 0);
+			resl = dc_add_password(pass, &g_abort_operation);
 
 			secure_free(pass);
 		}
@@ -1191,20 +1359,36 @@ int wmain(int argc, wchar_t *argv[])
 		{
 			dc_pass   *pass;			
 			crypt_info crypt;
-			DC_FLAGS   flags;
 			int        is_efi;
+			DC_FLAGS   dc_flags;
+			int        flags = 0;
 
-			is_efi = dc_efi_check();
+			if (dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &dc_flags, sizeof(dc_flags)) != NO_ERROR) {
+				resl = ST_ERROR; break;
+			}
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
 			}
+
+			is_efi = dc_efi_check();
 
 			/* set default params */
 			crypt.cipher_id = CF_AES;
 			crypt.wp_mode   = WP_NONE;
 
 			get_crypt_info(&crypt);
+
+			if (is_param(L"-backup_header")) {
+				flags |= VF_BACKUP_HEADER;
+			}
+
+			if (is_param(L"-try_schrink")) {
+				flags |= (VF_USE_SLACK | VF_TRY_SHRINK);
+			}
+			else if (is_param(L"-use_slack")) {
+				flags |= VF_USE_SLACK;
+			}
 
 			if (inf->status.flags & F_SYNC) 
 			{
@@ -1228,12 +1412,11 @@ int wmain(int argc, wchar_t *argv[])
 			if ( (inf->status.flags & F_SYSTEM) || (wcscmp(inf->device, boot_dev) == 0) )
 			{
 				ldr_config conf;
-				DC_FLAGS   flags;
 				int        dsk_1, dsk_2;
 
 				if ( (crypt.cipher_id != CF_AES) )
 				{
-					if (!is_efi && (dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &flags, sizeof(flags)) == NO_ERROR) && (flags.load_flags & DST_SMALL_MEM) )
+					if (!is_efi && (dc_flags.load_flags & DST_SMALL_MEM) )
 					{
 						wprintf(
 							L"Your BIOS does not provide enough base memory, "
@@ -1241,7 +1424,12 @@ int wmain(int argc, wchar_t *argv[])
 						resl = ST_OK; break;
 					}
 				}				
-				if (dc_get_boot_disk(&dsk_1, &dsk_2) != ST_OK)
+				if (is_efi) {
+					dsk_1 = dsk_2 = dc_efi_get_os_disk();
+				} else if (dc_get_boot_disk(&dsk_1, &dsk_2) != ST_OK) {
+					dsk_1 = dsk_2 = -1;
+				}
+				if (dsk_1 == -1)
 				{
 					wprintf(
 						L"This partition is needed for system booting, bootable HDD not found\n"
@@ -1252,7 +1440,7 @@ int wmain(int argc, wchar_t *argv[])
 					if (tolower(_getch()) != 'y') {
 						resl = ST_OK; break;
 					}
-				} else if (dc_get_mbr_config(dsk_1, NULL, &conf) != ST_OK)
+				} else if ((is_efi ? dc_get_efi_config(dsk_1, NULL, &conf) : dc_get_mbr_config(dsk_1, NULL, &conf)) != ST_OK)
 				{
 					wprintf(
 						L"This partition is needed for system booting\n"
@@ -1264,7 +1452,7 @@ int wmain(int argc, wchar_t *argv[])
 					if (getchr('1', '2') == '1') 
 					{
 						if (is_efi) {
-							if ((resl = dc_set_efi_boot_interactive(-1, -1, -1)) != ST_OK) {
+							if ((resl = dc_set_efi_boot_interactive(-1, -1, -1, -1)) != ST_OK) {
 								break;
 							}
 						}
@@ -1277,15 +1465,15 @@ int wmain(int argc, wchar_t *argv[])
 				}				
 			}
 
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 1);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 1);
 
 			if (pass == NULL) {
 				resl = ST_OK; break;
 			}
 
-			if (is_efi && (inf->status.flags & F_SYSTEM) && !((dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &flags, sizeof(flags)) == NO_ERROR) && (flags.load_flags & DST_BOOTLOADER)))
+			if (is_efi && (inf->status.flags & F_SYSTEM) && !(dc_flags.load_flags & DST_BOOTLOADER))
 			{
-				resl = dc_prep_encrypt(inf->device, pass, &crypt);
+				resl = dc_prep_encrypt(inf->device, pass, &crypt, flags);
 
 				secure_free(pass);
 
@@ -1301,7 +1489,8 @@ int wmain(int argc, wchar_t *argv[])
 			}
 			else
 			{
-				resl = dc_start_encrypt(inf->device, pass, &crypt);
+				InterlockedExchange(&g_abort_operation, 0);
+				resl = dc_start_encrypt(inf->device, pass, &crypt, flags, &g_abort_operation);
 
 				secure_free(pass);
 
@@ -1329,7 +1518,7 @@ int wmain(int argc, wchar_t *argv[])
 			{
 				do
 				{
-					if ((info.status.flags & F_ENABLED) == 0)
+					if ( !(info.status.flags & F_ENABLED) )
 					{
 						if (dc_has_pending_header(info.device)) {
 							resl = ST_OK;
@@ -1364,8 +1553,14 @@ int wmain(int argc, wchar_t *argv[])
 
 		if ( (argc >= 3) && (wcscmp(argv[1], L"-decrypt") == 0) ) 
 		{
-			dc_pass *pass;
+			dc_pass *pass;	
+			crypt_info crypt;
 			DC_FLAGS flags;
+
+			crypt.cipher_id = CF_AES;
+			crypt.wp_mode   = WP_NONE;
+
+			get_crypt_info(&crypt);
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
@@ -1392,13 +1587,14 @@ int wmain(int argc, wchar_t *argv[])
 					    L"'Deny access to unencrypted HDDs' option is enabled.\n");
 				resl = ST_OK; break;
 			}
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 0);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
 
 			if (pass == NULL) {
 				resl = ST_OK; break;
 			}
 
-			resl = dc_start_decrypt(inf->device, pass);
+			InterlockedExchange(&g_abort_operation, 0);
+			resl = dc_start_decrypt(inf->device, pass, &crypt, &g_abort_operation);
 
 			secure_free(pass);
 
@@ -1443,13 +1639,14 @@ int wmain(int argc, wchar_t *argv[])
 				}
 			}
 
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 0);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
 
 			if (pass == NULL) {
 				resl = ST_OK; break;
 			}
 
-			resl = dc_start_re_encrypt(inf->device, pass, &crypt);
+			InterlockedExchange(&g_abort_operation, 0);
+			resl = dc_start_re_encrypt(inf->device, pass, &crypt, &g_abort_operation);
 
 			secure_free(pass);
 
@@ -1457,12 +1654,13 @@ int wmain(int argc, wchar_t *argv[])
 				resl = dc_encrypt_loop(inf, crypt.wp_mode);
 			}
 			break;
-		}		
+		}
 
 		if ( (argc >= 3) && (wcscmp(argv[1], L"-chpass") == 0) ) 
 		{
-			crypt_info crypt;
+			//crypt_info crypt;
 			dc_pass   *old_p, *new_p;
+			int flags = 0; // todo
 			
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
@@ -1483,28 +1681,29 @@ int wmain(int argc, wchar_t *argv[])
 				resl = ST_OK; break;
 			}
 
-			crypt = inf->status.crypt;
-
-			get_crypt_info(&crypt);
+			//crypt = inf->status.crypt;
+			//
+			//get_crypt_info(&crypt);
 
 			old_p = NULL; new_p = NULL;
 			do
 			{
 				old_p = dc_load_pass_and_keyfiles(
-					L"-op", L"-okf", L"Enter old password: ", 0);
+					L"-op", L"-oc", L"-okf", L"Enter old password: ", 0);
 
 				if (old_p == NULL) {
 					resl = ST_OK; break;
 				}
 
 				new_p = dc_load_pass_and_keyfiles(
-					L"-np", L"-nkf", L"Enter new password: ", 1);
+					L"-np", L"-nc", L"-nkf", L"Enter new password: ", 1);
 
 				if (new_p == NULL) {
 					resl = ST_OK; break;
 				}
 
-				resl = dc_change_password(inf->device, old_p, new_p);
+				InterlockedExchange(&g_abort_operation, 0);
+				resl = dc_change_password(inf->device, old_p, new_p, flags, &g_abort_operation);
 
 				if (resl == ST_OK) {
 					wprintf(L"The password successfully changed\n");
@@ -1526,6 +1725,7 @@ int wmain(int argc, wchar_t *argv[])
 			crypt_info crypt;
 			dc_pass   *pass;
 			wchar_t   *fs;
+			int        flags = 0;
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
@@ -1533,6 +1733,10 @@ int wmain(int argc, wchar_t *argv[])
 
 			crypt = inf->status.crypt;
 			get_crypt_info(&crypt);
+
+			if (is_param(L"-backup_header")) {
+				flags |= VF_BACKUP_HEADER;
+			}
 
 			if (inf->status.flags & F_FORMATTING) {				
 				resl = ST_OK;
@@ -1543,13 +1747,14 @@ int wmain(int argc, wchar_t *argv[])
 					resl = ST_OK; break;
 				}
 
-				pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 1);
+				pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 1);
 
 				if (pass == NULL) {
 					resl = ST_OK; break;
 				}
 
-				resl = dc_start_format(inf->device, pass, &crypt);
+				InterlockedExchange(&g_abort_operation, 0);
+				resl = dc_start_format(inf->device, pass, &crypt, flags, &g_abort_operation);
 
 				secure_free(pass);
 			}
@@ -1588,14 +1793,24 @@ int wmain(int argc, wchar_t *argv[])
 			break;
 		}
 
-		if ( (argc >= 2) && (wcscmp(argv[1], L"-benchmark") == 0) ) 
+		if ( (argc >= 2) && (wcscmp(argv[1], L"-benchmark") == 0) )
 		{
 			dc_bench_info info;
 			bench_item    bench[CF_CIPHERS_NUM];
-			int           i;			
+			int           i;
+			int           use_um = is_param(L"-um");
+
+			if (use_um) {
+				wprintf(L"Running user-mode benchmark...\n\n");
+			}
 
 			for (i = 0; i < CF_CIPHERS_NUM; i++) {
-				if (dc_benchmark(i, &info) != ST_OK) break;
+				int bench_result;
+				if (use_um)
+					bench_result = dc_benchmark_um(i, &info);
+				else
+					bench_result = dc_benchmark(i, &info);
+				if (bench_result != ST_OK) break;
 				bench[i].alg   = dc_get_cipher_name(i);
 				bench[i].speed = (double)info.datalen / ( (double)info.enctime / (double)info.cpufreq) / 1024 / 1024;
 			}
@@ -1604,7 +1819,7 @@ int wmain(int argc, wchar_t *argv[])
 			wprintf(
 				L"---------------------+--------------\n"
 				L"        cipher       |     speed\n"
-				L"---------------------+--------------\n");			
+				L"---------------------+--------------\n");
 
 			for (i = 0; i < CF_CIPHERS_NUM; i++) {
 				wprintf(L" %-19s | %-.2f mb/s\n", bench[i].alg, bench[i].speed);
@@ -1612,10 +1827,59 @@ int wmain(int argc, wchar_t *argv[])
 			resl = ST_OK; break;
 		}
 
+		if ( (argc >= 2) && (wcscmp(argv[1], L"-benchmark_kdf") == 0) )
+		{
+			dc_kdf_bench_info info;
+			int               i;
+			int               use_um = is_param(L"-um");
+			int               bench_result;
+
+			if (use_um) {
+				wprintf(L"Running user-mode KDF benchmark...\n\n");
+			}
+
+			wprintf(
+				L"------------------------------------------+-----------\n"
+				L"                   KDF                    |    Time\n"
+				L"------------------------------------------+-----------\n");
+
+			/* Benchmark KDFs from kdf_bench_costs array */
+			for (i = 0; i <= 10; i++)
+			{
+				wchar_t s_name[64];
+
+				if (use_um)
+					bench_result = dc_benchmark_kdf_um(i, &info);
+				else
+					bench_result = dc_benchmark_kdf(i, &info);
+
+				if (i == 0) {
+					wcscpy(s_name, L"PBKDF2-SHA512 [i=1000]");
+				} else {
+					_snwprintf(s_name, countof(s_name), L"Argon2id [%dMiB, t=%d, p=%d]",
+						info.memory_mib, info.time_cost, info.parallelism);
+				}
+
+				if (bench_result != ST_OK) {
+					wprintf(L" %-40s | error\n", s_name);
+					continue;
+				}
+
+				if (info.elapsed_us == 0) {
+					wprintf(L" %-40s | OUT OF MEM\n", s_name);
+				} else {
+					wprintf(L" %-40s | %8.2f ms\n", s_name, (double)info.elapsed_us / 1000.0);
+				}
+			}
+			resl = ST_OK; break;
+		}
+
 		if ( (argc >= 4) && (wcscmp(argv[1], L"-backup") == 0) ) 
 		{
 			dc_pass *pass;
-			u8       backup[DC_AREA_SIZE];
+			int      bytes = DC_AREA_MAX_SIZE;
+			u8      *backup = malloc(bytes);
+			int      flags = 0; // todo
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
@@ -1626,19 +1890,22 @@ int wmain(int argc, wchar_t *argv[])
 				resl = ST_OK; break;
 			}
 
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 0);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
 
 			if (pass == NULL) {
 				resl = ST_OK; break;
 			}
 
-			resl = dc_backup_header(inf->device, pass, backup);
+			InterlockedExchange(&g_abort_operation, 0);
+			resl = dc_backup_header(inf->device, pass, backup, &bytes, flags, &g_abort_operation);
 
 			secure_free(pass);
 
 			if (resl == ST_OK) {
-				resl = save_file(argv[3], backup, sizeof(backup));
+				resl = save_file(argv[3], backup, bytes);
 			}
+
+			secure_free(backup);
 
 			if (resl == ST_OK) {
 				wprintf(L"Volume header backup successfully saved.\n");
@@ -1650,6 +1917,7 @@ int wmain(int argc, wchar_t *argv[])
 			dc_pass *pass;
 			u8      *backup;
 			u32      bytes;
+			int      flags = 0; // todo
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
@@ -1670,13 +1938,14 @@ int wmain(int argc, wchar_t *argv[])
 					resl = ST_NOT_BACKUP; break;
 				}
 
-				pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 0);
+				pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
 
 				if (pass == NULL) {
 					resl = ST_OK; break;
 				}
 
-				resl = dc_restore_header(inf->device, pass, backup);
+				InterlockedExchange(&g_abort_operation, 0);
+				resl = dc_restore_header(inf->device, pass, backup, bytes, flags, &g_abort_operation);
 
 				secure_free(pass);
 			} while (0);
@@ -1692,7 +1961,7 @@ int wmain(int argc, wchar_t *argv[])
 			}
 		}
 
-		if ( (argc >= 2) && (wcscmp(argv[1], L"-config") == 0) ) 
+		if ( (argc >= 2) && (wcscmp(argv[1], L"-config") == 0) )
 		{
 			dc_conf_data dc_conf;
 
@@ -1704,7 +1973,7 @@ int wmain(int argc, wchar_t *argv[])
 			{
 				vol_inf *inf = find_device(NULL);
 				int      onoff;
-				char     ch;	
+				char     ch;
 
 				cls_console();
 
@@ -1713,17 +1982,19 @@ int wmain(int argc, wchar_t *argv[])
 					L"1 - On/Off hiding $dcsys$ files (%s)\n"
 					L"2 - On/Off hardware cryptography support (%s)\n"
 					L"3 - On/Off automounting at boot time (%s)\n"
-					L"4 - On/Off optimization for SSD disks (%s)\n"
+					L"4 - On/Off IO chunking for SSD disks [deprecated] (%s)\n"
 					L"5 - On/Off disable TRIM on encrypted SSD disks (%s)\n"
 					L"--------------------------------------------------\n"
 					L"6 - On/Off Deny access to unencrypted removable devices (%s)\n"
 					L"7 - On/Off Deny access to unencrypted HDDs (%s)\n"
 					L"8 - On/Off Deny access to unencrypted CD-ROM (%s)\n"
 					L"--------------------------------------------------\n"
-					L"9 - Save changes and exit\n\n",				
+					L"9 - On/Off Protect unmounted volumes from formatting (%s)\n"
+					L"--------------------------------------------------\n"
+					L"x - Save changes and exit\n\n",
 					on_off(dc_conf.conf_flags & CONF_CACHE_PASSWORD),
 					on_off(dc_conf.conf_flags & CONF_HIDE_DCSYS),
-					(dc_conf.load_flags & DST_HW_CRYPTO) ? 
+					(dc_conf.load_flags & DST_HW_CRYPTO) ?
 					    on_off(dc_conf.conf_flags & CONF_HW_CRYPTO) : L"not available",
 					on_off(dc_conf.conf_flags & CONF_AUTOMOUNT_BOOT),
 					on_off(dc_conf.conf_flags & CONF_ENABLE_SSD_OPT),
@@ -1731,10 +2002,16 @@ int wmain(int argc, wchar_t *argv[])
 					on_off(dc_conf.conf_flags & CONF_BLOCK_UNENC_REMOVABLE),
 					(inf != NULL && IS_BLOCK_UNENC_HDDS_DISABLED(inf->status.flags) == 0) ?
 					    on_off(dc_conf.conf_flags & CONF_BLOCK_UNENC_HDDS) : L"non permitted",
-					on_off(dc_conf.conf_flags & CONF_BLOCK_UNENC_CDROM)
+					on_off(dc_conf.conf_flags & CONF_BLOCK_UNENC_CDROM),
+					on_off(dc_conf.conf_flags & CONF_PROTECT_RAW_VOLUMES)
 					);
 
-				if ( (ch = getchr('0', '9')) == '9' ) {
+				do {
+					ch = _getch();
+					ch = tolower(ch);
+				} while (!((ch >= '0' && ch <= '9') || ch == 'x'));
+
+				if (ch == 'x') {
 					break;
 				}
 
@@ -1757,6 +2034,8 @@ int wmain(int argc, wchar_t *argv[])
 					case '6': set_flag(dc_conf.conf_flags, CONF_BLOCK_UNENC_REMOVABLE, onoff); break;
 					case '7': set_flag(dc_conf.conf_flags, CONF_BLOCK_UNENC_HDDS, onoff); break;
 					case '8': set_flag(dc_conf.conf_flags, CONF_BLOCK_UNENC_CDROM, onoff); break;
+					/**/
+					case '9': set_flag(dc_conf.conf_flags, CONF_PROTECT_RAW_VOLUMES, onoff); break;
 				}
 			} while (1);
 
@@ -1779,9 +2058,100 @@ int wmain(int argc, wchar_t *argv[])
 			burn(kf, sizeof(kf));
 		}
 
-		if ( (argc >= 2) && (wcscmp(argv[1], L"-bsod") == 0) ) 
+		if ( (argc >= 2) && (wcscmp(argv[1], L"-bsod") == 0) )
 		{
 			dc_get_bsod(); resl = ST_OK;
+			break;
+		}
+
+		if ( (argc >= 2) && (wcscmp(argv[1], L"-support") == 0) )
+		{
+			if (is_param(L"-hwid"))
+			{
+				WCHAR uuid[40] = {0};
+				if (dc_get_system_uuid(uuid, countof(uuid))) {
+					wprintf(L"Hardware ID: %s\n", uuid);
+					resl = ST_OK;
+				} else {
+					wprintf(L"Failed to retrieve hardware ID\n");
+					resl = ST_ERROR;
+				}
+			}
+			else if (is_param(L"-get_key"))
+			{
+				wchar_t* serial = get_param(L"-get_key");
+				/* Serial key format: DC20_-XXXXX-XXXXX-XXXXX-XXXXX (29 chars) */
+				if (!serial || wcslen(serial) < 29) {
+					wprintf(L"Error: Valid serial key required (format: DC20_-XXXXX-XXXXX-XXXXX-XXXXX)\n");
+					resl = ST_INVALID_PARAM; break;
+				}
+
+				wprintf(L"Downloading certificate...\n");
+
+				PSTR cert = NULL;
+				ULONG cert_len = 0;
+				resl = dc_download_certificate(serial, &cert, &cert_len);
+
+				if (resl == ST_OK && cert) {
+					/* Save to certificate.dat in install directory */
+					WCHAR path[MAX_PATH];
+					GetModuleFileName(NULL, path, MAX_PATH);
+					PathRemoveFileSpec(path);
+					wcscat(path, L"\\certificate.dat");
+
+					resl = save_file(path, cert, cert_len);
+					free(cert);
+
+					if (resl == ST_OK) {
+						wprintf(L"Certificate saved to: %s\n", path);
+					}
+				}
+			}
+			else if (is_param(L"-apply_cert"))
+			{
+				WCHAR path[MAX_PATH];
+				GetModuleFileName(NULL, path, MAX_PATH);
+				PathRemoveFileSpec(path);
+				wcscat(path, L"\\certificate.dat");
+
+				char* cert = NULL;
+				int cert_len = 0;
+
+				resl = load_file(path, (void**)&cert, &cert_len);
+				if (resl == ST_OK && cert) {
+					/* Convert to wide string */
+					int wlen = MultiByteToWideChar(CP_UTF8, 0, cert, cert_len, NULL, 0);
+					WCHAR* wcert = malloc((wlen + 1) * sizeof(WCHAR));
+					if (wcert) {
+						MultiByteToWideChar(CP_UTF8, 0, cert, cert_len, wcert, wlen);
+						wcert[wlen] = 0;
+
+						resl = dc_save_certificate(wcert);
+
+						free(wcert);
+					} else {
+						resl = ST_NOMEM;
+					}
+					free(cert);
+
+					if (resl == ST_OK) {
+						wprintf(L"Certificate applied to registry\n");
+					}
+				}
+			}
+			else if (is_param(L"-show"))
+			{
+				WCHAR cert[4096] = {0};
+				resl = dc_load_certificate(cert, countof(cert));
+				if (resl == ST_OK) {
+					wprintf(L"%s\n", cert);
+				}
+			}
+			else
+			{
+				wprintf(L"Unknown -support action. Use -help for usage.\n");
+				resl = ST_INVALID_PARAM;
+			}
 			break;
 		}
 
@@ -1794,7 +2164,7 @@ int wmain(int argc, wchar_t *argv[])
 			crypt.cipher_id = CF_AES;
 			get_crypt_info(&crypt);
 
-			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, 1);
+			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 1);
 
 			if (pass == NULL) {
 				resl = ST_OK; break;

@@ -95,20 +95,29 @@ extern _colinfo _boot_headers[ ];
 
 extern _colinfo _part_by_id_headers[ ];
 extern _colinfo _benchmark_headers[ ];
+extern _colinfo _kdf_benchmark_headers[ ];
 
 const extern _init_list wipe_modes[ ];
 const extern _init_list kb_layouts[ ];
 
 const extern _init_list boot_type_ext[ ];
+const extern _init_list boot_type_efi[ ];
 const extern _init_list boot_type_all[ ];
 
 const extern _init_list show_pass[ ];
 const extern _init_list auth_tmount[ ];
 
+const extern _init_list bad_pass_act_efi[ ];
 const extern _init_list bad_pass_act[ ];
 const extern _init_list auth_type[ ];
 
 const extern _init_list cipher_names[ ];
+
+const extern _init_list kdf_names_ex[ ];
+const extern _init_list *kdf_names;
+
+const extern _init_list keyfile_mix_modes[ ];
+
 const extern _init_list loader_type_mbr[ ];
 const extern _init_list loader_type_efi[ ];
 

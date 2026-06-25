@@ -24,6 +24,7 @@
 
 #include "main.h"
 #include "dlg_menu.h"
+#include "dcconst.h"
 
 #ifdef _M_ARM64
 #include "xts_small.h"
@@ -32,7 +33,12 @@
 #endif
 #include "threads.h"
 #include "prc_pass.h"
+#include "prc_wait.h"
 #include "prc_wizard_encrypt.h"
+#include "prc_header.h"
+#include "gpt_sup.h"
+#include "efiinst.h"
+#include "secure_desktop.h"
 
 void _state_menu(
 		HMENU	menu,
@@ -159,6 +165,7 @@ void _refresh_menu( )
 
 	EnableMenuItem( h_menu, ID_VOLUMES_BACKUPHEADER, _menu_onoff(backup) );
 	EnableMenuItem( h_menu, ID_VOLUMES_RESTOREHEADER, _menu_onoff(restore) );
+	EnableMenuItem( h_menu, ID_TOOLS_HEADER_CONFIG, _menu_onoff(backup) );
 
 	EnableMenuItem( h_menu, ID_VOLUMES_CHANGEPASS, _menu_onoff(ch_pass) );
 	EnableMenuItem( h_menu, ID_VOLUMES_DELETE_MNTPOINT, _menu_onoff(del_mntpoint) );
@@ -233,7 +240,7 @@ int _menu_update_loader(
 
 	is_dcs = dc_is_dcs_on_disk(dsk_num);
 	if (is_dcs)
-		rlt = dc_update_efi_boot (dsk_num);
+		rlt = dc_update_efi_boot (dsk_num, -1);
 	else
 		rlt = dc_update_boot(dsk_num);
 
@@ -286,7 +293,7 @@ int _menu_unset_loader(
 	{
 		is_dcs = dc_is_dcs_on_disk(dsk_num);
 		if ( is_dcs ) {
-			rlt = dc_unset_efi_boot(dsk_num);
+			rlt = dc_unset_efi_boot(dsk_num, -1);
 
 			if ( rlt == ST_OK && dc_efi_is_bme_set(dsk_num) ) {
 				dc_efi_del_bme();
@@ -356,23 +363,6 @@ int _menu_set_loader_mbr(
 
 }
 
-void _menu_no_shim(
-		HWND     hwnd,
-		BOOL	 pxe
-	)
-{
-	wchar_t message[1000];
-	_snwprintf( message, countof(message), 
-		L"Bootloader creation failed: The shim package is missing.\n\n" L"%s\n\n"
-		L"Would you like to open the advanced boot documentation at diskcryptor.org?", 
-		pxe ? L"For PXE boot, DcsLdr.efi is required, which is part of the shim package." : L"The shim package is required for secure boot compatibility.");
-
-	if ( __msg_w( hwnd, message ) )
-	{
-		__execute( L"https://diskcryptor.org/advanced-boot/" );
-	}
-}
-
 int _menu_set_loader_efi(
 		HWND     hwnd,
 		wchar_t *vol,
@@ -409,15 +399,16 @@ int _menu_set_loader_efi(
 		}
 	}
 	else {
-
-		rlt = _set_boot_loader_efi( hwnd, dsk_num, is_shim );
+		/* esp_part = -1 (ask user), add_bme = -1 (ask user) */
+		rlt = _set_boot_loader_efi( hwnd, dsk_num, is_shim, -1, -1 );
 	}
 
 	if ( rlt == ST_OK )
 	{
 		__msg_i( hwnd, L"EFI Bootloader successfully installed to [%s]", vol );
 	} else if ( rlt == ST_SHIM_MISSING ) {
-		_menu_no_shim( hwnd, FALSE );
+		void _menu_no_pro(HWND hwnd, int no_shim);
+		_menu_no_pro( hwnd, 1);
 	} else {
 		__error_s( hwnd, L"Error install EFI bootloader", rlt );
 	}
@@ -486,7 +477,8 @@ int _menu_set_loader_file_efi(
 	{
 		__msg_i( hwnd, L"DCS Bootloader %s image file \"%s\" successfully created", s_img, path );
 	} else if ( rlt == ST_SHIM_MISSING ) {
-		_menu_no_shim( hwnd, !iso );
+		void _menu_no_pro(HWND hwnd, int no_shim);
+		_menu_no_pro( hwnd, iso ? 1 : 2 );
 	} else {
 		__error_s( hwnd, L"Error creating %s image", rlt, s_img );
 	}
@@ -498,7 +490,7 @@ void _menu_decrypt(
 		_dnode *node
 	)
 {
-	dlgpass dlg_info = { node, NULL, NULL, NULL, 0 };
+	dlgpass dlg_info = { NULL, node, PF_SHOW_SKIP_UNUSED };
 
 	int rlt;
 	if ( !_create_act_thread(node, -1, -1) )
@@ -506,7 +498,10 @@ void _menu_decrypt(
 		rlt = _dlg_get_pass( __dlg, &dlg_info );
 		if ( rlt == ST_OK )
 		{
-			rlt = dc_start_decrypt( node->mnt.info.device, dlg_info.pass );
+			crypt_info crypt = { 0 };
+			crypt.wp_mode = dlg_info.skip_unused ? WP_SKIP_UNUSED : WP_NONE;
+
+			rlt = _wait_dc_start_decrypt( __dlg, node->mnt.info.device, dlg_info.pass, &crypt, L"Starting decryption..." );
 			secure_free( dlg_info.pass );
 
 			if ( rlt != ST_OK )
@@ -516,7 +511,7 @@ void _menu_decrypt(
 					);
 			}
 		}
-	} else 
+	} else
 	{
 		rlt = ST_OK;
 	}
@@ -567,17 +562,19 @@ int _set_boot_loader_mbr(
 int _set_boot_loader_efi(
 		HWND hwnd,
 		int  dsk_num,
-		int  is_shim
+		int  is_shim,
+		int  add_esp,   /* -1 = ask user, 0 = no (use Windows ESP), 1 = yes (use dedicated DCS ESP) */
+		int  add_bme    /* -1 = ask user, 0 = no, 1 = yes */
 	)
 {
-	int add_bme = 0;
 	int sb_no_pass = (dc_efi_is_secureboot() && !dc_efi_dcs_is_signed());
+	int rlt;
+	int esp_part = -1;  /* -1 = use default Windows ESP */
+	wchar_t esp_path[MAX_PATH];
 
 	if (sb_no_pass && !dc_efi_shim_available()) {
-		__msg_e(hwnd, 
-			L"For compatibility with secure boot a shim loader must be installed, however the required archive is missing from the application directory.\n"
-			L"Bootloader installation therefore cannot continue, please reboot and disable secure boot in your firmware settings to resolve this issue.\n"
-		);
+		void _menu_no_pro(HWND hwnd, int no_shim);
+		_menu_no_pro( hwnd, 1 );
 		return ST_CANCEL;
 	}
 
@@ -590,44 +587,79 @@ int _set_boot_loader_efi(
 		}
 	}
 
-	if (is_shim && !__msg_w(hwnd, 
-		L"For compatibility with secure boot the shim loader will be installed.\n"
-		L"Upon first boot you will be encounter an 'Verification failed: (0x1A) Security Violation' error message, "
-		L"to resolve this, you will need to start the 'MOK Manager' and enroll a certificate located at \\EFI\\Boot\\CustomSigner.der\n"
-		L"After one more reboot the DCS loader should boot and show you a password prompt.\n"
-		L"Do you want to continue?")
-		) {
+	if (is_shim && !__msg_w(hwnd,
+		L"For Secure Boot compatibility, the Shim loader will be installed.\n"
+		L"On the first boot, you will be presented with the Shim MOK enrollment prompt.\n"
+		L"Press any key to continue, then select 'Enroll MOK' from the menu. You will be given the option to view the key or continue; "
+		L"select 'Continue', then confirm by selecting 'Yes'.\n"
+		L"You will then be asked for a temporary password. The password is always '123' and is discarded after the enrollment process completes.\n"
+		L"The final screen offers the option to reboot. If everything was successful, the DiskCryptor bootloader password prompt will appear after the restart.\n"
+		L"If enrollment fails, you may encounter the error message 'Verification failed: (0x1A) Security Violation'. "
+		L"To resolve this, start 'MOK Manager' and manually enroll the certificate located at \\EFI\\Boot\\CustomSigner.der.\n"
+		L"After another reboot, the DiskCryptor bootloader should start normally and display the password prompt.\n"
+		L"Do you want to continue?"
+		)) {
 		return ST_CANCEL;
 	}
 
-	if (__msg_w(hwnd, L"Do you want to add a DCS loader boot menu entry (recommended).")) {
-		add_bme = 1;
-
-#ifndef _M_ARM64
-		if (!sb_no_pass && dc_efi_is_msft_on_disk(dsk_num))
-		{
-			if (__msg_w(hwnd, L"Note: Some EFI implementations are not adhering to the standard and always start the windows bootloader.\n"
-				L"Do you want to replace the windows bootloader file (BOOTMGFW.EFI) with a redirection to the DCS loader as a workaround?")) {
-				add_bme = 2;
+	/* Determine whether to use dedicated ESP partition */
+	if (add_esp == -1) {
+		/* Check if a dedicated but empty DCS ESP partition already exists */
+		int existing_esp = dc_find_dcs_esp(dsk_num);
+		if (existing_esp > 0) {
+			/* Found a DCS ESP partition - check if it's empty (no DCS installed yet) */
+			wchar_t check_path[MAX_PATH];
+			swprintf_s(check_path, MAX_PATH,
+				L"\\\\?\\GLOBALROOT\\Device\\Harddisk%d\\Partition%d", dsk_num, existing_esp);
+			if (!dc_is_dcs_on_partition(check_path)) {
+				/* Empty DCS ESP exists - use it automatically */
+				add_esp = 1;
 			}
 		}
-#endif
+	}
+	if (add_esp == -1) {
+		/* Ask user */
+		add_esp = __msg_q3(hwnd,
+			L"Do you want to use a dedicated EFI System Partition for the DCS loader?\n\n"
+			L"Yes: Create or use existing DCS EFI partition (allows encrypting Windows EFI Partition)\n"
+			L"No: Install to Windows existing EFI Partition\n"
+			L"Cancel: Abort installation");
+
+		if (add_esp == -1) {
+			return ST_CANCEL;  /* User cancelled */
+		}
 	}
 
-	//if (sb_no_pass) {
-	//	if (!__msg_w(hwnd, 
-	//		L"This system's UEFI firmware has Secure Boot enabled. "
-	//		L"You must manually sign the DCS bootloader files or disable Secure Boot, "
-	//		L"otherwise THE SYSTEM WILL NOT BOOT!!!\n"
-	//		L"Do you want to continue?")
-	//		) {
-	//		return ST_CANCEL;
-	//	}
-	//}
+	if (add_esp == 1) {
+		/* User wants dedicated DCS ESP - find or create it */
+		rlt = dc_get_or_create_dcs_esp(&dsk_num, esp_path, &esp_part);
+		if (rlt != ST_OK) {
+			__error_s(hwnd, L"Failed to create DCS ESP partition", rlt);
+			return rlt;
+		}
+	}
 
-	int rlt;
+	/* Determine whether to add boot menu entry */
+	if (add_bme == -1) {
+		/* Ask user */
+		if (__msg_w(hwnd, L"Do you want to add a DCS loader boot menu entry (recommended).")) {
+			add_bme = 1;
 
-	rlt = dc_set_efi_boot(dsk_num, add_bme == 2, is_shim);
+#ifndef _M_ARM64
+			if (!add_esp && !sb_no_pass && dc_efi_is_msft_on_disk(dsk_num))
+			{
+				if (__msg_w(hwnd, L"Note: Some EFI implementations are not adhering to the standard and always start the windows bootloader.\n"
+					L"Do you want to replace the windows bootloader file (BOOTMGFW.EFI) with a redirection to the DCS loader as a workaround?")) {
+					add_bme = 2;
+				}
+			}
+#endif
+		} else {
+			add_bme = 0;
+		}
+	}
+
+	rlt = dc_set_efi_boot(dsk_num, esp_part, add_bme == 2, is_shim);
 
 	if (rlt == ST_OK && add_bme != 0) {
 		rlt = dc_efi_set_bme(L"DiskCrypto (DCS) loader", dsk_num);
@@ -686,7 +718,7 @@ int _menu_repalce_msldr(
 {
 	int rlt = ST_ERROR;
 
-	rlt = dc_efi_replace_msft_boot(dsk_num);
+	rlt = dc_efi_replace_msft_boot(dsk_num, -1);
 
 	if ( rlt == ST_OK )
 	{
@@ -706,7 +738,7 @@ int _menu_restore_msldr(
 {
 	int rlt = ST_ERROR;
 
-	rlt = dc_efi_restore_msft_boot(dsk_num);
+	rlt = dc_efi_restore_msft_boot(dsk_num, -1);
 
 	if ( rlt == ST_OK )
 	{
@@ -727,6 +759,8 @@ void _menu_encrypt_cd(  )
 	wcscpy( node->mnt.info.device, L"Encrypt ISO file" );
 	node->dlg.act_type = ACT_ENCRYPT_CD;
 
+	/* Note: Wizard uses regular dialog - password entry within wizard pages
+	   is protected by _dlg_get_pass which uses secure desktop */
 	DialogBoxParam(
 		__hinst, MAKEINTRESOURCE(IDD_WIZARD_ENCRYPT), __dlg, pv(_wizard_encrypt_dlg_proc), (LPARAM)node
 		);
@@ -759,11 +793,28 @@ void _menu_encrypt(
 {
 	int rlt;
 
+	/* Check if this partition contains DCS bootloader files - cannot encrypt it */
 	if ( __is_efi_boot )
 	{
-		wchar_t s_boot_dev[MAX_PATH];
-		if ( (dc_get_boot_device(s_boot_dev) == ST_OK) && (wcscmp(node->mnt.info.device, s_boot_dev) == 0) ){
-			__msg_e(__dlg, L"The EFI boot partition cannot be encrypted because the UEFI firmware itself needs ability to read it.");
+		wchar_t vol_root[MAX_PATH];
+		/* Build volume root path from w32_device (e.g., \\?\Volume{...}\) */
+		_snwprintf(vol_root, MAX_PATH, L"%s\\", node->mnt.info.w32_device);
+
+		if ( dc_is_dcs_on_partition(vol_root) )
+		{
+			wchar_t s_boot_dev[MAX_PATH];
+			if ((dc_get_boot_device(s_boot_dev) == ST_OK) && (wcscmp(node->mnt.info.device, s_boot_dev) == 0)) {
+				__msg_e(__dlg,
+					L"This partition contains the DCS bootloader and cannot be encrypted.\n"
+					L"The UEFI firmware needs to read the bootloader files before Windows starts.\n\n"
+					L"If you want to encrypt the Windows EFI partition, first install the DCS loader\n"
+					L"to a dedicated DCS EFI partition, then remove it from this partition.");
+			} else {
+				__msg_e(__dlg,
+					L"This partition contains the DCS bootloader and cannot be encrypted.\n"
+					L"The UEFI firmware needs to read the bootloader files before Windows starts.");
+				
+			}
 			return;
 		}
 	}
@@ -780,9 +831,9 @@ void _menu_encrypt(
 	} else {
 		rlt = ST_OK;
 	}
-	
+
 	if ( rlt == ST_CANCEL ) return;
-	if ( rlt != ST_OK ) 
+	if ( rlt != ST_OK )
 	{
 		__error_s(
 			__dlg, L"Error start encrypt volume [%s]", rlt, node->mnt.info.status.mnt_point
@@ -819,44 +870,44 @@ void _menu_encrypt2(
 	}
 }
 
-void _menu_wizard(
-		_dnode *node
-	)
-{
-	wchar_t *s_act;
-	int      rlt;
-
-	if ( _create_act_thread(node, -1, -1) == 0 )
-	{
-		node->dlg.act_type = -1;
-
-		DialogBoxParam(__hinst, 
-			MAKEINTRESOURCE(IDD_WIZARD_ENCRYPT), __dlg, pv(_wizard_encrypt_dlg_proc), (LPARAM)node);
-
-		rlt = node->dlg.rlt;
-
-	} else {
-		rlt = ST_OK;
-	}
-	
-	if (rlt == ST_CANCEL) return;
-	if (rlt != ST_OK) 
-	{
-		switch (node->dlg.act_type) 
-		{
-			case ACT_REENCRYPT: s_act = L"reencrypt"; break;
-			case ACT_ENCRYPT:   s_act = L"encrypt";   break;
-			case ACT_FORMAT:    s_act = L"format";    break;
-		};
-		__error_s(
-			__dlg, L"Error start %s volume [%s]", rlt, s_act, node->mnt.info.status.mnt_point
-			);
-	} else {
-		_create_act_thread(node, node->dlg.act_type, ACT_RUNNING);
-		_activate_page( );
-
-	}
-}
+//void _menu_wizard(
+//		_dnode *node
+//	)
+//{
+//	wchar_t *s_act;
+//	int      rlt;
+//
+//	if ( _create_act_thread(node, -1, -1) == 0 )
+//	{
+//		node->dlg.act_type = -1;
+//
+//		DialogBoxParam(__hinst, 
+//			MAKEINTRESOURCE(IDD_WIZARD_ENCRYPT), __dlg, pv(_wizard_encrypt_dlg_proc), (LPARAM)node);
+//
+//		rlt = node->dlg.rlt;
+//
+//	} else {
+//		rlt = ST_OK;
+//	}
+//	
+//	if (rlt == ST_CANCEL) return;
+//	if (rlt != ST_OK) 
+//	{
+//		switch (node->dlg.act_type) 
+//		{
+//			case ACT_REENCRYPT: s_act = L"reencrypt"; break;
+//			case ACT_ENCRYPT:   s_act = L"encrypt";   break;
+//			case ACT_FORMAT:    s_act = L"format";    break;
+//		};
+//		__error_s(
+//			__dlg, L"Error start %s volume [%s]", rlt, s_act, node->mnt.info.status.mnt_point
+//			);
+//	} else {
+//		_create_act_thread(node, node->dlg.act_type, ACT_RUNNING);
+//		_activate_page( );
+//
+//	}
+//}
 
 
 void _menu_reencrypt(
@@ -866,7 +917,7 @@ void _menu_reencrypt(
 	int rlt;
 	node->dlg.act_type = ACT_REENCRYPT;
 
-	if ( _create_act_thread(node, -1, -1) == 0 && 
+	if ( _create_act_thread(node, -1, -1) == 0 &&
 		 !(node->mnt.info.status.flags & F_REENCRYPT)
 		)
 	{
@@ -878,9 +929,9 @@ void _menu_reencrypt(
 	} else {
 		rlt = ST_OK;
 	}
-	
+
 	if ( rlt == ST_CANCEL ) return;
-	if ( rlt != ST_OK ) 
+	if ( rlt != ST_OK )
 	{
 		__error_s(
 			__dlg, L"Error start reencrypt volume [%s]", rlt, node->mnt.info.status.mnt_point
@@ -904,7 +955,7 @@ void _menu_format(
 
 	node->dlg.fs_name  = L"FAT32";
 
-	if ( _create_act_thread(node, -1, -1) == 0 && 
+	if ( _create_act_thread(node, -1, -1) == 0 &&
 		 !(node->mnt.info.status.flags & F_FORMATTING)
 		)
 	{
@@ -916,9 +967,9 @@ void _menu_format(
 	} else {
 		rlt = ST_OK;
 	}
-	
+
 	if ( rlt == ST_CANCEL ) return;
-	if ( rlt != ST_OK ) 
+	if ( rlt != ST_OK )
 	{
 		__error_s(
 			__dlg, L"Error start format volume [%s]", rlt, node->mnt.info.status.mnt_point
@@ -990,19 +1041,18 @@ void _menu_mount(
 	wchar_t mnt_point[MAX_PATH] = { 0 };
 	wchar_t vol[MAX_PATH];
 
-	dlgpass dlg_info = { node, NULL, NULL, mnt_point, 0 };
+	dlgpass dlg_info = { NULL, node, PF_MOUNT_OPTIONS, NULL, NULL, mnt_point};
 
 	int rlt;
-	rlt = 
-		dc_mount_volume(
-			node->mnt.info.device, NULL, (mnt_point[0] != 0) ? MF_DELMP : 0
+	rlt = _wait_dc_mount_volume(
+			__dlg, node->mnt.info.device, NULL, (mnt_point[0] != 0) ? MF_DELMP : 0, L"Mounting volume..."
 		);
 
 	if ( rlt != ST_OK )
 	{
 		if ( _dlg_get_pass(__dlg, &dlg_info) == ST_OK )
 		{
-			rlt = dc_mount_volume( node->mnt.info.device, dlg_info.pass, ( (mnt_point[0] != 0) ? MF_DELMP : 0 ) | ( dlg_info.mnt_ro ? MF_READ_ONLY  : 0 ) );
+			rlt = _wait_dc_mount_volume( __dlg, node->mnt.info.device, dlg_info.pass, ( (mnt_point[0] != 0) ? MF_DELMP : 0 ) | ( dlg_info.mnt_ro ? MF_READ_ONLY : 0 ) | ( dlg_info.use_backup ? MF_USE_BACKUP : 0 ), L"Mounting volume..." );
 			secure_free( dlg_info.pass );
 
 			if ( rlt == ST_OK )
@@ -1034,15 +1084,15 @@ void _menu_mount(
 
 void _menu_mountall( )
 {
-	dlgpass dlg_info  = { NULL, NULL, NULL, NULL, 0 };
+	dlgpass dlg_info  = { NULL, NULL, PF_MOUNT_OPTIONS };
 	int     mount_cnt = 0;	
 
-	dc_mount_all(NULL, &mount_cnt, 0); 
+	_wait_dc_mount_all(__dlg, NULL, &mount_cnt, 0, L"Mounting volumes...");
 	if ( mount_cnt == 0 )
 	{
 		if ( _dlg_get_pass(__dlg, &dlg_info) == ST_OK )
 		{
-			dc_mount_all( dlg_info.pass, &mount_cnt, ( dlg_info.mnt_ro ? MF_READ_ONLY : 0 ) );
+			_wait_dc_mount_all( __dlg, dlg_info.pass, &mount_cnt, ( dlg_info.mnt_ro ? MF_READ_ONLY : 0 ) | ( dlg_info.use_backup ? MF_USE_BACKUP : 0 ), L"Mounting volumes..." );
 			secure_free( dlg_info.pass );
 
 			__msg_i( __dlg, L"Mounted devices: %d", mount_cnt );
@@ -1070,19 +1120,25 @@ void _menu_change_pass(
 		_dnode *node
 	)
 {
-	dlgpass dlg_info = { node, NULL, NULL, NULL };
+	dlgpass dlg_info = { NULL, node, PF_NO_KEY_SLOTS };
 	int     resl     = ST_ERROR;
+	int     flags = 0;
 
 	if ( _dlg_change_pass( __dlg, &dlg_info ) == ST_OK )
 	{
-		resl = dc_change_password(
-			node->mnt.info.device, dlg_info.pass, dlg_info.new_pass
-			);
+		if (dlg_info.clear_slots)
+			flags |= HF_CLEAR_SLOTS;
+
+		resl = _wait_dc_change_password(__dlg, node->mnt.info.device, dlg_info.pass, dlg_info.new_pass, flags, L"Changing password...");
 
 		secure_free( dlg_info.pass );
 		secure_free( dlg_info.new_pass );
 
-		if ( resl != ST_OK )
+		if ( resl == ST_NOT_BACKUP )
+		{
+			__msg_i( __dlg, L"Primary header password changed for [%s],\nFAILED to change backup header password.", node->mnt.info.status.mnt_point );
+		}
+		else if ( resl != ST_OK )
 		{
 			__error_s( __dlg, L"Error change password", resl );
 		} else {
@@ -1101,19 +1157,44 @@ void _menu_clear_cache( )
 }
 
 
+void _menu_cache_password( )
+{
+	dlgpass dlg_info = { NULL, NULL, PF_SHOW_CACHE_TAG };
+	int rlt;
+
+	rlt = _dlg_get_pass(__dlg, &dlg_info);
+	if (rlt == ST_OK)
+	{
+		rlt = _wait_dc_add_password(__dlg, dlg_info.pass, L"Caching password...");
+		secure_free(dlg_info.pass);
+
+		if (rlt != ST_OK)
+		{
+			__error_s(__dlg, L"Error caching password", rlt);
+		}
+	}
+}
+
+
 void _menu_backup_header(
 		_dnode *node
 	)
 {
-	dlgpass dlg_info = { node, NULL, NULL, NULL, 0 };
-	BYTE backup[DC_AREA_SIZE];
+	dlgpass dlg_info = { NULL, node, PF_NO_KEY_SLOTS | PF_CAN_USE_BACKUP };
 
 	wchar_t s_path[MAX_PATH];
 	int rlt = _dlg_get_pass( __dlg, &dlg_info );
+	int     flags = 0;
 
 	if ( rlt == ST_OK )
 	{
-		rlt = dc_backup_header( node->mnt.info.device, dlg_info.pass, backup );
+		int bytes = DC_AREA_MAX_SIZE;
+		u8 *backup = malloc(bytes);
+
+		if (dlg_info.use_backup)
+			flags |= HF_BACKUP_HEADER;
+
+		rlt = _wait_dc_backup_header( __dlg, node->mnt.info.device, dlg_info.pass, backup, &bytes, flags, L"Backing up header..." );
 		secure_free( dlg_info.pass );
 
 		if ( rlt == ST_OK )
@@ -1121,61 +1202,78 @@ void _menu_backup_header(
 			_snwprintf( s_path, countof(s_path), L"%s.bin", wcsrchr(node->mnt.info.device, '\\') + 1 );
 			if ( _save_file_dialog( __dlg, s_path, countof(s_path), L"Save backup volume header to file" ) )
 			{
-				rlt = save_file( s_path, backup, sizeof(backup) );
-			} else {
-				return;
-			}
+				rlt = save_file( s_path, backup, bytes );
+			} else rlt = ST_CANCEL;
 		}
-	} else return;
+
+		secure_free(backup);
+	}
 
 	if ( rlt == ST_OK )
 	{
 		__msg_i( __dlg, L"Volume header backup successfully saved to\n\"%s\"", s_path );
-	} else {
+	} else if ( rlt != ST_CANCEL ) {
 		__error_s( __dlg, L"Error save volume header backup", rlt );
-
 	}
 }
 
 
 void _menu_restore_header(
-		_dnode *node 
+		_dnode *node
 	)
 {
-	dlgpass dlg_info = { node, NULL, NULL, NULL, 0 };
-
-	BYTE   backup[DC_AREA_SIZE];
-	HANDLE hfile;
+	dlgpass dlg_info = { NULL, node, PF_NO_KEY_SLOTS | PF_CAN_USE_BACKUP };
 
 	wchar_t s_path[MAX_PATH] = { 0 };
 	int     rlt = ST_ERROR;
-	int     bytes;
+	u8     *backup;
+	u32     bytes;
+	int     flags = 0;
 
 	if ( _open_file_dialog( __dlg, s_path, countof(s_path), L"Open backup volume header" ) )
 	{		
-		hfile = CreateFile(
-			s_path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL
-			);
-
-		if ( hfile != INVALID_HANDLE_VALUE )
+		if ( (rlt = load_file(s_path, &backup, &bytes)) == ST_OK)
 		{
-			ReadFile( hfile, backup, sizeof(backup), &bytes, NULL );
-			CloseHandle( hfile );
-
-			if ( _dlg_get_pass(__dlg, &dlg_info) == ST_OK )
+			rlt = _dlg_get_pass(__dlg, &dlg_info); 
+			if (rlt == ST_OK )
 			{
-				rlt = dc_restore_header( node->mnt.info.device, dlg_info.pass, backup );
-				secure_free( dlg_info.pass );
+				if (dlg_info.use_backup)
+					flags |= HF_BACKUP_HEADER;
 
-			} else return;
-		} else rlt = ST_NF_FILE;
-	} else return;
+				rlt = _wait_dc_restore_header( __dlg, node->mnt.info.device, dlg_info.pass, backup, bytes, flags, L"Restoring header..." );
+				secure_free( dlg_info.pass );
+			}
+			my_free(backup);
+		}
+	} else rlt = ST_CANCEL;
 
 	if ( rlt == ST_OK )
 	{
 		__msg_i( __dlg, L"Volume header successfully restored from\n\"%s\"", s_path );
-	} else {
+	} else if ( rlt != ST_CANCEL ) {
 		__error_s( __dlg, L"Error restore volume header from backup", rlt );
+	}
+}
 
+
+void _menu_header_config(
+		_dnode *node
+	)
+{
+	if (!node || node->is_root) {
+		__msg_e(__dlg, L"Please select a volume");
+		return;
+	}
+	_dlg_header_config_volume(__dlg, node);
+}
+
+
+void _menu_header_file( )
+{
+	wchar_t s_path[MAX_PATH] = { 0 };
+
+	if (_open_file_dialog(__dlg, s_path, countof(s_path), L"Open header backup file"))
+	{
+		_dlg_header_config_file(__dlg, s_path);
 	}
 }

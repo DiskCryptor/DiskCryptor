@@ -3,6 +3,7 @@ EFI console print with attribute (based on shell print)
 
 Copyright (c) 2016. Disk Cryptography Services for EFI (DCS), Alex Kolotnikov
 Copyright (c) 2016. VeraCrypt, Mounir IDRASSI 
+Copyright (c) 2026. DiskCryptor, David Xanatos
 
 This program and the accompanying materials are licensed and made available
 under the terms and conditions of the GNU Lesser General Public License, version 3.0 (LGPL-3.0).
@@ -287,6 +288,7 @@ AttrPrintTo (
     %E       -   Set output attribute to error
     %B       -   Set output attribute to blue color
     %V       -   Set output attribute to green color
+    %R       -   Set output attribute to red color
 
   Note: The background color is controlled by the shell command cls.
 
@@ -329,11 +331,13 @@ InternalAttrPrintWorker(
   //
   // Back and forth each time fixing up 1 of our flags...
   //
-  Status = StrCopySearchAndReplace(Format,             mPostReplaceFormat, ATTRPRINT_BUFSIZE, L"%N", L"%%N", FALSE, FALSE);
+  Status = StrCopySearchAndReplace(Format,              mPostReplaceFormat,  ATTRPRINT_BUFSIZE, L"%N", L"%%N", FALSE, FALSE);
   Status = StrCopySearchAndReplace(mPostReplaceFormat,  mPostReplaceFormat2, ATTRPRINT_BUFSIZE, L"%E", L"%%E", FALSE, FALSE);
-  Status = StrCopySearchAndReplace(mPostReplaceFormat2, mPostReplaceFormat, ATTRPRINT_BUFSIZE, L"%H", L"%%H", FALSE, FALSE);
+  Status = StrCopySearchAndReplace(mPostReplaceFormat2, mPostReplaceFormat,  ATTRPRINT_BUFSIZE, L"%H", L"%%H", FALSE, FALSE);
   Status = StrCopySearchAndReplace(mPostReplaceFormat,  mPostReplaceFormat2, ATTRPRINT_BUFSIZE, L"%B", L"%%B", FALSE, FALSE);
-  Status = StrCopySearchAndReplace(mPostReplaceFormat2, mPostReplaceFormat, ATTRPRINT_BUFSIZE, L"%V", L"%%V", FALSE, FALSE);
+  Status = StrCopySearchAndReplace(mPostReplaceFormat2, mPostReplaceFormat,  ATTRPRINT_BUFSIZE, L"%V", L"%%V", FALSE, FALSE);
+  Status = StrCopySearchAndReplace(mPostReplaceFormat,  mPostReplaceFormat2, ATTRPRINT_BUFSIZE, L"%O", L"%%O", FALSE, FALSE);
+  CopyMem(mPostReplaceFormat, mPostReplaceFormat2, ATTRPRINT_BUFSIZE);
 
   //
   // Use the last buffer from replacing to print from...
@@ -395,6 +399,9 @@ InternalAttrPrintWorker(
           case (L'V'):
             gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_GREEN, ((OriginalAttribute&(BIT4|BIT5|BIT6))>>4)));
             break;
+          case (L'O'):
+            gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_RED, ((OriginalAttribute&(BIT4|BIT5|BIT6))>>4)));
+            break;
           default:
             //
             // Print a simple '%' symbol
@@ -445,6 +452,7 @@ InternalAttrPrintWorker(
     %E       -   Set output attribute to error
     %B       -   Set output attribute to blue color
     %V       -   Set output attribute to green color
+    %O       -   Set output attribute to red color
 
   Note: The background color is controlled by the shell command cls.
 

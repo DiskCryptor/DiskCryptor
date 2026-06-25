@@ -16,9 +16,6 @@
     <Filter Include="include">
       <UniqueIdentifier>{19ae587a-1f74-4024-a1d0-7b82ec9f7037}</UniqueIdentifier>
     </Filter>
-    <Filter Include="include\boot">
-      <UniqueIdentifier>{e531b1f4-71fe-4802-b7cd-6266b8bbeeeb}</UniqueIdentifier>
-    </Filter>
     <Filter Include="crypto_small">
       <UniqueIdentifier>{bdeae058-ae62-4cd7-a0fd-df857ce4ee9c}</UniqueIdentifier>
     </Filter>
@@ -42,23 +39,11 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="include\boot\bios.h">
-      <Filter>include\boot</Filter>
-    </ClInclude>
-    <ClInclude Include="include\boot\boot.h">
-      <Filter>include\boot</Filter>
-    </ClInclude>
-    <ClInclude Include="include\boot\e820.h">
-      <Filter>include\boot</Filter>
-    </ClInclude>
     <ClInclude Include="include\defines.h">
       <Filter>include</Filter>
     </ClInclude>
-    <ClInclude Include="include\volume.h">
+    <ClInclude Include="include\volume_header.h">
       <Filter>include</Filter>
-    </ClInclude>
-    <ClInclude Include="include\boot\dc_header.h">
-      <Filter>include\boot</Filter>
     </ClInclude>
     <ClInclude Include="crypto_small\sha512_small.h">
       <Filter>crypto_small</Filter>
@@ -77,18 +62,6 @@
     </ClInclude>
     <ClInclude Include="crypto_small\sha512_pkcs5_2_small.h">
       <Filter>crypto_small</Filter>
-    </ClInclude>
-    <ClInclude Include="include\boot\dc_io.h">
-      <Filter>include\boot</Filter>
-    </ClInclude>
-    <ClInclude Include="include\boot\boot_hook.h">
-      <Filter>include\boot</Filter>
-    </ClInclude>
-    <ClInclude Include="include\boot\hdd.h">
-      <Filter>include\boot</Filter>
-    </ClInclude>
-    <ClInclude Include="include\boot\hdd_io.h">
-      <Filter>include\boot</Filter>
     </ClInclude>
     <ClInclude Include="DcsDiskCryptor.h">
       <Filter>Header Files</Filter>
@@ -161,6 +134,21 @@
     </ClInclude>
     <ClInclude Include="Argon2\blake2\blamka-round-ref.h">
       <Filter>crypto\Argon2\blake2</Filter>
+    </ClInclude>
+    <ClInclude Include="include\bootloader.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\dc_header.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="include\dc_io.h">
+      <Filter>include</Filter>
+    </ClInclude>
+    <ClInclude Include="Argon2\argon2_mt.h">
+      <Filter>crypto\Argon2</Filter>
+    </ClInclude>
+    <ClInclude Include="include\dc_keyfiles.h">
+      <Filter>include</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -285,6 +273,15 @@
     </ClCompile>
     <ClCompile Include="Argon2\blake2\blake2b.c">
       <Filter>crypto\Argon2\blake2</Filter>
+    </ClCompile>
+    <ClCompile Include="Argon2\argon2_mt.c">
+      <Filter>crypto\Argon2</Filter>
+    </ClCompile>
+    <ClCompile Include="dc_keyfiles.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="DcsTpmSupport.c">
+      <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

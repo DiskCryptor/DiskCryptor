@@ -3,11 +3,12 @@
 #
 # Copyright (c) 2019. DiskCryptor, David Xanatos
 #
-# This program and the accompanying materials are licensed and made available 
-# under the terms and conditions of the GNU General Public License, version 3.0 (GPL-3.0).
+# This program and the accompanying materials
+# are licensed and made available under the terms and conditions
+# of the GNU Lesser General Public License, version 3.0 (LGPL-3.0).
 # 
 # The full text of the license may be found at
-# https://opensource.org/licenses/GPL-3.0
+# https://opensource.org/licenses/LGPL-3.0
 #
 ##
 
@@ -45,24 +46,36 @@
   DcsConfigMenu.h
   DcsDiskCryptor.h
   emmintrin.h
-  include/volume.h
-  include/boot/bios.h
-  include/boot/boot.h
-  include/boot/boot_hook.h
-  include/boot/dc_header.h
-  include/boot/dc_io.h
-  include/boot/e820.h
-  include/boot/hdd_io.h
-  include/boot/hdd.h
+  include/volume_header.h
+  include/bootloader.h
+  include/dc_header.h
+  include/dc_keyfiles.h
+  include/dc_io.h
   include/defines.h
   intrin.h
+  Argon2/argon2.h
+  Argon2/argon2_mt.h
+  Argon2/core.h
+  Argon2/blake2/blake2b.h
+  Argon2/blake2/blake2-impl.h
+  Argon2/blake2/blamka-round-ref.h
+  Argon2/blake2/blamka-round-opt.h
 
 [Sources.common]
   DcsConfigMenu.c
+  DcsTpmSupport.c
   DcsDiskCryptor.c
   dc_header.c
+  dc_keyfiles.c
   dc_io.c
   crypto_fast/crc32.c
+  Argon2/argon2.c
+  Argon2/argon2_mt.c
+  Argon2/core.c
+  Argon2/ref.c
+  Argon2/opt_sse2.c
+  Argon2/opt_avx2.c
+  Argon2/blake2/blake2b.c
 
 [Sources.X64]
   crypto_fast/sha512.c
@@ -103,25 +116,34 @@
 [LibraryClasses]
   MemoryAllocationLib
   UefiLib
+  UefiBootServicesTableLib
   RngLib
   BaseCryptLib
+  DebugLib
+  SynchronizationLib
+
+[Guids]
+  gEfiPartTypeUnusedGuid
+  gEfiPartTypeSystemPartGuid
+  gEfiFileSystemInfoGuid
 
 [Protocols]
+  gEfiMpServiceProtocolGuid     ## CONSUMES
 
 
 [BuildOptions.IA32]
 MSFT:DEBUG_*_IA32_CC_FLAGS    == /arch:IA32 /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /FIAutoGen.h /EHs-c- /GR- /GF /Gy /Zi /Gm /FAcs /D_UEFI
-MSFT:RELEASE_*_IA32_CC_FLAGS  == /arch:IA32 /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /FIAutoGen.h /EHs-c- /GR- /GF /FAcs /D_UEFI
+MSFT:RELEASE_*_IA32_CC_FLAGS  == /arch:IA32 /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /FIAutoGen.h /EHs-c- /GR- /GF /D_UEFI /O2
 MSFT:NOOPT_*_IA32_CC_FLAGS    == /arch:IA32 /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /FIAutoGen.h /EHs-c- /GR- /GF /Gy /Zi /Gm /Od /FAcs /D_UEFI
 
 *_*_IA32_NASM_FLAGS = --prefix _
 
 [BuildOptions.X64]
 MSFT:DEBUG_*_X64_CC_FLAGS    == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /Zi /Gm /D_UEFI
-MSFT:RELEASE_*_X64_CC_FLAGS  == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /D_UEFI
+MSFT:RELEASE_*_X64_CC_FLAGS  == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /D_UEFI /O2
 MSFT:NOOPT_*_X64_CC_FLAGS    == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /Zi /Gm /Od /D_UEFI
 
 [BuildOptions.AARCH64]
 MSFT:DEBUG_*_AARCH64_CC_FLAGS    == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /Zi /Gm /D_UEFI
-MSFT:RELEASE_*_AARCH64_CC_FLAGS  == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /D_UEFI
+MSFT:RELEASE_*_AARCH64_CC_FLAGS  == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /D_UEFI /O2
 MSFT:NOOPT_*_AARCH64_CC_FLAGS    == /nologo /c /WX /GS- /W4 /Gs32768 /D UNICODE /Gy /FIAutoGen.h /EHs-c- /GR- /GF /Zi /Gm /Od /D_UEFI

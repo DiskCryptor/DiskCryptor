@@ -4,6 +4,7 @@
 #include "sha512_test.h"
 #include "sha512_hmac_test.h"
 #include "pkcs5_test.h"
+#include "argon2_test.h"
 #include "aes_test.h"
 #include "twofish_test.h"
 #include "serpent_test.h"
@@ -65,6 +66,12 @@ int main(int argc, char *argv[])
 		printf("pkcs5: PASSED\n");
 	} else {
 		printf("pkcs5: FAILED\n");
+		passed = FALSE;
+	}
+	if ( test_argon2() ) {
+		printf("Argon2: PASSED\n");
+	} else {
+		printf("Argon2: FAILED\n");
 		passed = FALSE;
 	}
 	if ( test_aes256() ) {

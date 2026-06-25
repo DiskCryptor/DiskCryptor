@@ -62,6 +62,9 @@
     <ClCompile Include="prc_wizard_encrypt.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="prc_header.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="stat.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -75,6 +78,9 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="ui_utils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="prc_tpm.c">
       <Filter>Source Files</Filter>
     </ClCompile>
   </ItemGroup>
@@ -130,6 +136,9 @@
     <ClInclude Include="include\prc_wizard_encrypt.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="include\prc_header.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="include\stat.h">
       <Filter>Header Files</Filter>
     </ClInclude>
@@ -143,6 +152,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\ui_utils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\prc_tpm.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>
@@ -176,7 +188,7 @@
     <None Include="disk_mask.bmp">
       <Filter>Resource Files</Filter>
     </None>
-    <None Include="icon.ico.ico">
+    <None Include="dcrypt.ico">
       <Filter>Resource Files</Filter>
     </None>
     <None Include="undisk.bmp">

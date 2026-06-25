@@ -29,6 +29,7 @@
 #include <math.h>
 
 #include "misc.h"
+#include "..\crc32.h"
 #include "drv_ioctl.h"
 
 typedef int (WINAPI fmt_callback) (int unk1, int unk2, int unk3);
@@ -219,6 +220,7 @@ PVOID secure_alloc(ULONG length)
 	if ( (mem.ptr = VirtualAlloc(NULL, (mem.length = length), MEM_COMMIT+MEM_RESERVE, PAGE_READWRITE)) == NULL ) return NULL;
 #endif
 	if (dc_device_control(DC_CTL_LOCK_MEM, &mem, sizeof(mem), NULL, 0) != NO_ERROR) VirtualLock(mem.ptr, length);
+	memset(mem.ptr, 0, length);
 	return mem.ptr;
 }
 
@@ -251,6 +253,18 @@ int is_wow64()
 		GetCurrentProcess(), &is_wow);
 
 	return (is_wow != FALSE);		
+}
+
+int is_all_zeros(const char* bytes, size_t size)
+{
+	for (size_t i = 0; i < size; i++) 
+		if (bytes[i] != 0) return 0;
+	return 1;
+}
+
+int calc_crc32(const char* bytes, size_t size)
+{
+	return crc32((const unsigned char*)bytes, (u32)size);
 }
 
 int dc_fs_type(u8 *buff)
@@ -620,7 +634,6 @@ wchar_t *dc_get_status_str(int resl)
 	case ST_NF_REG_KEY:			return L"registry key not found";
 	case ST_SCM_ERROR:			return L"cannot open SCM database";
 	case ST_FINISHED:			return L"encryption finished";
-	//case ST_INSTALLED:			return L"driver already installed";
 	case ST_INV_SECT:			return L"device has unsupported sector size";
 	case ST_CLUS_USED:			return L"shrinking error, last clusters are used";
 	case ST_NF_PT_SPACE:		return L"not enough free space in partition to continue encrypting";
@@ -649,6 +662,26 @@ wchar_t *dc_get_status_str(int resl)
 	case ST_BL_NOT_PASSED:		return L"bootloader check not passed";
 	case ST_SB_NO_PASS:			return L"secureboot enabled and not accepting DCS signature";
 	case ST_SHIM_MISSING:		return L"shim package is missing, see https://diskcryptor.org/advanced-boot/ for more information";
+	case ST_HEADER_TO_BIG:		return L"volume header is to big";
+	case ST_SMALL_BUFF:			return L"buffer too small";
+	case ST_BAD_INDEX:		    return L"bad index";
+	case ST_SLOT_NOT_OK:		return L"failed to set up keyslot";
+	case ST_SHRINK_FAILED:		return L"failed to shrink filesystem";
+	case ST_PASS_NOT_FOUND: 	return L"password not found in cache";
+	case ST_MORE_DATA:			return L"more data available";
+	case ST_NO_TPM:				return L"TPM not available";
+	case ST_TPM_ERROR:			return L"TPM command failed";
+	case ST_NOT_SUPPORTED:		return L"operation not supported";
+	case ST_FORMAT_ERR:			return L"invalid data format";
+	case ST_TPM_NV_NOT_FOUND:	return L"NV index not found";
+	case ST_TPM_WRONG_PIN:		return L"TPM authentication failed (wrong PIN)";
+	case ST_TPM_PCR_MISMATCH:	return L"TPM PCR values don't match (system state changed)";
+	case ST_TPM_LOCKOUT:		return L"TPM is locked out (too many failed attempts)";
+	case ST_TPM_INTEGRITY:		return L"TPM sealed data integrity check failed";
+	case ST_GPT_INVALID:		return L"invalid GPT partition table";
+	case ST_NO_FREE_SPACE:		return L"no free space on disk";
+	case ST_PART_TOO_SMALL:		return L"partition too small";
+	case ST_NOT_PRO:			return L"Not Pro";
 	default: return NULL;
 	}
 }

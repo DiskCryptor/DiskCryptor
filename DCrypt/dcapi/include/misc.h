@@ -26,6 +26,9 @@ int dc_api save_file(wchar_t *name, void *data, int size);
 int dc_api load_file(wchar_t *name, void **data, int *size);
 void dc_api my_free(PVOID ptr);
 
+int dc_api is_all_zeros(const char* bytes, size_t size);
+int dc_api calc_crc32(const char* bytes, size_t size);
+
 /* private functions for internal use */
 
 int dc_fs_type(u8 *buff);

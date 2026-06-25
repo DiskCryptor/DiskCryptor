@@ -1,6 +1,8 @@
 /*
     *
     * DiskCryptor - open source partition encryption tool
+    * Copyright (c) 2026
+    * DavidXanatos <info@diskcryptor.org>
     * Copyright (c) 2010-2013
     * ntldr <ntldr@diskcryptor.net> PGP key ID - 0xC48251EB4F8E4E6E
     *
@@ -135,6 +137,16 @@ static BOOLEAN is_dcsys_name(const wchar_t* buff, ULONG length)
 	return length >= 14 && (length == 14 || buff[7] == L':') && _wcsnicmp(buff, L"$dcsys$", 7) == 0;
 }
 
+/*
+* Access mask for operations that must be denied on $dcsys$:
+* - Content access (read/write/execute)
+* - Modification (write attributes, delete, change permissions)
+*/
+#define DCSYS_DENIED_ACCESS ( \
+      FILE_READ_DATA | FILE_WRITE_DATA | FILE_APPEND_DATA | FILE_EXECUTE | \
+      FILE_WRITE_ATTRIBUTES | FILE_WRITE_EA | \
+      DELETE | WRITE_DAC | WRITE_OWNER )
+
 static FLT_PREOP_CALLBACK_STATUS FLTAPI mf_irp_mj_create(IN OUT PFLT_CALLBACK_DATA    Data,
 	                                                     IN     PCFLT_RELATED_OBJECTS FltObjects,
 												         OUT    PVOID*                CompletionContext)
@@ -143,6 +155,7 @@ static FLT_PREOP_CALLBACK_STATUS FLTAPI mf_irp_mj_create(IN OUT PFLT_CALLBACK_DA
 	wchar_t*    p_buff = FltObjects->FileObject->FileName.Buffer;
 	USHORT      length = FltObjects->FileObject->FileName.Length;
 	BOOLEAN     denied = FALSE;
+	BOOLEAN     is_dcsys = FALSE;
 
 	if ( !NT_SUCCESS(FltGetInstanceContext(FltObjects->Instance, (PVOID*)&mf_ctx)) || mf_ctx == NULL )
 	{
@@ -157,11 +170,21 @@ static FLT_PREOP_CALLBACK_STATUS FLTAPI mf_irp_mj_create(IN OUT PFLT_CALLBACK_DA
 			{
 				mf_ctx->dcsys_id = mf_query_dcsys_id(mf_ctx->dev_hook, FltObjects);
 			}
-			denied = (mf_ctx->dcsys_id != 0) &&
+			is_dcsys = (mf_ctx->dcsys_id != 0) &&
 				     (length == sizeof(LARGE_INTEGER) && ((PLARGE_INTEGER)p_buff)->QuadPart == mf_ctx->dcsys_id);
 		} else {
 			while (length >= sizeof(wchar_t) && p_buff[0] == L'\\') p_buff++, length -= sizeof(wchar_t);
-			denied = is_dcsys_name(p_buff, length);
+			is_dcsys = is_dcsys_name(p_buff, length);
+		}
+
+		if (is_dcsys) {
+			DbgMsg("Access to $dcsys$ file, desired access: 0x%x, thread ID: 0x%p, worker thread ID: 0x%p\n",
+				Data->Iopb->Parameters.Create.SecurityContext->DesiredAccess, PsGetCurrentThreadId(), mf_ctx->dev_hook->wrk_thread_id);
+			if (mf_ctx->dev_hook->wrk_thread_id != PsGetCurrentThreadId())
+			{
+				/* Allow read-only attribute access (FILE_READ_ATTRIBUTES, SYNCHRONIZE, READ_CONTROL) */
+				denied = (Data->Iopb->Parameters.Create.SecurityContext->DesiredAccess & DCSYS_DENIED_ACCESS) != 0;
+			}
 		}
 
 		if (denied) {
@@ -296,45 +319,121 @@ static FLT_PREOP_CALLBACK_STATUS FLTAPI mf_filesystem_control(IN OUT PFLT_CALLBA
 	                                                          IN     PCFLT_RELATED_OBJECTS FltObjects,
 												              OUT    PVOID*                CompletionContext)
 {
-	mf_context* mf_ctx;
-	PVOID       p_buff = Data->Iopb->Parameters.FileSystemControl.Buffered.SystemBuffer;
-	ULONG       length = Data->Iopb->Parameters.FileSystemControl.Buffered.InputBufferLength;
-	ULONG       c_code = Data->Iopb->Parameters.FileSystemControl.Buffered.FsControlCode;
+	mf_context*                mf_ctx;
+	PSHRINK_VOLUME_INFORMATION shrink_info;
+	PVOID                      p_buff = Data->Iopb->Parameters.FileSystemControl.Buffered.SystemBuffer;
+	ULONG                      length = Data->Iopb->Parameters.FileSystemControl.Buffered.InputBufferLength;
+	ULONG                      c_code = Data->Iopb->Parameters.FileSystemControl.Buffered.FsControlCode;
+	FLT_PREOP_CALLBACK_STATUS  ret = FLT_PREOP_SUCCESS_NO_CALLBACK;
 
 	if (Data->Iopb->MinorFunction != IRP_MN_USER_FS_REQUEST) return FLT_PREOP_SUCCESS_NO_CALLBACK;
 	if (c_code != FSCTL_EXTEND_VOLUME && c_code != FSCTL_SHRINK_VOLUME) return FLT_PREOP_SUCCESS_NO_CALLBACK;
-	
+
 	if ( !NT_SUCCESS(FltGetInstanceContext(FltObjects->Instance, (PVOID*)&mf_ctx)) || mf_ctx == NULL )
 	{
 		return FLT_PREOP_SUCCESS_NO_CALLBACK;
 	}
 
-	if (mf_ctx->dev_hook && IS_STORAGE_ON_END(mf_ctx->dev_hook->flags) != 0)
+	if (mf_ctx->dev_hook && (mf_ctx->dev_hook->flags & F_ENABLED) && mf_ctx->dev_hook->wrk_thread_id != PsGetCurrentThreadId()
+		&& (IS_STORAGE_ON_END(mf_ctx->dev_hook->flags) != 0 || (mf_ctx->dev_hook->flags & F_HEAD_BACKUP) != 0))
 	{
-		ULONG header_sectors = mf_ctx->dev_hook->head_len / min(mf_ctx->dev_hook->bps, SECTOR_SIZE);
-		
 		if (c_code == FSCTL_SHRINK_VOLUME && length >= sizeof(SHRINK_VOLUME_INFORMATION))
 		{
-			((PSHRINK_VOLUME_INFORMATION)p_buff)->NewNumberOfSectors = ((PSHRINK_VOLUME_INFORMATION)p_buff)->NewNumberOfSectors > header_sectors ?
-				                                                       ((PSHRINK_VOLUME_INFORMATION)p_buff)->NewNumberOfSectors - header_sectors : 0;
+			shrink_info = (PSHRINK_VOLUME_INFORMATION)p_buff;
 
-		} else if (c_code == FSCTL_EXTEND_VOLUME && length >= sizeof(u64)) {
-			((PLARGE_INTEGER)p_buff)->QuadPart -= header_sectors;
+			if (shrink_info->ShrinkRequestType == ShrinkPrepare)
+			{
+				/* ShrinkPrepare: store partition size for post operation after commit */
+				mf_ctx->dev_hook->pending_shrink_sectors = shrink_info->NewNumberOfSectors;
+				/* Adjust sector count to account for storage area at partition end */
+				if (IS_STORAGE_ON_END(mf_ctx->dev_hook->flags)) { 
+					shrink_info->NewNumberOfSectors -= (mf_ctx->dev_hook->stor_len / max(mf_ctx->dev_hook->bps, SECTOR_SIZE));
+					if (shrink_info->NewNumberOfSectors < 0) shrink_info->NewNumberOfSectors = 0;
+				}
+				DbgMsg("mf_filesystem_control: ShrinkPrepare, pending=%I64d, fsctl=%I64u\n",
+					mf_ctx->dev_hook->pending_shrink_sectors, shrink_info->NewNumberOfSectors);
+			}
+			else if (shrink_info->ShrinkRequestType == ShrinkCommit)
+			{
+				/* ShrinkCommit: request post-op callback to relocate storage/header */
+				DbgMsg("mf_filesystem_control: ShrinkCommit, requesting post-op callback\n");
+				ret = FLT_PREOP_SUCCESS_WITH_CALLBACK;
+			}
+			else if (shrink_info->ShrinkRequestType == ShrinkAbort)
+			{
+				/* ShrinkAbort: clear pending state */
+				mf_ctx->dev_hook->pending_shrink_sectors = -1;
+				DbgMsg("mf_filesystem_control: ShrinkAbort, cleared pending shrink\n");
+			}
 		}
-		if ( !NT_SUCCESS(Data->IoStatus.Status = dc_update_volume(mf_ctx->dev_hook)) ) {
-			FltReleaseContext(mf_ctx);
-			return FLT_PREOP_COMPLETE;
+		else if (c_code == FSCTL_EXTEND_VOLUME && length >= sizeof(u64))
+		{
+			/* Adjust sector count to account for storage area at partition end */
+			if (IS_STORAGE_ON_END(mf_ctx->dev_hook->flags)) {
+				((PLARGE_INTEGER)p_buff)->QuadPart -= (mf_ctx->dev_hook->stor_len / max(mf_ctx->dev_hook->bps, SECTOR_SIZE));
+				if (((PLARGE_INTEGER)p_buff)->QuadPart < 0) ((PLARGE_INTEGER)p_buff)->QuadPart = 0;
+			}
+			DbgMsg("mf_filesystem_control: expand pre-op, IOCTL path will handle storage relocation\n");
 		}
 	}
 	FltReleaseContext(mf_ctx);
-	return FLT_PREOP_SUCCESS_NO_CALLBACK;
+	return ret;
+}
+
+static FLT_POSTOP_CALLBACK_STATUS FLTAPI mf_post_filesystem_control(IN OUT PFLT_CALLBACK_DATA       Data,
+	                                                                IN     PCFLT_RELATED_OBJECTS    FltObjects,
+																    IN     PVOID                    CompletionContext,
+																    IN     FLT_POST_OPERATION_FLAGS Flags)
+{
+	mf_context* mf_ctx;
+	LONGLONG    pending_sectors;
+	ULONGLONG   new_size;
+	NTSTATUS    status;
+
+	/* Only process successful shrink operations */
+	if (!NT_SUCCESS(Data->IoStatus.Status)) {
+		DbgMsg("mf_post_filesystem_control: shrink failed with status 0x%X, skipping\n", Data->IoStatus.Status);
+		return FLT_POSTOP_FINISHED_PROCESSING;
+	}
+
+	if ( !NT_SUCCESS(FltGetInstanceContext(FltObjects->Instance, (PVOID*)&mf_ctx)) || mf_ctx == NULL )
+	{
+		return FLT_POSTOP_FINISHED_PROCESSING;
+	}
+
+	if (mf_ctx->dev_hook)
+	{
+		/* Get stored shrink target from ShrinkPrepare and calculate new partition size */
+		pending_sectors = mf_ctx->dev_hook->pending_shrink_sectors;
+		mf_ctx->dev_hook->pending_shrink_sectors = -1; /* Clear pending state */
+
+		if (pending_sectors >= 0)
+		{
+			/* pending_shrink_sectors already contains full partition size from ShrinkPrepare */
+			new_size = pending_sectors * mf_ctx->dev_hook->bps;
+			DbgMsg("mf_post_filesystem_control: ShrinkCommit post-op, new_size=%I64u\n", new_size);
+
+			status = dc_update_volume(mf_ctx->dev_hook, new_size);
+			if (!NT_SUCCESS(status)) {
+				DbgMsg("mf_post_filesystem_control: dc_update_volume failed with status 0x%X\n", status);
+				/* Don't fail the FSCTL - filesystem already shrunk, storage relocation will be retried via IOCTL path */
+			}
+		}
+		else
+		{
+			DbgMsg("mf_post_filesystem_control: no pending shrink target, skipping\n");
+		}
+	}
+
+	FltReleaseContext(mf_ctx);
+	return FLT_POSTOP_FINISHED_PROCESSING;
 }
 
 
 static const FLT_OPERATION_REGISTRATION mf_op_callbacks[] = {
 	{ IRP_MJ_CREATE,              0, mf_irp_mj_create,      NULL },
 	{ IRP_MJ_DIRECTORY_CONTROL,   0, mf_directory_control,  mf_post_directory_control },
-	{ IRP_MJ_FILE_SYSTEM_CONTROL, 0, mf_filesystem_control, NULL },
+	{ IRP_MJ_FILE_SYSTEM_CONTROL, 0, mf_filesystem_control, mf_post_filesystem_control },
     { IRP_MJ_OPERATION_END }
 };
 

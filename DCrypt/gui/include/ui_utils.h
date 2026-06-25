@@ -12,6 +12,7 @@
 #define IDS_REENCRYPT		L"&Reencrypt"
 
 #define IDS_CHPASS			L"&Change Password"
+#define IDS_HEADCFG         L"&Edit Header"
 
 #define IDS_BOOTINSTALL		L"&Install Loader"
 #define IDS_BOOTREMOVE		L"&Remove Loader"
@@ -40,10 +41,11 @@
 #define IDS_USE_KEYFILE		L"Use Keyfile"
 
 #define IDS_MODE_NAME		L"XTS"
-#define IDS_PRF_NAME		L"HMAC-SHA-512"
+#define IDS_PRF_NAME		L"Pkcs5.2 SHA-512"
+#define IDS_ARGON_NAME		L"Argon2id v1.3"
 
-#define DC_HOMEPAGE			L"http://diskcryptor.org/"
-#define DC_FORUMPAGE		L"http://diskcryptor.org/forum"
+#define DC_HOMEPAGE			L"https://diskcryptor.org/"
+#define DC_FORUMPAGE		L"https://diskcryptor.org/go.php?to=dc-forum"
 #define DC_NAME				L"DiskCryptor"
 
 #define DC_MUTEX			L"DC_UI_MUTEX"
@@ -102,6 +104,7 @@
 #define HBOT_PART_LIST_BY_ID	4	// IDC_PART_LIST_BY_ID
 #define HENC_WIZARD_BOOT_DEVS	5	// IDC_BOOT_DEVS
 #define HBENCHMARK				6	// IDC_LIST_BENCHMARK
+#define HBENCHMARK_KDF			7	// IDC_LIST_BENCHMARK_KDF
 
 #define _set_check( hwnd, id, state ) ( \
 		SendMessage( GetDlgItem( hwnd, id ), BM_SETCHECK, state, 0 ) \

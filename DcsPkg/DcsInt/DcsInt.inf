@@ -45,6 +45,7 @@
   PasswordLib
   DcsCfgLib
   DcsIntLib
+#  VeraCryptLib
   DiskCryptorLib
 
 [Protocols]

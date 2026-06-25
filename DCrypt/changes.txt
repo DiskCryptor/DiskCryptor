@@ -1,32 +1,66 @@
+
+
+[*.0?.2026] - 2.0.0/884.118.237
+  [+] Added Argon2id key derivation function support
+  [+] Added optional TPM support to DCS bootloader
+  [+] Added pre boot config menu to DCS allowing to change some settings from the password prompt
+  [+] Added mechanism to skip unused sectors during encryption/decryption (SSD optimization)
+  [*] Reachritectured volume transcription to be no longer synchroniouse, fixed deadlocks on low memory systems and race condition when re encrypting a volume
+  [*] Fixed sector calculation in the minifilter when resizing volumes on a 4k sector disk
+  [+] Added optional RAW volume protection, when enabled volumes without a recognized file system can not be written to or formated
+  [*] Rearrange main window menu options
+  [*] Fixed drive list corruption when scrolling left/right
+  [+] Added new header vormat v2 (variable size) featuring key slots, allowing to use multiple passwords and/or keyfiles independantly
+  [+] Added volume header editor
+  [+] When encrypting an existing volume, when partition slack space is available it can be used for the relocation area instead of $dcsys$ file (like formating does)
+  [+] When encrypting an existing volume, the driver can atempt to schrink the file system to create free space for the relocation area
+  [+] Added volume mount at boot shortcut, efi bootloader passed the header keys directly to avoid redundant KDF invocation
+  [-] Removed EFI picture password
+  [+] Added proper On Screen Keyboard support for touchscreen devices in the EFI bootloader
+  [+] Added optional header backup at partition end
+  [*] Fixed relocation failure when schrinking a volume with storage area at end (on newer windows versions)
+  [+] Added cache password menu option
+  [+] Added status bar
+  [+] Added virtual Keyfiles simplyfying the transfer of key material from a password manager
+  [+] DCS can be installed to a dedicated ESP partition instead of using window's EFI partision
+  [*] Disabled SSD Chunking, on modern SSD's it hurts the performance
+  [+] Added USB keyfile support to DCS botoloader
+  [+] Added TPM management options to GUI
+  [+] Added a mechanism to change a volumes layout (resize header, add/remove backup header, change relocation area)
+  [+] Added secure desktop password entry
+
+
+
+
 [09.02.2026] - 1.4.1/850.118.206
-  [+] added -mkefipxe and -mkefiiso commands to dccon to create EFI bootable PXE images and ISO files
-  [+] added -efi menu to list get and set EFI variables
-  [*] moved -sb_info from -boot to -efi
-  [+] added -mok menu to manage Machine Owner Key (MOK) list for Secure Boot Shim, it mirrors the linux mokutil functionality
-  [+] Added ARM64 Shim loader for Secure Boot
-  [+] added native 4k sector support to the EFI bootloader
-  [*] fixed secure boot warning when encrypting non boot volumes
-  [*] fixed bootloader support for encrypted partitions created with format instead of encrypt
+  [+] Added -mkefipxe and -mkefiiso commands to dccon to create EFI bootable PXE images and ISO files
+  [+] Added -efi menu to list get and set EFI variables
+  [*] Moved -sb_info from -boot to -efi
+  [+] Added -mok menu to manage Machine Owner Key (MOK) list for Secure Boot Shim, it mirrors the linux mokutil functionality
+  [+] Added ARM64 Shim loader for Secure Boot to the Advanced Boot Pack
+  [+] Added native 4k sector support to the EFI bootloader
+  [*] Fixed secure boot warning when encrypting non boot volumes
+  [*] Fixed bootloader support for encrypted partitions created with format instead of encrypt
 
 [21.01.2026] - 1.4.0/850.118.205
   [*] Updated driver to build with VS2022
   [*] EFI bootloader now builds with latest edk2-stable202511
   [*] EFI bootloader files are no longer embedded in the binary; they are stored in DcsPkg_[ARCH].zip, or copied from DcsPkg_[ARCH] folder if present
-  [+] added dccon commands -replacems and -restorems
-  [+] added ARM64 support to driver
-  [-] removed 32-bit OS support
-  [+] added ARM64 support to DCS EFI bootloader (experimental)
-  [*] improved the EFI bootloader is passing the Boot Data Block to the driver
-  [+] added secure boot signature check, the ui will not allow setup if secure boot is enabled and the bootloader is not signed
-  [*] fixed mbr encryption from dccon on mbr systems broken with 1.3
-  [+] added -sb_info command to dccon to display secure boot configuration
-  [+] added bootloader gui context menu options to add/remove Boot Menu Entry and replace/restore bootmgfw.efi
-  [*] fixed bootloader gui context menu "Install Loader" always installed MBR not EFI
-  [+] added EFI bootable ISO creation
-  [+] added -offline_install and -offline_remove commands to dccon allowing to install/remove dc to/from a mounted boot.wim WinPE image (also works for install.wim)
+  [+] Added dccon commands -replacems and -restorems
+  [+] Added ARM64 support to driver
+  [-] Removed 32-bit OS support
+  [+] Added ARM64 support to DCS EFI bootloader (experimental)
+  [*] Improved the EFI bootloader is passing the Boot Data Block to the driver
+  [+] Added secure boot signature check, the ui will not allow setup if secure boot is enabled and the bootloader is not signed
+  [*] Fixed mbr encryption from dccon on mbr systems broken with 1.3
+  [+] Added -sb_info command to dccon to display secure boot configuration
+  [+] Added bootloader gui context menu options to add/remove Boot Menu Entry and replace/restore bootmgfw.efi
+  [*] Fixed bootloader gui context menu "Install Loader" always installed MBR not EFI
+  [+] Added EFI bootable ISO creation
+  [+] Added -offline_install and -offline_remove commands to dccon allowing to install/remove dc to/from a mounted boot.wim WinPE image (also works for install.wim)
   [*] DcsBoot.efi no longer by default invoked DcsInfo.dcs on first boot, we dont use that info currently anyways
-  [+] added PXE boot support to DCS EFI bootloader
-  [*] Updated Shim loader (x64) for Secure Boot to latest version
+  [+] Added PXE boot support to DCS EFI bootloader; the required PXE Preloader is part of the Advanced Boot Pack
+  [*] Updated Shim loader (x64) for Secure Boot to latest version; available for download as part of the Advanced Boot Pack
 
 [12.08.2023] - 1.3.0/849.118.204 (fully signed release)
   [+] Added safe system volume encryption (bootloader is tested before anything gets encrypted)
