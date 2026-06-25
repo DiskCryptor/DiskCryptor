@@ -136,6 +136,7 @@
     <DriverType>WDM</DriverType>
     <TargetVersion>Windows10</TargetVersion>
     <Driver_SpectreMitigation>Spectre</Driver_SpectreMitigation>
+    <ALLOW_DATE_TIME>1</ALLOW_DATE_TIME>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
