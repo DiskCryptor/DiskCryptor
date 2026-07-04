@@ -197,9 +197,8 @@
 #define DST_BOOTLOADER               0x10 // system started via DC bootloader
 #define DST_SMALL_MEM                0x20 // BIOS base memory too small for DC bootloader
 #define DST_UEFI_BOOT                0x40 // booted in UEFI mode
-
 #define DST_ARGON2_OK                0x80 // Argon2id selftest passed (may fail on low memory systems)
-
+#define DST_UEFI_RETRY         0x40000000 // failed to read efi variable, retry later
 #define DST_PRO_ENABLED        0x80000000
 
 /* bootloader */

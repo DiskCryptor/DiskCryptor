@@ -1,7 +1,9 @@
 
 
-[??.07.2026] - 2.0.1/886.118.237
+[??.07.2026] - 2.0.1/886.118.238
   [*] Fixed Hwid detection issue in driver
+  [*] Fixed BSOD on some ARM64 devices caused by driver
+  [*] FIxed DCS issues with some ARM64 laptops
 
 [04.07.2026] - 2.0.0/885.118.237
   [+] Added Argon2id key derivation function support

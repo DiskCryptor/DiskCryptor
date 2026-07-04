@@ -332,12 +332,21 @@ typedef NTSTATUS (NTAPI * P_NtQuerySystemEnvironmentValueEx)(
 
 P_NtQuerySystemEnvironmentValueEx pNtQuerySystemEnvironmentValueEx = NULL;
 
-BOOLEAN dc_efi_check()
+BOOLEAN dc_efi_init()
 {
 	UNICODE_STRING uni;
 	RtlInitUnicodeString(&uni, L"ZwQuerySystemEnvironmentValueEx");
 	pNtQuerySystemEnvironmentValueEx = MmGetSystemRoutineAddress(&uni);
-	if (!pNtQuerySystemEnvironmentValueEx) // only exported on windows 8 and later
+	if (!pNtQuerySystemEnvironmentValueEx) {
+		DbgMsg("NtQuerySystemEnvironmentValueEx not found\n");
+		return FALSE;
+	}
+	return TRUE;
+}
+
+BOOLEAN dc_efi_check()
+{
+	if (!pNtQuerySystemEnvironmentValueEx) 
 		return FALSE;
 
 	UNICODE_STRING NameString;
@@ -351,7 +360,7 @@ BOOLEAN dc_efi_check()
 	ULONG Length = sizeof(Buffer);
 	NTSTATUS status = pNtQuerySystemEnvironmentValueEx(&NameString, &Guid, Buffer, &Length, 0i64);
 
-	//DbgMsg("NtQuerySystemEnvironmentValueEx, status=%08x\n", status);
+	DbgMsg("NtQuerySystemEnvironmentValueEx, status=%08x\n", status);
 
 	if(status == STATUS_VARIABLE_NOT_FOUND)
 		dc_load_flags |= DST_UEFI_BOOT;
@@ -360,7 +369,7 @@ BOOLEAN dc_efi_check()
 
 GUID  gEfiDcsVariableGuid = { 0x101f8560, 0xd73a, 0x4ff7, { 0x89, 0xf6, 0x81, 0x70, 0xf6, 0x61, 0x55, 0x87 } };
 
-NTSTATUS ReadEfiVar(_In_ PCWSTR Name, _In_ const GUID* VendorGuid, _Outptr_result_bytebuffer_(*OutSize) PVOID* OutData, _Out_ PULONG OutSize, _Out_opt_ PULONG OutAttributes)
+NTSTATUS ReadEfiVar(_In_ PCWSTR Name, _In_opt_ const GUID* VendorGuid, _Outptr_result_bytebuffer_(*OutSize) PVOID* OutData, _Out_ PULONG OutSize, _Out_opt_ PULONG OutAttributes)
 {
 	NTSTATUS status;
 	UNICODE_STRING usName;
@@ -401,16 +410,24 @@ int dc_get_uefi_boot_pass()
 	PVOID data;
 	ULONG dataSize;
 	ULONG attrs;
-	PHYSICAL_ADDRESS addr;
+	PHYSICAL_ADDRESS addr = {0};
 
+	DbgMsg("DcsBootDataAddr... ");
 	NTSTATUS status = ReadEfiVar(L"DcsBootDataAddr", NULL, &data, &dataSize, &attrs);
 	if (!NT_SUCCESS(status)) {
-		DbgMsg("DcsBootDataAddr not found\n");
+		DbgMsg("not found status=%08X\n", status);
+#ifdef _M_ARM64
+		// on ASUS VivoBook with a Qualcomm Snapdragon X Elite we fail here something needs more init
+		// if that happens set up a retry
+		if (status == STATUS_NOT_SUPPORTED) {
+			dc_load_flags |= DST_UEFI_RETRY;
+		}
+#endif
 		return ST_ERROR;
 	}
 
 	if(dataSize < sizeof(u64))
-		DbgMsg("DcsBootDataAddr size invalid %d\n", dataSize);
+		DbgMsg("size invalid %d\n", dataSize);
 	else
 		addr.QuadPart = *(u64*)data;
 
@@ -418,7 +435,7 @@ int dc_get_uefi_boot_pass()
 
 	if (!addr.QuadPart) return ST_ERROR;
 	
-	DbgMsg("DcsBootDataAddr value 0x%p\n", addr.QuadPart);
+	DbgMsg("value 0x%p\n", addr.QuadPart);
 
 	if (dc_try_load_bdb(addr) == ST_OK) return ST_OK;
 
@@ -427,9 +444,14 @@ int dc_get_uefi_boot_pass()
 
 void dc_get_boot_pass()
 {
-	DbgMsg("dc_get_boot_pass\n");
-
+	dc_efi_init();
+#ifndef _M_ARM64
 	dc_efi_check();
+#else // ARM64 always boots via UEFI
+	dc_load_flags |= DST_UEFI_BOOT;
+#endif
+
+	DbgMsg("dc_get_boot_pass uefi_boot=%d\n", (dc_load_flags & DST_UEFI_BOOT) ? 1 : 0);
 
 	if (dc_load_flags & DST_UEFI_BOOT)
 	{
@@ -443,12 +465,14 @@ void dc_get_boot_pass()
 		}
 #endif
 	}
+#ifndef _M_ARM64
 	else
 	{
 		if (dc_get_legacy_boot_pass() == ST_OK) {
 			return;
 		}
 	}
+#endif
 
 	DbgMsg("boot data block NOT found\n");
 }

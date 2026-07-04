@@ -81,6 +81,8 @@
 # Architecture-specific overrides
 [LibraryClasses.AARCH64]
   BaseMemoryLib|MdePkg/Library/BaseMemoryLib/BaseMemoryLib.inf
+  # Safe RNG that doesn't read ARM ID registers (Qualcomm compatibility)
+  RngLib|DcsPkg/Library/BaseRngLibSafe/BaseRngLibSafe.inf
 
  [LibraryClasses.common.UEFI_APPLICATION]
   ShellLib|ShellPkg/Library/UefiShellLib/UefiShellLib.inf

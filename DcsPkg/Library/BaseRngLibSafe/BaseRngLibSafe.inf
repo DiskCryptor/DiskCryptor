@@ -1,0 +1,32 @@
+## @file
+#  Safe RNG Library for platforms where hardware RNG is not accessible.
+#
+#  Uses a simple PRNG - NOT cryptographically secure.
+#  For Qualcomm ARM64 compatibility where BaseRngLib crashes.
+#
+#  Copyright (c) 2024-2026 DiskCryptor Project
+#  SPDX-License-Identifier: LGPL-3.0
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = BaseRngLibSafe
+  FILE_GUID                      = 8A9F3C2E-7B5D-4E1A-9C6F-2D8E4A7B3C5F
+  MODULE_TYPE                    = BASE
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = RngLib
+
+#
+#  VALID_ARCHITECTURES           = IA32 X64 AARCH64
+#
+
+[Sources]
+  BaseRngLibSafe.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+
+[LibraryClasses]
+  BaseLib
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib

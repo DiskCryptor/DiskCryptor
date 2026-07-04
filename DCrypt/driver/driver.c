@@ -299,7 +299,10 @@ NTSTATUS
 	dc_init_mount();
 	io_init();
 	dc_get_boot_pass();
-	dc_check_base_mem();
+#ifndef _M_ARM64
+	if ((dc_load_flags & DST_UEFI_BOOT) == 0)
+		dc_check_base_mem();
+#endif
 
 	DbgMsg("dc_load_flags is %08x\n", dc_load_flags);
 	

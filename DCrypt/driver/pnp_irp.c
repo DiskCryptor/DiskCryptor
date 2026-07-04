@@ -192,6 +192,19 @@ NTSTATUS dc_add_device(PDRIVER_OBJECT drv_obj, PDEVICE_OBJECT pdo_dev)
 	// reseed PRNG on device attach
 	cp_rand_reseed();
 	
+#ifdef _M_ARM64
+	if (dc_load_flags & DST_UEFI_RETRY)
+	{
+		int dc_get_uefi_boot_pass();
+		DbgMsg("dc_get_boot_pass retry\n");
+		if (dc_get_uefi_boot_pass() == ST_OK)
+			DbgMsg("boot data block found on retry\n");
+		else
+			DbgMsg("boot data block NOT found on retry\n");
+		dc_load_flags &= ~DST_UEFI_RETRY;
+	}
+#endif
+
 	// create FDO device
 	if ( !NT_SUCCESS(status = IoCreateDevice(drv_obj, sizeof(dev_hook), NULL, high_dev->DeviceType, 0, FALSE, &hook_dev)) ) {
 		DbgMsg("IoCreateDevice failed, status=%0.8x\n", status);

@@ -97,20 +97,31 @@ void com_print(char *format, ...)
 
 void hal_print(char *format, ...)
 {
-	char    dbg_msg[MAX_PATH];
-	va_list args;
+	char         dbg_msg[MAX_PATH];
+	WCHAR        dbg_msg_w[MAX_PATH];
+	UNICODE_STRING ustr;
+	ANSI_STRING  astr;
+	va_list      args;
 
 	va_start(args, format);
 
-	_vsnprintf(
-		dbg_msg, sizeof(dbg_msg), format, args);
+	_vsnprintf_s(
+		dbg_msg, sizeof(dbg_msg), _TRUNCATE, format, args);
 
 	va_end(args);
 
-	InbvDisplayString(dbg_msg);
+	// Convert ANSI to UNICODE for ZwDisplayString
+	RtlInitAnsiString(&astr, dbg_msg);
+	ustr.Buffer = dbg_msg_w;
+	ustr.Length = 0;
+	ustr.MaximumLength = sizeof(dbg_msg_w);
+
+	if (NT_SUCCESS(RtlAnsiStringToUnicodeString(&ustr, &astr, FALSE))) {
+		ZwDisplayString(&ustr);
+	}
 
 	if (KeGetCurrentIrql() < DISPATCH_LEVEL) {
-		dc_delay(500);
+		dc_delay(100);
 	}
 }
 
@@ -141,11 +152,6 @@ void dc_dbg_init()
 	/* read junk out of the RBR */
 	READ_PORT_UCHAR(pv(SER_RBR(COM_BASE)));
 #endif /* DBG_COM */
-
-#ifdef DBG_HAL_DISPLAY
-	InbvAcquireDisplayOwnership();
-	InbvEnableDisplayString(TRUE);
-#endif /* DBG_HAL_DISPLAY */
 }
 
 
