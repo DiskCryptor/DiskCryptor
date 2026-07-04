@@ -54,9 +54,11 @@ We have updated DiskCryptor for use with Windows 10 and 11, adding a UEFI/GPT bo
 Yes. DiskCryptor is still actively maintained. However, it is a very mature piece of software, and there is little ongoing development required. As a result, releases are infrequent.
 
 #### All DiskCryptor builds are labeled "BETA" Will there ever be a FINAL release?
-No. There will not be a FINAL release. The BETA label is intentional and serves as an explicit warning. DiskCryptor is a free, low-level disk encryption tool; even minor misuse, misconfiguration, or unexpected interactions can result in irreversible data loss.
+No. The BETA label for now is intentional and serves as an explicit warning. DiskCryptor is a free, low-level disk encryption tool; even minor misuse, misconfiguration, or unexpected interactions can result in irreversible data loss.
 
 The BETA designation serves as a clear warning and a legal and practical boundary: you are expected to understand what the software does and to assume full responsibility for its use. __DiskCryptor is used entirely at your own risk.__
+
+We might adjust the statement in the future, though.
 
 I have personally used DiskCryptor for decades without major issues; however, I understand the implications of each action and always maintain reliable backups.
 
@@ -83,7 +85,7 @@ This issue may reoccur after future Windows updates. Keeping this script availab
 For a permanent solution, review and correct your EFI boot order so that the system boots \EFI\DCS\DcsBoot.efi directly.
 
 #### Does DiskCryptor support Secure Boot?
-DiskCryptor offers Secure Boot support using a SHIM mechanism with a custom MOK, its simple to set up and works on alls ystems on which linux secure boot also works.
+DiskCryptor offers Secure Boot support using a SHIM mechanism with a custom MOK, its simple to set up and works on all systems on which linux secure boot also works.
 
 [More F.A.Q. on the Home Page](https://diskcryptor.org/faq/)
 
