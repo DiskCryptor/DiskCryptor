@@ -1,6 +1,6 @@
 
 
-[*.0?.2026] - 2.0.0/885.118.237
+[04.07.2026] - 2.0.0/885.118.237
   [+] Added Argon2id key derivation function support
   [+] Added optional TPM support to DCS bootloader
   [+] Added pre boot config menu to DCS allowing to change some settings from the password prompt
