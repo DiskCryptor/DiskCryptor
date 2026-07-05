@@ -207,81 +207,79 @@
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
     </ClCompile>
+    <ClCompile Include="xts_aes_ce.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+    </ClCompile>
+    <ClCompile Include="xts_serpent_neon.c">
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|x64'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <CustomBuild Include="amd64\aes_amd64.nasm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"
-</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"
-</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">true</ExcludedFromBuild>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="amd64\aes_padlock_amd64.nasm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">true</ExcludedFromBuild>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="amd64\twofish_amd64.nasm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">true</ExcludedFromBuild>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="amd64\xts_aes_ni_amd64.nasm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">true</ExcludedFromBuild>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="amd64\xts_serpent_avx_amd64.nasm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">true</ExcludedFromBuild>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="amd64\xts_serpent_sse2_amd64.nasm">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">true</ExcludedFromBuild>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Debug|ARM64'">true</ExcludedFromBuild>
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
+      <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">true</ExcludedFromBuild>
+      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
+      <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -m amd64 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
-      <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|ARM64'">$(OutDir)obj\$(ProjectName)\%(Filename).obj</Outputs>
     </CustomBuild>
     <CustomBuild Include="i386\aes_i386.nasm">
       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">"$(SolutionDir)tools\yasm\yasm.exe" -Xvc -f win32 -o "$(OutDir)obj\$(ProjectName)\%(Filename).obj" "%(FullPath)"</Command>
@@ -419,6 +417,8 @@
     <ClInclude Include="xts_fast.h" />
     <ClInclude Include="xts_serpent_avx.h" />
     <ClInclude Include="xts_serpent_sse2.h" />
+    <ClInclude Include="xts_aes_ce.h" />
+    <ClInclude Include="xts_serpent_neon.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

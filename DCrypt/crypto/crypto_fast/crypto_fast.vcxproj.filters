@@ -51,6 +51,12 @@
     <ClCompile Include="sha512_hmac_drbg.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="xts_aes_ce.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="xts_serpent_neon.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="aes_asm.h">
@@ -93,6 +99,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="sha512_hmac_drbg.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="xts_serpent_neon.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="xts_aes_ce.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

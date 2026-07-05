@@ -16,7 +16,10 @@
  * (at your option) any later version.
  */
 #include <memory.h>
+#ifndef _M_ARM64
 #include <intrin.h>
+#endif
+/* ARM64: _rotl/_rotr are compiler built-ins */
 #include "serpent.h"
 
 /* Key is padded to the maximum of 256 bits before round key generation.

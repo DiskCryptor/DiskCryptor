@@ -16,11 +16,27 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+
+#ifndef _M_ARM64
 #include <intrin.h>
+#else
+/* ARM64: __stosd is x86-specific, provide replacement */
+#define __stosd(dst, val, count) do { \
+    unsigned long *_p = (unsigned long*)(dst); \
+    size_t _n = (count); \
+    while (_n--) *_p++ = (val); \
+} while(0)
+#endif
+
+/* Ensure NULL is defined for kernel mode */
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 #include "sha512_hmac_drbg.h"
 
 /*
-	Internal function, implements HMAC_DBRG_Update according NIST SP 800-90 specification.
+	Internal function, implements HMAC_DRBG_Update according NIST SP 800-90 specification.
 */
 static void sha512_hmac_drbg_update( sha512_hmac_drbg_ctx *ctx, const void *provided_1, size_t provided_1_len,
 	                                                            const void *provided_2, size_t provided_2_len )
@@ -87,7 +103,7 @@ int _stdcall sha512_hmac_drbg_instantiate( sha512_hmac_drbg_ctx *ctx, const void
 	// Val = 0x01, 01...01
 	memset(ctx->val, 0x01, sizeof(ctx->val));
 
-	// ( Key, Val ) = HMAC_DBRG_Update ( entropy || personal, Key, Val )
+	// ( Key, Val ) = HMAC_DRBG_Update ( entropy || personal, Key, Val )
 	sha512_hmac_drbg_update(ctx, entropy, entropy_len, personal, personal_len);
 
 	// reseed_counter = 1
@@ -137,7 +153,7 @@ int _stdcall sha512_hmac_drbg_generate( sha512_hmac_drbg_ctx *ctx, const void   
 	                                                               unsigned char *output,     size_t output_len )
 {
 	if ( (ctx->reseed_counter > SHA512_HMAC_DRBG_RESEED_INTERVAL) || // If reseed_counter > reseed_interval, then return an indication that a reseed is required
-		 (additional_len > SHA512_HMAC_DRBG_MAX_ADDITIONAL_BYTES) || // chech max_additional_input_length    (NIST SP 800-90A specification)
+		 (additional_len > SHA512_HMAC_DRBG_MAX_ADDITIONAL_BYTES) || // check max_additional_input_length    (NIST SP 800-90A specification)
 		 (output_len > SHA512_HMAC_DRBG_MAX_GENERATED_BYTES) )       // check max_number_of_bits_per_request (NIST SP 800-90A specification)
 	{
 		return -1;

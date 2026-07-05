@@ -1,5 +1,9 @@
 
 
+[??.07.2026] - 2.0.2/887.118.239
+  [+] Added Hardware Crypto Support to ARM64
+
+
 [05.07.2026] - 2.0.1/886.118.238
   [*] Fixed Hwid detection issue in driver
   [*] Fixed BSOD on some ARM64 devices caused by driver

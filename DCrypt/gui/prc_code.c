@@ -648,6 +648,7 @@ _about_dlg_proc(
 							);
 							if ( flags.load_flags & DST_INTEL_NI ) s_inset = L"Intel AES Instructions Set (AES-NI)";
 							if ( flags.load_flags & DST_VIA_PADLOCK ) s_inset = L"The VIA PadLock Advanced Cryptography Engine (ACE)";
+							if ( flags.load_flags & DST_ARM64_CE ) s_inset = L"ARM64 Crypto Extensions (CE)";
 						}
 						_snwprintf( s_display, countof(s_display), 
 							L"Hardware Cryptography: %s\r\n"

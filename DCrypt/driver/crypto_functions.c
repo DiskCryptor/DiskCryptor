@@ -24,8 +24,12 @@
 #include "debug.h"
 #include "crypto_functions.h"
 #ifdef _M_ARM64
-#include "xts_small.h"
-#include "sha512_pkcs5_2_small.h"
+//#include "xts_small.h"
+//#include "sha512_pkcs5_2_small.h"
+#include "xts_fast.h"
+#include "sha512_pkcs5_2.h"
+#include "xts_serpent_neon.h"
+#include "xts_aes_ce.h"
 #else
 #include "xts_fast.h"
 #include "aes_padlock.h"
@@ -238,6 +242,27 @@ void dc_init_encryption()
 	}
 #else
 	ClearFlag(dc_load_flags, DST_INSTR_AVX);
+#endif
+
+#ifdef _M_ARM64
+	if (xts_aes_ce_available() != 0) {
+		SetFlag(dc_load_flags, DST_ARM64_CE);
+		DbgMsg("CpuFlags_ARM64_CE: Yes\n");
+	} else {
+		ClearFlag(dc_load_flags, DST_ARM64_CE);
+		DbgMsg("CpuFlags_ARM64_CE: No\n");
+	}
+
+	if (xts_serpent_neon_available() != 0) {
+		SetFlag(dc_load_flags, DST_ARM64_NEON);
+		DbgMsg("CpuFlags_ARM64_NEON: Yes\n");
+	} else {
+		ClearFlag(dc_load_flags, DST_ARM64_NEON);
+		DbgMsg("CpuFlags_ARM64_NEON: No\n");
+	}
+#else
+	ClearFlag(dc_load_flags, DST_ARM64_CE);
+	ClearFlag(dc_load_flags, DST_ARM64_NEON);
 #endif
 
 	// initialize XTS mode engine and run small encryption test

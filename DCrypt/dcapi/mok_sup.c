@@ -30,11 +30,11 @@
 #include "misc.h"
 #include "efiinst.h"
 #include "mok_sup.h"
-#ifdef _M_ARM64
-#include "sha512_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "sha512_small.h"
+//#else
 #include "sha512.h"
-#endif
+//#endif
 
 /* SetFirmwareEnvironmentVariableExW - Windows 8+ API */
 typedef BOOL (WINAPI *PFN_SetFirmwareEnvironmentVariableExW)(

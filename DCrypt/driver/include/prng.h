@@ -2,11 +2,11 @@
 #define _PRNG_
 
 #include "defines.h"
-#ifdef _M_ARM64
-#include "aes_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "aes_small.h"
+//#else
 #include "aes_key.h"
-#endif
+//#endif
 
 void cp_rand_add_seed(void *data, int size);
 void cp_rand_reseed();

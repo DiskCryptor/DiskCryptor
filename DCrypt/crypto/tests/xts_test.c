@@ -121,12 +121,12 @@ static int xts_vectors_test()
 	int     i;	
 	unsigned __int64 index, offset;
 
-	// allow execute code from key buffer
-#ifndef SMALL_CODE
+	// allow execute code from key buffer (x86/x64 only - uses self-modifying code)
+#if !defined(SMALL_CODE) && !defined(_M_ARM64)
 	DWORD old_protect;
 	if (VirtualProtect(&skey, sizeof(skey), PAGE_EXECUTE_READWRITE, &old_protect) == 0) return 0;
 #endif
-	
+
 	// fill sector with bytes sequence
 	for (i = 0; i < XTS_SECTOR_SIZE; i++) plain[i] = i;
 
@@ -177,12 +177,12 @@ static int xts_crc_test()
 	xts_key skey;
 	int     i;
 
-	// allow execute code from key buffer
-#ifndef SMALL_CODE
+	// allow execute code from key buffer (x86/x64 only - uses self-modifying code)
+#if !defined(SMALL_CODE) && !defined(_M_ARM64)
 	DWORD old_protect;
 	if (VirtualProtect(&skey, sizeof(skey), PAGE_EXECUTE_READWRITE, &old_protect) == 0) return 0;
 #endif
-	
+
 	// fill key and test buffer
 	for (i = 0; i < _countof(key); i++) key[i] = i;
 	for (i = 0; i < _countof(test); i++) test[i] = i;

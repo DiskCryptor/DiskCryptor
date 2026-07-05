@@ -191,8 +191,10 @@
 #define DST_VIA_PADLOCK	             0x01 // VIA Padlock instructions available
 #define DST_INTEL_NI                 0x02 // AES_NI instructions available
 #define DST_INSTR_SSE2               0x04 // SSE2 instructions available
-#define DST_INSTR_AVX                0x08 // SSE2 instructions available
-#define DST_HW_CRYPTO   (DST_VIA_PADLOCK | DST_INTEL_NI)
+#define DST_INSTR_AVX                0x08 // AVX instructions available
+#define DST_ARM64_CE                0x100 // ARM64 Crypto Extensions available
+#define DST_ARM64_NEON              0x200 // ARM64 NEON available
+#define DST_HW_CRYPTO   (DST_VIA_PADLOCK | DST_INTEL_NI | DST_ARM64_CE)
 
 #define DST_BOOTLOADER               0x10 // system started via DC bootloader
 #define DST_SMALL_MEM                0x20 // BIOS base memory too small for DC bootloader

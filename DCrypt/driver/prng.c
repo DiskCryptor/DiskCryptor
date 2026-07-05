@@ -22,17 +22,17 @@
 #include "defines.h"
 #include "prng.h"
 #include "misc.h"
-#ifdef _M_ARM64
-#include "sha512_small.h"
-#include "aes_small.h"
-#define aes256_asm_set_key   aes256_set_key
-#define aes256_asm_encrypt   aes256_encrypt
-#define aes256_asm_decrypt   aes256_decrypt
-#else
+//#ifdef _M_ARM64
+//#include "sha512_small.h"
+//#include "aes_small.h"
+//#define aes256_asm_set_key   aes256_set_key
+//#define aes256_asm_encrypt   aes256_encrypt
+//#define aes256_asm_decrypt   aes256_decrypt
+//#else
 #include "sha512.h"
 #include "aes_key.h"
 #include "aes_asm.h"
-#endif
+//#endif
 #include "debug.h"
 #include "misc_mem.h"
 

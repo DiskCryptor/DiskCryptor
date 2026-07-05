@@ -4,11 +4,11 @@
 #include "dcapi.h"
 #include "volume_header.h"
 
-#ifdef _M_ARM64
-#include "xts_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "xts_small.h"
+//#else
 #include "xts_fast.h"
-#endif
+//#endif
 
 //#define EXT_HDR_GUID  'DIUG' // GUID
 //#define EXT_HDR_LABEL  'LBL'

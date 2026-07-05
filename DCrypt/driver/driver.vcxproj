@@ -264,7 +264,7 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <StringPooling>true</StringPooling>
       <BufferSecurityCheck>false</BufferSecurityCheck>
-      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)crypto\crypto_small</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
       <WarningLevel>Level3</WarningLevel>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <ControlFlowGuard>false</ControlFlowGuard>
@@ -274,7 +274,7 @@
       <SubSystem>Native</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_arm64\crypto_small_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_arm64\crypto_fast_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\wlh\amd64</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <Driver>WDM</Driver>

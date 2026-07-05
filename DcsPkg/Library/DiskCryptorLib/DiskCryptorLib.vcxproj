@@ -36,9 +36,11 @@
     <ClInclude Include="crypto_fast\sha512_hmac_drbg.h" />
     <ClInclude Include="crypto_fast\sha512_pkcs5_2.h" />
     <ClInclude Include="crypto_fast\twofish.h" />
+    <ClInclude Include="crypto_fast\xts_aes_ce.h" />
     <ClInclude Include="crypto_fast\xts_aes_ni.h" />
     <ClInclude Include="crypto_fast\xts_fast.h" />
     <ClInclude Include="crypto_fast\xts_serpent_avx.h" />
+    <ClInclude Include="crypto_fast\xts_serpent_neon.h" />
     <ClInclude Include="crypto_fast\xts_serpent_sse2.h" />
     <ClInclude Include="crypto_small\aes_small.h" />
     <ClInclude Include="crypto_small\serpent_small.h" />
@@ -89,7 +91,9 @@
     <ClCompile Include="crypto_fast\sha512_hmac_drbg.c" />
     <ClCompile Include="crypto_fast\sha512_pkcs5_2.c" />
     <ClCompile Include="crypto_fast\twofish.c" />
+    <ClCompile Include="crypto_fast\xts_aes_ce.c" />
     <ClCompile Include="crypto_fast\xts_fast.c" />
+    <ClCompile Include="crypto_fast\xts_serpent_neon.c" />
     <ClCompile Include="crypto_fast\xts_serpent_sse2.c" />
     <ClCompile Include="crypto_small\aes_small.c" />
     <ClCompile Include="crypto_small\serpent_small.c" />

@@ -44,15 +44,15 @@ typedef __declspec(align(16)) struct _xts_key {
 } xts_key;
 
 int _stdcall xts_init(int hw_crypt);
-void _stdcall xts_set_key(const unsigned char *key, int alg, xts_key *skey);
+int  _stdcall xts_set_key(const unsigned char *key, int alg, xts_key *skey);
 int  _stdcall xts_aes_ni_available();
 
 #define xts_encrypt(_in, _out, _len, _offset, _key) ( (_key)->encrypt(_in, _out, _len, _offset, _key) )
 #define xts_decrypt(_in, _out, _len, _offset, _key) ( (_key)->decrypt(_in, _out, _len, _offset, _key) )
 
 #ifdef _M_IX86
-	extern long save_fpu_state(unsigned char state[32]);
-	extern void load_fpu_state(unsigned char state[32]);
+	extern long _stdcall save_fpu_state(unsigned char state[32]);
+	extern void _stdcall load_fpu_state(unsigned char state[32]);
 #endif
 
 #endif

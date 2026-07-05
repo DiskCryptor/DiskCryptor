@@ -2497,13 +2497,13 @@ int dc_efi_del_msft_bme()
 }
 
 #include "..\crc32.h"
-#ifdef _M_ARM64
-#include "xts_small.h"
-#include "sha512_pkcs5_2_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "xts_small.h"
+//#include "sha512_pkcs5_2_small.h"
+//#else
 #include "xts_fast.h"
 #include "sha512_pkcs5_2.h"
-#endif
+//#endif
 #include "drvinst.h"
 
 int dc_get_dcs_root(wchar_t* root)

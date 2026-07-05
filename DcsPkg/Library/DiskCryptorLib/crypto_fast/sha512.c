@@ -13,8 +13,18 @@
 #ifndef size_t
 #define size_t unsigned long
 #endif
+#ifndef _M_ARM64
 //#include <intrin.h>
 #include "../intrin.h"
+#else
+/* ARM64: __stosd is x86-specific, provide replacement */
+#define __stosd(dst, val, count) do { \
+    unsigned long *_p = (unsigned long*)(dst); \
+    size_t _n = (count); \
+    while (_n--) *_p++ = (val); \
+} while(0)
+/* _byteswap_uint64 and _rotr64 are compiler built-ins on ARM64 */
+#endif
 #include "sha512.h"
 
 // the K array
@@ -60,7 +70,7 @@ static void sha512_compress(sha512_ctx *ctx, const unsigned char *buf)
 	// copy state into S
 	memcpy(S, ctx->hash, sizeof(S));
 
-	// copy the state into 1024-bits into W[0..15]
+	// copy the state of 1024 bits into W[0..15]
 	for (i = 0; i < 16; i++) {
 		W[i] = _byteswap_uint64(((unsigned __int64*)buf)[i]);
 	}

@@ -2,11 +2,11 @@
 #define _CRYPTO_HEAD_H_
 
 #include "volume_header.h"
-#ifdef _M_ARM64
-#include "xts_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "xts_small.h"
+//#else
 #include "xts_fast.h"
-#endif
+//#endif
 
 int argon2_mk_params(int kdf, u32* memory_cost, u32* time_cost, u32* parallelism);
 int dc_derive_key(dc_pass* password, int kdf, u8* salt, u8* dk, ULONG *interrupt_cmd);

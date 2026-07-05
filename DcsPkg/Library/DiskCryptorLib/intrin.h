@@ -198,4 +198,13 @@ VC_INLINE void CorrectEndianess(unsigned __int64 *out, const unsigned __int64 *i
 #define _byteswap_ulong(x)		bswap_32(x)
 #define _byteswap_uint64(x)		bswap_64(x)
 
+/* __stosd is x86-specific, provide portable replacement */
+#ifndef __stosd
+#define __stosd(dst, val, count) do { \
+    unsigned long *_p = (unsigned long*)(dst); \
+    UINTN _n = (count); \
+    while (_n--) *_p++ = (val); \
+} while(0)
+#endif
+
 #endif // _INTRIN_H_

@@ -23,13 +23,13 @@
 #include <windows.h>
 #include "cd_enc.h"
 #include "dc_header.h"
-#ifdef _M_ARM64
-#include "xts_small.h"
-#include "sha512_pkcs5_2_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "xts_small.h"
+//#include "sha512_pkcs5_2_small.h"
+//#else
 #include "xts_fast.h"
 #include "sha512_pkcs5_2.h"
-#endif
+//#endif
 #include "..\crc32.h"
 #include "drvinst.h"
 #include "misc.h"

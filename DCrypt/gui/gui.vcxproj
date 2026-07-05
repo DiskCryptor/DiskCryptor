@@ -190,7 +190,7 @@
     <Midl />
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)dcapi\include;$(SolutionDir)crypto\crypto_small</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)dcapi\include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0500;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -294,7 +294,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)dcapi\include;$(SolutionDir)crypto\crypto_small</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)dcapi\include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0500;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>

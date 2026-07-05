@@ -24,11 +24,11 @@
 #include "debug.h"
 #include "crypto_head.h"
 #include "header_io.h"
-#ifdef _M_ARM64
-#include "sha512_pkcs5_2_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "sha512_pkcs5_2_small.h"
+//#else
 #include "sha512_pkcs5_2.h"
-#endif
+//#endif
 #include "misc_mem.h"
 #include "../Argon2/argon2.h"
 #include "../Argon2/blake2/blake2b.h"

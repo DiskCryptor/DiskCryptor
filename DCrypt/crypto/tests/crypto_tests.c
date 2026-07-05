@@ -13,11 +13,16 @@
 	#include "aes_padlock_small.h"
 	#include "xts_aes_test.h"
 #else
-	#include "aes_padlock.h"
 	#include "xts_fast.h"
-	#include "xts_aes_ni.h"
-	#include "xts_serpent_sse2.h"
-	#include "xts_serpent_avx.h"
+	#ifdef _M_ARM64
+		#include "xts_aes_ce.h"
+		#include "xts_serpent_neon.h"
+	#else
+		#include "aes_padlock.h"
+		#include "xts_aes_ni.h"
+		#include "xts_serpent_sse2.h"
+		#include "xts_serpent_avx.h"
+	#endif
 	#include "crc32_test.h"
 	#include "sha512_hmac_drbg_test.h"
 #endif
@@ -26,13 +31,18 @@ int main(int argc, char *argv[])
 {
 	BOOLEAN passed = TRUE;
 
-#if !defined(SMALL_CODE) || !defined(_M_X64)
-	printf("VIA-Padlock support: %d\n", aes256_padlock_available());
-#endif
 #ifndef SMALL_CODE
+	#ifdef _M_ARM64
+	printf("ARM64 AES-CE support: %d\n", xts_aes_ce_available());
+	printf("ARM64 NEON support: %d\n", xts_serpent_neon_available());
+	#else
+		#ifndef _M_X64
+	printf("VIA-Padlock support: %d\n", aes256_padlock_available());
+		#endif
 	printf("AES-NI support: %d\n", xts_aes_ni_available());
 	printf("SSE2 support: %d\n", xts_serpent_sse2_available());
 	printf("AVX  support: %d\n", xts_serpent_avx_available());
+	#endif
 	printf("--------------------------\n");
 
 	if ( test_crc32() ) {

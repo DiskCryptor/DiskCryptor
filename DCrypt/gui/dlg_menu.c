@@ -26,11 +26,11 @@
 #include "dlg_menu.h"
 #include "dcconst.h"
 
-#ifdef _M_ARM64
-#include "xts_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "xts_small.h"
+//#else
 #include "xts_fast.h"
-#endif
+//#endif
 #include "threads.h"
 #include "prc_pass.h"
 #include "prc_wait.h"

@@ -4,11 +4,11 @@
 
 #define DC_MAJOR_VER   2
 #define DC_MINOR_VER   0
-#define DC_UPDATE_VER  0
-#define DC_DRIVER_VER  886      // driver version
+#define DC_UPDATE_VER  2
+#define DC_DRIVER_VER  887      // driver version
 #define DC_BOOT_VER    118      // bootloader version
-#define DC_UEFI_VER    238      // dcs loader version
-#define DC_FILE_VER    "2.0.1"
+#define DC_UEFI_VER    239      // dcs loader version
+#define DC_FILE_VER    "2.0.2"
 #define DC_PRODUCT_VER "2.0"
 
 #endif

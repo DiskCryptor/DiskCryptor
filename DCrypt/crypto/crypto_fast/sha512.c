@@ -10,7 +10,17 @@
  * modified by ntldr, http://diskcryptor.net/
  */
 #include <memory.h>
+#ifndef _M_ARM64
 #include <intrin.h>
+#else
+/* ARM64: __stosd is x86-specific, provide replacement */
+#define __stosd(dst, val, count) do { \
+    unsigned long *_p = (unsigned long*)(dst); \
+    size_t _n = (count); \
+    while (_n--) *_p++ = (val); \
+} while(0)
+/* _byteswap_uint64 and _rotr64 are compiler built-ins on ARM64 */
+#endif
 #include "sha512.h"
 
 // the K array

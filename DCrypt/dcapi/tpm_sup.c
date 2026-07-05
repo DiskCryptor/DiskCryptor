@@ -30,12 +30,11 @@
 #include "tpm_12.h"
 #include "dc_header.h"
 #include "..\crc32.h"
-
-#ifdef _M_ARM64
-#include "xts_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "xts_small.h"
+//#else
 #include "xts_fast.h"
-#endif
+//#endif
 
 
 #define DC_TPM_SRK_FILE_MAGIC       0x4B525344  /* "DSRK" */

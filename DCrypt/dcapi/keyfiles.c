@@ -25,11 +25,11 @@
 #include "misc.h"
 #include "keyfiles.h"
 #include "volume_header.h"
-#ifdef _M_ARM64
-#include "sha512_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "sha512_small.h"
+//#else
 #include "sha512.h"
-#endif
+//#endif
 #include "drv_ioctl.h"
 
 #define KF_BLOCK_SIZE (64 * 1024)

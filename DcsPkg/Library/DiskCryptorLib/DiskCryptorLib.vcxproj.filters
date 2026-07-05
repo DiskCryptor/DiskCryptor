@@ -150,6 +150,12 @@
     <ClInclude Include="include\dc_keyfiles.h">
       <Filter>include</Filter>
     </ClInclude>
+    <ClInclude Include="crypto_fast\xts_aes_ce.h">
+      <Filter>crypto_fast</Filter>
+    </ClInclude>
+    <ClInclude Include="crypto_fast\xts_serpent_neon.h">
+      <Filter>crypto_fast</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <None Include="DiskCryptorLib.inf">
@@ -282,6 +288,12 @@
     </ClCompile>
     <ClCompile Include="DcsTpmSupport.c">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto_fast\xts_aes_ce.c">
+      <Filter>crypto_fast</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto_fast\xts_serpent_neon.c">
+      <Filter>crypto_fast</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

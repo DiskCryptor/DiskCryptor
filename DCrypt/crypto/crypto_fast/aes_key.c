@@ -22,7 +22,10 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
 #include <memory.h>
+#ifndef _M_ARM64
 #include <intrin.h>
+#endif
+/* ARM64: _rotl/_rotr are compiler built-ins */
 #include "aes_key.h"
 
 __declspec(align(16)) const unsigned long Te0[256] = {

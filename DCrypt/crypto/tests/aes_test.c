@@ -5,7 +5,9 @@
 #else
 	#include "aes_key.h"
 	#include "aes_asm.h"
-	#include "aes_padlock.h"
+	#ifndef _M_ARM64
+		#include "aes_padlock.h"
+	#endif
 #endif
 
 static const struct { /* see FIPS-197 */
@@ -32,15 +34,15 @@ int test_aes256()
 	__declspec(align(16)) unsigned char tmp[16];
 	aes256_key                          skey;
 	int                                 i;
-#ifndef SMALL_CODE	
+#if !defined(SMALL_CODE) && !defined(_M_ARM64)
 	DWORD                               old_protect;
-#endif	
+#endif
 
 #ifdef SMALL_CODE
 	// initialize AES tables
 	aes256_gentab();
-#else
-	// allow execute code from key buffer
+#elif !defined(_M_ARM64)
+	// allow execute code from key buffer (x86/x64 only - uses self-modifying code)
 	if (VirtualProtect(&skey, sizeof(skey), PAGE_EXECUTE_READWRITE, &old_protect) == FALSE) return 0;
 #endif
 	
@@ -62,8 +64,8 @@ int test_aes256()
 #endif
 		if (memcmp(aes256_vectors[i].plaintext, tmp, sizeof(tmp)) != 0) return 0;
 
-		// test AES with VIA Padlock API
-#if !defined(SMALL_CODE) || !defined(_M_X64)
+		// test AES with VIA Padlock API (x86/x64 only)
+#if (!defined(SMALL_CODE) || !defined(_M_X64)) && !defined(_M_ARM64)
 		if (aes256_padlock_available() != 0)
 		{
 			aes256_padlock_rekey();

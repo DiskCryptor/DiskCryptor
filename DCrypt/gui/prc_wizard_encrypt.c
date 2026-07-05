@@ -29,11 +29,11 @@
 #include "prc_keyfiles.h"
 #include "pass.h"
 #include "prc_common.h"
-#ifdef _M_ARM64
-#include "xts_small.h"
-#else
+//#ifdef _M_ARM64
+//#include "xts_small.h"
+//#else
 #include "xts_fast.h"
-#endif
+//#endif
 #include "dlg_drives_list.h"
 #include "prc_pass.h"
 #include "prc_wait.h"

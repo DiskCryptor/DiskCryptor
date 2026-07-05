@@ -3,7 +3,7 @@
 
 #include "volume_header.h"
 
-#if defined(_M_IX86) || defined(_M_ARM64)
+#if defined(_M_IX86) //|| defined(_M_ARM64)
 #define SMALL
 #endif
 

@@ -170,7 +170,7 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_small</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -185,7 +185,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\Release_arm64\crypto_small.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -250,7 +250,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_small</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -262,7 +262,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\crypto_small.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\Crt\amd64;$(DDK)\lib\win7\amd64</AdditionalLibraryDirectories>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>

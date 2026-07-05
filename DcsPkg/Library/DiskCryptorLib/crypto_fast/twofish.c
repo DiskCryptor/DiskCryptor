@@ -658,8 +658,9 @@ void _stdcall twofish256_set_key(const unsigned char *key, twofish256_key *skey)
 	CALC_K256 (k, 30, 0xDF, 0xBC, 0x23, 0x9D);	
 }
 
-#if 0
-/* Macros to compute the g() function in the encryption and decryption
+#ifdef _M_ARM64
+/* ARM64: Use C implementation (x86/x64 use assembly versions)
+ * Macros to compute the g() function in the encryption and decryption
  * rounds.  G1 is the straight g() function; G2 includes the 8-bit
  * rotation for the high 32-bit word. */
 

@@ -16,8 +16,9 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+
 #if defined(USE_AVX) && !defined(__INTEL_COMPILER)
- #error Please use Intel C++ Compoler
+ #error Please use Intel C++ Compiler
 #endif
 //#include <intrin.h>
 #include "../intrin.h"
@@ -688,7 +689,7 @@ int _stdcall xts_serpent_avx_available()
 		xor ecx, ecx        // XFEATURE_ENABLED_MASK/XCR0 register number = 0
 		xgetbv              // XFEATURE_ENABLED_MASK register is in edx:eax
 		and eax, 6
-		cmp eax, 6          // check the AVX registers restore at context switch
+		cmp eax, 6          // check if AVX registers are restored at context switch
 		jne not_supported
 		mov [succs], 1
 not_supported:

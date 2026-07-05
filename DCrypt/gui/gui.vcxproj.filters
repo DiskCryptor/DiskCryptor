@@ -83,6 +83,12 @@
     <ClCompile Include="prc_tpm.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="secure_desktop.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="prc_wait.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="resource.h">
@@ -155,6 +161,12 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\prc_tpm.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\secure_desktop.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\prc_wait.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

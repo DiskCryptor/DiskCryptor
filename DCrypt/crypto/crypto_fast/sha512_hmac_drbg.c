@@ -16,7 +16,23 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+
+#ifndef _M_ARM64
 #include <intrin.h>
+#else
+/* ARM64: __stosd is x86-specific, provide replacement */
+#define __stosd(dst, val, count) do { \
+    unsigned long *_p = (unsigned long*)(dst); \
+    size_t _n = (count); \
+    while (_n--) *_p++ = (val); \
+} while(0)
+#endif
+
+/* Ensure NULL is defined for kernel mode */
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 #include "sha512_hmac_drbg.h"
 
 /*
