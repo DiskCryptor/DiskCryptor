@@ -411,17 +411,22 @@ int _stdcall xts_init(int hw_crypt)
 
 int _declspec(noinline) _stdcall xts_aes_ni_available()
 {
-	int           CPUInfo[4], res = 0;
-	__m128i       enc;
-#ifdef _M_IX86
-	unsigned char fpustate[32];
-#endif
+	int           CPUInfo[4];
 
 	// check for AES-NI support via CPUID.01H:ECX.AES[bit 25]
 	__cpuid(CPUInfo, 1);
 	if ( CPUInfo[2] & 0x02000000 ) return 1;
 
+#ifndef _UEFI
+	{
 	// Special workaround for AES-NI on Hyper-V server and virtual machines
+	// (Not available in UEFI - no SEH support)
+	int       res = 0;
+	__m128i   enc;
+#ifdef _M_IX86
+	unsigned char fpustate[32];
+#endif
+
 	if ( (CPUInfo[2] & 0x80000000) == 0 ) return 0;
 	__cpuid(CPUInfo, 0x40000000);
 	if ( CPUInfo[1] != 'rciM' || CPUInfo[2] != 'foso' || CPUInfo[3] != 'vH t' ) return 0;
@@ -442,6 +447,10 @@ int _declspec(noinline) _stdcall xts_aes_ni_available()
 	}
 #endif
 	return res;
+	}
+#else
+	return 0;
+#endif
 }
 
 int _stdcall xts_init(int hw_crypt)
