@@ -1250,7 +1250,7 @@ Tpm2UnsealPassword(
 				);
 
 			if (EFI_ERROR(res)) {
-				Tpm2PrintAuthError(res, TRUE);
+				//Tpm2PrintAuthError(res, TRUE);
 				goto err;
 			}
 
@@ -1364,7 +1364,7 @@ Tpm2UnsealPassword(
 				);
 			if (EFI_ERROR(res)) {
 				//OUT_PRINT(L"DEBUG: NvRead failed: %r\n", res);
-				Tpm2PrintAuthError(res, pinRequired);
+				//Tpm2PrintAuthError(res, pinRequired);
 				goto err;
 			}
 			//OUT_PRINT(L"DEBUG: NvRead OK, size=%d\n", OutData.size);
@@ -2041,29 +2041,32 @@ Tpm2Unseal(
 		if (ResponseCode != TPM_RC_SUCCESS) {
 			// Decode common error codes for better user feedback
 			// TPM_RC values: AUTH_FAIL=0x08E, LOCKOUT=0x921, POLICY_FAIL=0x099
-			//UINT32 RcBase = ResponseCode & 0xFF;  // Base error code
+			UINT32 RcBase = ResponseCode & 0xFF;  // Base error code
 			//BOOLEAN IsLocked = FALSE;
 			//UINT32 LockoutCount = 0;
-			//
+			
 			//OUT_PRINT(L"TPM2_Unseal failed: 0x%x\n", ResponseCode);
-			//
+			
 			// Check lockout status
 			//if (!EFI_ERROR(Tpm2CheckLockout(&IsLocked, &LockoutCount)) && LockoutCount > 0) {
 			//	OUT_PRINT(L"TPM lockout counter: %d failed attempts\n", LockoutCount);
 			//}
-			//
-			//if (ResponseCode == TPM_RC_LOCKOUT) {
-			//	OUT_PRINT(L"TPM is locked out - too many failed PIN attempts\n");
-			//	OUT_PRINT(L"Reboot or wait for lockout recovery period\n");
-			//} else if (RcBase == 0x8E || RcBase == 0x22) {
-			//	// TPM_RC_AUTH_FAIL or TPM_RC_BAD_AUTH
-			//	OUT_PRINT(L"Authorization failed - wrong PIN\n");
-			//} else if (RcBase == 0x99 || RcBase == 0x9D) {
-			//	// TPM_RC_POLICY_FAIL or TPM_RC_PCR_CHANGED
-			//	OUT_PRINT(L"Policy failed - PCR values don't match\n");
-			//}
+			
+			if (ResponseCode == TPM_RC_LOCKOUT) {
+				//OUT_PRINT(L"TPM is locked out - too many failed PIN attempts\n");
+				//OUT_PRINT(L"Reboot or wait for lockout recovery period\n");
+				return EFI_ACCESS_DENIED;
+			} else if (RcBase == TPM_RC_AUTH_FAIL) {
+				//OUT_PRINT(L"Authorization failed - wrong PIN\n");
+				return EFI_ACCESS_DENIED;
+			} else if (RcBase == TPM_RC_BAD_AUTH) { // this always happens on my 2 ARM64 laptops on first atempt, then it works on second attempt
+				//OUT_PRINT(L"Authorization failed - wrong PIN\n");
+			} else if (RcBase == TPM_RC_POLICY_FAIL || RcBase == TPM_RC_PCR_CHANGED) {
+				//OUT_PRINT(L"Policy failed - PCR values don't match\n");
+				return EFI_ACCESS_DENIED;
+			}
 
-			return EFI_ACCESS_DENIED;
+			return EFI_DEVICE_ERROR;
 		}
 	}
 

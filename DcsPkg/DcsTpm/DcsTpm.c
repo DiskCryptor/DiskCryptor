@@ -119,7 +119,7 @@ DcsUnsealSecret (
 	static BOOLEAN first_atempt = TRUE;
 retry:
 	res = gTpm->NvUnsealPassword(NvIndex, Data, DataSize, DataType, TpmPin);
-	if (EFI_ERROR(res) && first_atempt && TpmPin) {
+	if (res == EFI_DEVICE_ERROR && first_atempt && TpmPin) {
 		first_atempt = FALSE;
 		goto retry;
 	}
@@ -825,7 +825,7 @@ DcsSrkUnsealPassword (
   static BOOLEAN first_atempt = TRUE;
 retry:
   res = gTpm->SrkUnsealPassword(Buffer, BufferSize, Password, PasswordSize, PasswordType, TpmPin);
-  if (EFI_ERROR(res) && first_atempt && TpmPin) {
+  if (res == EFI_DEVICE_ERROR && first_atempt && TpmPin) {
 	  first_atempt = FALSE;
 	  goto retry;
   }
