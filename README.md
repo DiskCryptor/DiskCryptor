@@ -53,15 +53,6 @@ We have updated DiskCryptor for use with Windows 10 and 11, adding a UEFI/GPT bo
 #### Is DiskCryptor still maintained? The last release was over a year ago.
 Yes. DiskCryptor is still actively maintained. However, it is a very mature piece of software, and there is little ongoing development required. As a result, releases are infrequent.
 
-#### All DiskCryptor builds are labeled "BETA" Will there ever be a FINAL release?
-No. The BETA label for now is intentional and serves as an explicit warning. DiskCryptor is a free, low-level disk encryption tool; even minor misuse, misconfiguration, or unexpected interactions can result in irreversible data loss.
-
-The BETA designation serves as a clear warning and a legal and practical boundary: you are expected to understand what the software does and to assume full responsibility for its use. __DiskCryptor is used entirely at your own risk.__
-
-We might adjust the statement in the future, though.
-
-I have personally used DiskCryptor for decades without major issues; however, I understand the implications of each action and always maintain reliable backups.
-
 #### I installed a Windows update and the DiskCryptor bootloader no longer starts. Windows boots directly into recovery. What should I do?
 
 This typically occurs when the EFI firmware is configured to boot ```\EFI\Microsoft\Boot\bootmgfw.efi``` instead of ```\EFI\DCS\DcsBoot.efi```.
