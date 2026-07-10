@@ -901,6 +901,14 @@ EfiExec(
    );
 
 EFI_STATUS
+EfiExecEx(
+   IN    EFI_HANDLE  deviceHandle,
+   IN    CHAR16*     path,
+   IN    VOID*       LoadOptions      OPTIONAL,
+   IN    UINTN       LoadOptionsSize
+   );
+
+EFI_STATUS
 ConnectAllEfi(
    VOID
    );

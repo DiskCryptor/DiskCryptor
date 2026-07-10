@@ -19,10 +19,11 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/UefiLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Protocol/LoadedImage.h>
 
 #include <Library/CommonLib.h>
 #include <Library/GraphLib.h>
-#include "DcsConfig.h"
+#include <DcsConfig.h>
 #include <Guid/EventGroup.h>
 
 #include "../MiscUtilsLib/MiscUtilsLib.h"
@@ -273,18 +274,20 @@ OnExit(
 			}
 		}		
 
-		if (fileStr != NULL) {
-			EfiSetVar(L"DcsExecCmd", NULL, fileStr, (StrLen(fileStr) + 1) * 2, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+		if (fileStr != NULL && gDcsBootConfig != NULL) {
+			StrCpyS(gDcsBootConfig->ExecCmd, ARRAY_SIZE(gDcsBootConfig->ExecCmd), fileStr);
 		}
 		goto exit;
 	}
 
 	else if (AsciiStrNStr(action, "postexec") == action) {
-		if (guid != NULL) {
-			EfiSetVar(L"DcsExecPartGuid", NULL, &guid, sizeof(EFI_GUID), EFI_VARIABLE_BOOTSERVICE_ACCESS);
-		}
-		if (fileStr != NULL) {
-			EfiSetVar(L"DcsExecCmd", NULL, fileStr, (StrLen(fileStr) + 1) * 2, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+		if (gDcsBootConfig != NULL) {
+			if (guid != NULL) {
+				CopyGuid(&gDcsBootConfig->ExecPartGuid, guid);
+			}
+			if (fileStr != NULL) {
+				StrCpyS(gDcsBootConfig->ExecCmd, ARRAY_SIZE(gDcsBootConfig->ExecCmd), fileStr);
+			}
 		}
 
 		retValue = EFI_DCS_POSTEXEC_REQUESTED;
@@ -448,6 +451,8 @@ UefiMain(
 	EFI_SYSTEM_TABLE *SystemTable)
 {
 	EFI_STATUS res;
+	EFI_LOADED_IMAGE_PROTOCOL *LoadedImage = NULL;
+	DCS_BOOT_CONFIG *BootConfig = NULL;
 
 	// Setup console resolution
 	//SetupConsoleResolution(100, 31); // or 128, 40
@@ -463,12 +468,47 @@ UefiMain(
 	}
 #endif
 
+	// Always initialize BIO and FS (needed for various operations)
 	InitBio();
 	res = InitFS();
 	if (EFI_ERROR(res)) {
 		res = InitPxe2();
 	}
-	InitConfig(CONFIG_FILE_PATH);
+
+	// Get boot config from LoadOptions (passed by DcsBoot)
+	res = gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID**)&LoadedImage);
+	if (!EFI_ERROR(res) && LoadedImage != NULL &&
+		LoadedImage->LoadOptions != NULL &&
+		LoadedImage->LoadOptionsSize >= sizeof(DCS_BOOT_CONFIG))
+	{
+		BootConfig = (DCS_BOOT_CONFIG*)LoadedImage->LoadOptions;
+		if (BootConfig->Size >= sizeof(DCS_BOOT_CONFIG)) {
+			// Use config from DcsBoot (avoids re-reading config file)
+			if (!InitConfigFromBootConfig(BootConfig)) {
+				ERR_PRINT(L"InitConfigFromBootConfig failed\n");
+				BootConfig = NULL;
+			}
+		} else {
+#ifdef DEBUG_BUILD
+			OUT_PRINT(L"BootConfig->Size mismatch: %d vs %d\n", BootConfig->Size, sizeof(DCS_BOOT_CONFIG));
+#endif
+			BootConfig = NULL;
+		}
+	}
+#ifdef DEBUG_BUILD
+	else {
+		OUT_PRINT(L"No LoadOptions: res=%r LoadedImage=%p Options=%p Size=%d\n",
+			res, LoadedImage,
+			LoadedImage ? LoadedImage->LoadOptions : NULL,
+			LoadedImage ? LoadedImage->LoadOptionsSize : 0);
+	}
+#endif
+
+	// Fallback: load config ourselves if not provided via LoadOptions
+	if (BootConfig == NULL) {
+		InitConfig(CONFIG_FILE_PATH);
+	}
+
 	InitParams();
 	InitAuxDrivers();
 

@@ -290,15 +290,28 @@ PxeExec(
 	IN CHAR16* path
 	)
 {
+	return PxeExecEx(path, NULL, 0);
+}
+
+/**
+Downloades and EFI from TFTP server and executes it with LoadOptions
+*/
+EFI_STATUS
+PxeExecEx(
+	IN CHAR16* path,
+	IN VOID*   LoadOptions,
+	IN UINTN   LoadOptionsSize
+	)
+{
 	EFI_STATUS res;
 	VOID* fileBuffer = NULL;
 	UINTN fileSize = 0;
 	EFI_HANDLE imageHandle = NULL;
+	EFI_LOADED_IMAGE_PROTOCOL *LoadedImage;
 
-  if (!gPxeBoot) {
-    return EFI_NOT_READY;
-  }
-
+	if (!gPxeBoot) {
+		return EFI_NOT_READY;
+	}
 
 	// Download file from TFTP server
 	res = PxeDownloadFile(path, &fileBuffer, &fileSize);
@@ -321,6 +334,15 @@ PxeExec(
 		ERR_PRINT(L"Failed to load image: %r\n", res);
 		MEM_FREE(fileBuffer);
 		return res;
+	}
+
+	// Pass LoadOptions to the loaded image
+	if (LoadOptions != NULL && LoadOptionsSize > 0) {
+		res = gBS->HandleProtocol(imageHandle, &gEfiLoadedImageProtocolGuid, (VOID**)&LoadedImage);
+		if (!EFI_ERROR(res) && LoadedImage != NULL) {
+			LoadedImage->LoadOptions = LoadOptions;
+			LoadedImage->LoadOptionsSize = (UINT32)LoadOptionsSize;
+		}
 	}
 
 	// Start the image

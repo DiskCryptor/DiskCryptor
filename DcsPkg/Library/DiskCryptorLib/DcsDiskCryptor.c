@@ -1264,7 +1264,9 @@ SelectBootPartition()
 			if (gConfigDebug) {
 				g_Con->Print(L"Boot partition (configured): %g\n", &guid);
 			}
-			EfiSetVar(L"DcsExecPartGuid", NULL, &guid, sizeof(EFI_GUID), EFI_VARIABLE_BOOTSERVICE_ACCESS);
+			if (gDcsBootConfig != NULL) {
+				CopyGuid(&gDcsBootConfig->ExecPartGuid, &guid);
+			}
 			return EFI_SUCCESS;
 		}
 	}
@@ -1289,7 +1291,9 @@ SelectBootPartition()
 		g_Con->Print(L"Selected boot partition: %g\n", &guid);
 	}
 
-	EfiSetVar(L"DcsExecPartGuid", NULL, &guid, sizeof(EFI_GUID), EFI_VARIABLE_BOOTSERVICE_ACCESS);
+	if (gDcsBootConfig != NULL) {
+		CopyGuid(&gDcsBootConfig->ExecPartGuid, &guid);
+	}
 	return EFI_SUCCESS;
 }
 

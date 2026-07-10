@@ -525,6 +525,26 @@ PxeExec (
     );
 
 /**
+  Download and execute an EFI application from TFTP server with LoadOptions.
+
+  @param[in]  Path             Path to the EFI application on TFTP server.
+  @param[in]  LoadOptions      Data to pass to the loaded image via LoadOptions.
+  @param[in]  LoadOptionsSize  Size of LoadOptions data.
+
+  @retval EFI_SUCCESS    Application executed (may have returned).
+  @retval EFI_NOT_READY  PXE not initialized.
+  @retval Other          Download or load error.
+
+**/
+EFI_STATUS
+EFIAPI
+PxeExecEx (
+    IN CHAR16  *Path,
+    IN VOID    *LoadOptions      OPTIONAL,
+    IN UINTN   LoadOptionsSize
+    );
+
+/**
   Download file from TFTP and save to local filesystem.
 
   @param[in]  SrcPath   Source path on TFTP server.

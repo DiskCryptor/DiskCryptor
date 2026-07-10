@@ -17,18 +17,32 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/MemoryAllocationLib.h>
+#include <Protocol/LoadedImage.h>
 
-EFI_STATUS 
+EFI_STATUS
 EfiExec(
    IN    EFI_HANDLE  deviceHandle,
    IN    CHAR16*     path
    )
 {
+   return EfiExecEx(deviceHandle, path, NULL, 0);
+}
+
+EFI_STATUS
+EfiExecEx(
+   IN    EFI_HANDLE  deviceHandle,
+   IN    CHAR16*     path,
+   IN    VOID*       LoadOptions,
+   IN    UINTN       LoadOptionsSize
+   )
+{
    EFI_STATUS                  res;
    EFI_DEVICE_PATH*            DevicePath;
    EFI_HANDLE                  ImageHandle;
+   EFI_LOADED_IMAGE_PROTOCOL   *LoadedImage;
    UINTN                       ExitDataSize;
    CHAR16                      *ExitData;
+
    if (deviceHandle == NULL) {
       deviceHandle = gFileRootHandle;
    }
@@ -39,6 +53,16 @@ EfiExec(
    if (EFI_ERROR(res)) {
       return res;
    }
+
+   // Pass LoadOptions to the loaded image
+   if (LoadOptions != NULL && LoadOptionsSize > 0) {
+      res = gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID**)&LoadedImage);
+      if (!EFI_ERROR(res) && LoadedImage != NULL) {
+         LoadedImage->LoadOptions = LoadOptions;
+         LoadedImage->LoadOptionsSize = (UINT32)LoadOptionsSize;
+      }
+   }
+
    res = gBS->StartImage(ImageHandle, &ExitDataSize, &ExitData);
    if (EFI_ERROR(res)) {
       return res;

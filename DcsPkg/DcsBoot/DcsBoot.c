@@ -27,6 +27,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Guid/Gpt.h>
 #include <Guid/GlobalVariable.h>
 #include "../MiscUtilsLib/MiscUtilsLib.h"
+#include "TpmKill.h"
 
 EFI_GUID          ImagePartGuid;
 EFI_GUID          *gEfiExecPartGuid = &ImagePartGuid;
@@ -219,15 +220,14 @@ DcsBootMain(
    )
 {
 	EFI_STATUS			res;
-	UINTN               len;
-	UINT32              attr;
 	BOOLEAN             searchOnESP = FALSE;
 	BOOLEAN             searchMsOnESP = FALSE;
 	EFI_GUID			*pEfiExecPartBackup = NULL;
+	DCS_BOOT_CONFIG     bootConfig;
 //	EFI_INPUT_KEY       key;
 
 #ifdef DEBUG_BUILD
-	OUT_PRINT(L"DcsBoot - DEBUG Build %s %s\n", _T(__DATE__), _T(__TIME__)); 
+	OUT_PRINT(L"DcsBoot - DEBUG Build %s %s\n", _T(__DATE__), _T(__TIME__));
 #endif
 
 	InitBio();		// Initialize Block IO
@@ -263,7 +263,7 @@ DcsBootMain(
 		!EFI_ERROR(FileExist(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\DcsInfo.dcs"))) {
 		OUT_PRINT(L"Collecting Platform information...\n");
 		res = EfiExec(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\DcsInfo.dcs");
-		if (!EFI_ERROR(res) && 
+		if (!EFI_ERROR(res) &&
 			!EFI_ERROR(FileExist(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\PlatformInfo"))) {
 			KeyWait(L"PlatformInfo generated, rebooting in %02d s\r", 10, 0, 0);
 			gST->RuntimeServices->ResetSystem(EfiResetCold, EFI_SUCCESS, 0, NULL);
@@ -288,20 +288,26 @@ DcsBootMain(
 		}
 	}
 
-	// set default boot partition and file
-	EfiSetVar(L"DcsExecPartGuid", NULL, &ImagePartGuid, sizeof(EFI_GUID), EFI_VARIABLE_BOOTSERVICE_ACCESS);
+	// Initialize boot config to pass to DcsInt via LoadOptions
+	ZeroMem(&bootConfig, sizeof(bootConfig));
+	bootConfig.Size = sizeof(DCS_BOOT_CONFIG);
+	bootConfig.ConfigFileName = gConfigFileName;
+	bootConfig.ConfigBuffer = gConfigBuffer;
+	bootConfig.ConfigBufferSize = gConfigBufferSize;
+	CopyGuid(&bootConfig.ExecPartGuid, &ImagePartGuid);
 	if (!EFI_ERROR(FileExist(NULL, gEfiExecCmdDefault))) {
-		EfiSetVar(L"DcsExecCmd", NULL, gEfiExecCmdDefault, (StrLen(gEfiExecCmdDefault) + 1) * 2, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+		StrCpyS(bootConfig.ExecCmd, ARRAY_SIZE(bootConfig.ExecCmd), gEfiExecCmdDefault);
 	} else {
-		EfiSetVar(L"DcsExecCmd", NULL, gEfiExecCmdMS, (StrLen(gEfiExecCmdMS) + 1) * 2, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+		StrCpyS(bootConfig.ExecCmd, ARRAY_SIZE(bootConfig.ExecCmd), gEfiExecCmdMS);
 	}
-	
-	// Authorize
+	bootConfig.TpmKill = (UINT8)ConfigReadInt("TpmKill", TPM_KILL_MODE_DISABLED);
+
+	// Authorize - pass boot config to DcsInt via LoadOptions
 	gBS->SetWatchdogTimer(0, 0, 0, NULL);
 	if (IsPxeBoot()) {
-		res = PxeExec(L"\\EFI\\" DCS_DIRECTORY L"\\DcsInt.dcs");
+		res = PxeExecEx(L"\\EFI\\" DCS_DIRECTORY L"\\DcsInt.dcs", &bootConfig, sizeof(bootConfig));
 	} else {
-		res = EfiExec(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\DcsInt.dcs");
+		res = EfiExecEx(NULL, L"\\EFI\\" DCS_DIRECTORY L"\\DcsInt.dcs", &bootConfig, sizeof(bootConfig));
 	}
 
 	if (gConfigDebug) {
@@ -309,16 +315,22 @@ DcsBootMain(
 		gBS->Stall(100000);
 	}
 
-	// Get user boot partition and file
-	if (EFI_ERROR(EfiGetVar(L"DcsExecPartGuid", NULL, &gEfiExecPartGuid, &len, &attr))) {
-		gEfiExecPartGuid = &ImagePartGuid;
+	// TPM Kill - disable TPM before handing off to Windows
+	// Use value from bootConfig (may have been updated by DcsInt config menu)
+	if (bootConfig.TpmKill) {
+		TPM_KILL_CONTEXT tpmKillCtx = {bootConfig.TpmKill};
+		EFI_STATUS tpmRes = TpmKillExecute(&tpmKillCtx);
+		if (EFI_ERROR(tpmRes)) {
+			ERR_PRINT(L"TpmKill failed: %r\n", tpmRes);
+		}
+		else if (gConfigDebug) {
+			OUT_PRINT(L"TpmKill success: Shutdown=%d Protocol=%d Acpi=%d Vars=%d\n", tpmKillCtx.Tpm2Shutdown, tpmKillCtx.ProtocolKilled, tpmKillCtx.AcpiPatched, tpmKillCtx.VariablesDeleted);
+		}
 	}
-	if (EFI_ERROR(EfiGetVar(L"DcsExecCmd", NULL, &gEfiExecCmd, &len, &attr))) {
-		gEfiExecCmd = NULL;
-	}
-	// Clear DcsExecPartGuid before execute OS to avoid problem in VirtualBox with reboot.
-	EfiSetVar(L"DcsExecPartGuid", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
-	EfiSetVar(L"DcsExecCmd", NULL, NULL, 0, EFI_VARIABLE_BOOTSERVICE_ACCESS);
+
+	// Get boot partition and command from bootConfig (updated by DcsInt)
+	gEfiExecPartGuid = &bootConfig.ExecPartGuid;
+	gEfiExecCmd = bootConfig.ExecCmd[0] ? bootConfig.ExecCmd : NULL;
 
 	if (EFI_ERROR(res)) {
 
@@ -368,7 +380,7 @@ DcsBootMain(
 	if (gConfigDebug) {
 		OUT_PRINT(L"DcsExecPartGuid %g\n", gEfiExecPartGuid);
 		OUT_PRINT(L"DcsExecCmd %s\n", gEfiExecCmd);
-	
+
 		KeyWait(L"Attempting to boot Windows in %02d s\r", 30, 0, 0);
 		OUT_PRINT(L"\n");
 	}

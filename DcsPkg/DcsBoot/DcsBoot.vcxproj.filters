@@ -18,10 +18,18 @@
     <ClCompile Include="DcsBoot.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="TpmKill.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <None Include="DcsBoot.inf">
       <Filter>Resource Files</Filter>
     </None>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="TpmKill.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

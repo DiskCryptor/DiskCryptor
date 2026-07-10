@@ -87,6 +87,10 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="DcsBoot.c" />
+    <ClCompile Include="TpmKill.c" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="TpmKill.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

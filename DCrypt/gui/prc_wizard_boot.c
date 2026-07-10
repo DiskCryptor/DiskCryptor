@@ -399,7 +399,7 @@ int _save_boot_config(
 	{
 	///////////////////////////////////////////////////////////////
 
-		BOOL use_osk = _get_check(wnd->dlg[2], IDC_BT_USE_OSK);
+		BOOL use_osk = _get_check(wnd->dlg[0], IDC_BT_USE_OSK);
 
 		set_flag(conf->logon_type, LDR_LT_USE_OSK, use_osk);
 

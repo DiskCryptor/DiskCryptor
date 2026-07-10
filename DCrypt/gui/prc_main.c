@@ -87,12 +87,6 @@ void _init_main_dlg(
 		ModifyMenuW(GetMenu(hwnd), ID_HOMEPAGE, MFT_RIGHTJUSTIFY | MF_STRING, ID_HOMEPAGE, L"Get DiskCryptor Pro");
 	}
 
-	/* Disable TPM menu item if no TPM is present */
-	if ( dc_tpm_get_version() <= 0 )
-	{
-		EnableMenuItem( GetMenu( hwnd ), ID_TOOLS_TPM, MF_BYCOMMAND | MF_GRAYED );
-	}
-
 	SendMessage( GetDlgItem( hwnd, IDC_DRIVES_HEAD ), WM_SETFONT, (WPARAM)__font_bold, 0 );
 	{
 		RECT  rc, cr;

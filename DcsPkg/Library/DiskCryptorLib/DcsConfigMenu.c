@@ -25,7 +25,7 @@ https://opensource.org/licenses/LGPL-3.0
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
 #endif
 
-#define CFG_VALUE_COL   22  // column where "< value >" starts
+#define CFG_VALUE_COL   24  // column where "< value >" starts
 #define CFG_VALUE_WIDTH 45  // fixed width for the value text between < >
 
 // Menu item IDs - used to identify items regardless of their position in the array
@@ -43,6 +43,7 @@ typedef enum {
 	CFG_ID_BLOCK_UNENCRYPTED,
 	CFG_ID_HANDOFF_MODE,
 	CFG_ID_SECURE_BOOT,
+	CFG_ID_TPM_KILL,
 } CFG_MENU_ID;
 
 typedef struct _CFG_VALUE_NAME {
@@ -132,6 +133,12 @@ static CFG_VALUE_NAME gHandoffModeValues[] = {
 	{ 3, L"Keys Only" },
 };
 #endif
+
+static CFG_VALUE_NAME gTpmKillValues[] = {
+	{ 0, L"No" },
+	{ 1, L"Fully" },
+	{ 2, L"Conservative (keep UID EK variable)" },
+};
 
 // TPM PCR Mask display function - shows value as 0xHHHH
 static VOID
@@ -233,7 +240,10 @@ CfgMenuDrawItem(
 	else
 		g_Con->Print(L"  ");
 
-	g_Con->Print(L"%-20s", Item->Label);
+	g_Con->Print(L"%s", Item->Label);
+
+	// Set cursor to value column
+	g_Con->SetCursor(CFG_VALUE_COL, Row);
 
 	// Format value into fixed-width buffer, left-justified, space-padded
 	if (Item->DisplayFunc != NULL) {
@@ -340,7 +350,7 @@ DcsConfigMenuShow(
 	INT32         baseRow;
 	INT32         i;
 	INT32         count = 0;
-	CFG_MENU_ITEM items[12];
+	CFG_MENU_ITEM items[13];
 	//UINT8         sbState;
 
 	// Zero-initialize all items to ensure PickerFunc/DisplayFunc are NULL
@@ -446,6 +456,19 @@ DcsConfigMenuShow(
 	items[count].Max          = 0;
 	count++;
 
+	// TPM Kill - disable TPM before Windows handoff
+	if (gDcsBootConfig) {
+		items[count].Id           = CFG_ID_TPM_KILL;
+		items[count].Label        = L"Block TPM after Boot";
+		items[count].Values       = gTpmKillValues;
+		items[count].ValueCount   = ARRAY_SIZE(gTpmKillValues);
+		items[count].CurrentIndex = CfgFindValueIndex(gTpmKillValues, items[count].ValueCount, gDcsBootConfig->TpmKill);
+		if (items[count].CurrentIndex < 0) items[count].CurrentIndex = 0;
+		items[count].Min          = 0;
+		items[count].Max          = 0;
+		count++;
+	}
+
 	// Secure Boot (conditionally added)
 	//if (!EFI_ERROR(DcsLdrGetMokSBState(&sbState))) {
 	//	items[count].Id           = CFG_ID_SECURE_BOOT;
@@ -537,6 +560,9 @@ DcsConfigMenuShow(
 				gBlockUnencryptedVolumes = (UINT8)CfgGetValue(item);
 			if ((item = CfgFindItemById(items, count, CFG_ID_HANDOFF_MODE)) != NULL)
 				gDCryptHandoffMode = (UINT8)CfgGetValue(item);
+			if ((item = CfgFindItemById(items, count, CFG_ID_TPM_KILL)) != NULL) {
+				gDcsBootConfig->TpmKill = (UINT8)CfgGetValue(item);
+			}
 			//if ((item = CfgFindItemById(items, count, CFG_ID_SECURE_BOOT)) != NULL)
 			//	DcsLdrSetMokSBState(CfgGetValue(item) ? 0 : 1);
 
@@ -706,6 +732,11 @@ DCAuthStoreConfig(
 
 	Status = CfgWriteInteger(&NewConfig, ConfigContent, "HandoffMode", gDCryptHandoffMode);
 	if (EFI_ERROR(Status)) goto cleanup;
+
+	if (gDcsBootConfig) {
+		Status = CfgWriteInteger(&NewConfig, ConfigContent, "TpmKill", gDcsBootConfig->TpmKill ? 1 : 0);
+		if (EFI_ERROR(Status)) goto cleanup;
+	}
 
 	// Copy all unmodified values from original config
 	if (ConfigContent != NULL) {

@@ -28,11 +28,41 @@ https://opensource.org/licenses/Apache-2.0
 #define DCS_DIRECTORY L"DCS"
 
 #define DCS_CAPTION "Disk Cryptor" //Disk Cryptography Services
-#define DCS_VERSION 241 // 2.41
+#define DCS_VERSION 242 // 2.42
 
 #define NO_BML
 
 #define OPT_EXTERN_KEY L"-extern"
+
+//////////////////////////////////////////////////////////////////////////
+// Inter-module communication (DcsBoot <-> DcsInt)
+//////////////////////////////////////////////////////////////////////////
+
+//
+// Configuration passed from DcsBoot to DcsInt via LoadOptions,
+// and updated by DcsInt before returning to DcsBoot.
+//
+typedef struct _DCS_BOOT_CONFIG {
+    UINT32      Size;               // Size of this structure for versioning
+
+    // Config file (passed from DcsBoot, avoids double-read)
+    CHAR16      *ConfigFileName;    // Path to config file
+    CHAR8       *ConfigBuffer;      // Config file content
+    UINTN       ConfigBufferSize;   // Size of config buffer
+
+    // Exec parameters (replaces DcsExecPartGuid/DcsExecCmd variables)
+    EFI_GUID    ExecPartGuid;       // Partition GUID to boot from
+    CHAR16      ExecCmd[512];       // Boot command/path
+
+    // Runtime settings (updated by DcsInt, read by DcsBoot)
+    UINT8       TpmKill;            // TPM kill mode (0=off, 1=full, 2=conservative)
+
+} DCS_BOOT_CONFIG;
+
+//
+// Global pointer to boot config (set in DcsInt from LoadOptions)
+//
+extern DCS_BOOT_CONFIG *gDcsBootConfig;
 
 //////////////////////////////////////////////////////////////////////////
 // Dynamic Config
@@ -48,6 +78,7 @@ extern BOOLEAN  gConfigDebug;
 extern BOOLEAN  gExternMode;
 
 BOOLEAN InitConfig(CHAR16* configFileName);
+BOOLEAN InitConfigFromBootConfig(IN DCS_BOOT_CONFIG *BootConfig);
 BOOLEAN ConfigRead(char *configKey, char *configValue, int maxValueSize);
 int ConfigReadInt(char *configKey, int defaultValue);
 __int64 ConfigReadInt64(char *configKey, __int64 defaultValue);

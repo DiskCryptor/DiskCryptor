@@ -36,7 +36,12 @@ UINTN gConfigBufferUpdatedSize = 0;
 BOOLEAN gConfigDebug = FALSE;
 BOOLEAN  gExternMode = FALSE;
 
-BOOLEAN 
+//
+// Boot config passed from DcsBoot via LoadOptions
+//
+DCS_BOOT_CONFIG *gDcsBootConfig = NULL;
+
+BOOLEAN
 InitConfig(CHAR16* configFileName)
 {
 	EFI_STATUS res;
@@ -55,6 +60,40 @@ InitConfig(CHAR16* configFileName)
 		ERR_PRINT(L"Failed to load config file %r\n", res);
 		return FALSE;
 	}
+
+#ifdef DEBUG_BUILD
+	gConfigDebug = ConfigReadInt("VerboseDebug", 1) ? TRUE : FALSE;
+#else
+	gConfigDebug = ConfigReadInt("VerboseDebug", 0) ? TRUE : FALSE;
+#endif
+
+	return TRUE;
+}
+
+/**
+  Initialize config from DCS_BOOT_CONFIG passed via LoadOptions.
+
+  @param[in] BootConfig  Pointer to boot config from caller.
+
+  @retval TRUE   Config initialized successfully.
+  @retval FALSE  Invalid or missing config.
+**/
+BOOLEAN
+InitConfigFromBootConfig(
+	IN DCS_BOOT_CONFIG *BootConfig
+	)
+{
+	if (BootConfig == NULL || BootConfig->Size < sizeof(DCS_BOOT_CONFIG)) {
+		return FALSE;
+	}
+
+	// Store pointer to boot config for later updates
+	gDcsBootConfig = BootConfig;
+
+	// Use config buffer from caller (avoids re-reading file)
+	gConfigFileName = BootConfig->ConfigFileName;
+	gConfigBuffer = BootConfig->ConfigBuffer;
+	gConfigBufferSize = BootConfig->ConfigBufferSize;
 
 #ifdef DEBUG_BUILD
 	gConfigDebug = ConfigReadInt("VerboseDebug", 1) ? TRUE : FALSE;

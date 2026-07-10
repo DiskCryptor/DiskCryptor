@@ -83,6 +83,7 @@ static void _tpm_add_backup_file(HWND hwnd);
 static void _tpm_remove_entry(HWND hwnd);
 static void _tpm_load_to_cache(HWND hwnd);
 static void _tpm_update_buttons(HWND hwnd);
+static void _tpm_update_tab_states(HWND hwnd);
 
 // Get owner password for TPM 1.2 operations
 // Returns pointer to cached password or NULL for TPM 2.0
@@ -1033,6 +1034,7 @@ static void _tpm_load_to_cache(HWND hwnd)
 
 static void _tpm_show_add_menu(HWND hwnd)
 {
+    tpm_dlg_state *state = g_tpm_state;
     HMENU hMenu = LoadMenu(NULL, MAKEINTRESOURCE(IDR_MENU_TPM_ADD));
     if (!hMenu) return;
 
@@ -1040,6 +1042,12 @@ static void _tpm_show_add_menu(HWND hwnd)
     if (!hPopup) {
         DestroyMenu(hMenu);
         return;
+    }
+
+    // Disable TPM-dependent options when no TPM is available
+    if (!state || state->tpm_version == 0) {
+        EnableMenuItem(hPopup, IDM_TPM_ADD_RECOVERY_NV, MF_BYCOMMAND | MF_GRAYED);
+        EnableMenuItem(hPopup, IDM_TPM_ADD_RECOVERY_FILE, MF_BYCOMMAND | MF_GRAYED);
     }
 
     // Get button position
@@ -1105,6 +1113,32 @@ static void _tpm_switch_tab(HWND hwnd, int tab_idx)
     ShowWindow(state->h_nv_dlg, tab_idx == TAB_NV ? SW_SHOW : SW_HIDE);
 
     _tpm_update_buttons(hwnd);
+}
+
+
+static void _tpm_update_tab_states(HWND hwnd)
+{
+    tpm_dlg_state *state = g_tpm_state;
+    if (!state || !state->h_tab) return;
+
+    TCITEM tci = {0};
+    tci.mask = TCIF_TEXT;
+
+    // Update PCR tab text based on TPM availability
+    if (state->tpm_version == 0) {
+        tci.pszText = L"PCRs (N/A)";
+    } else {
+        tci.pszText = L"PCRs";
+    }
+    TabCtrl_SetItem(state->h_tab, TAB_PCRS, &tci);
+
+    // Update NV tab text based on TPM availability
+    if (state->tpm_version == 0) {
+        tci.pszText = L"NV Entries (N/A)";
+    } else {
+        tci.pszText = L"NV Entries";
+    }
+    TabCtrl_SetItem(state->h_tab, TAB_NV, &tci);
 }
 
 
@@ -1184,10 +1218,13 @@ _tpm_dlg_proc(
             switch (id)
             {
                 case IDB_REFRESH_TEST:
-                    _tpm_refresh_entries(hwnd);
                     _tpm_refresh_info(hwnd);
-                    _tpm_refresh_pcrs(hwnd);
-                    _tpm_refresh_nv(hwnd);
+                    _tpm_refresh_entries(hwnd);
+                    if (g_tpm_state && g_tpm_state->tpm_version != 0) {
+                        _tpm_refresh_pcrs(hwnd);
+                        _tpm_refresh_nv(hwnd);
+                    }
+                    _tpm_update_tab_states(hwnd);
                     _tpm_update_buttons(hwnd);
                     break;
 
@@ -1221,9 +1258,30 @@ _tpm_dlg_proc(
         case WM_NOTIFY:
         {
             NMHDR *nmhdr = (NMHDR*)lparam;
-            if (nmhdr->idFrom == IDT_TPM_TAB && nmhdr->code == TCN_SELCHANGE) {
-                int tab_idx = TabCtrl_GetCurSel(nmhdr->hwndFrom);
-                _tpm_switch_tab(hwnd, tab_idx);
+            if (nmhdr->idFrom == IDT_TPM_TAB) {
+                if (nmhdr->code == TCN_SELCHANGING) {
+                    // Prevent switching to PCR or NV tabs when no TPM is available
+                    tpm_dlg_state *state = g_tpm_state;
+                    if (state && state->tpm_version == 0) {
+                        int new_tab = TabCtrl_GetCurSel(nmhdr->hwndFrom);
+                        // GetCurSel returns current tab during SELCHANGING,
+                        // we need to check where user is trying to go
+                        TCHITTESTINFO hti;
+                        POINT pt;
+                        GetCursorPos(&pt);
+                        ScreenToClient(nmhdr->hwndFrom, &pt);
+                        hti.pt = pt;
+                        int clicked_tab = TabCtrl_HitTest(nmhdr->hwndFrom, &hti);
+                        if (clicked_tab == TAB_PCRS || clicked_tab == TAB_NV) {
+                            SetWindowLongPtr(hwnd, DWLP_MSGRESULT, TRUE);
+                            return TRUE;  // Prevent tab change
+                        }
+                    }
+                }
+                else if (nmhdr->code == TCN_SELCHANGE) {
+                    int tab_idx = TabCtrl_GetCurSel(nmhdr->hwndFrom);
+                    _tpm_switch_tab(hwnd, tab_idx);
+                }
             }
             // Handle NV list selection changes
             if (nmhdr->idFrom == IDC_TPM_NV_LIST && nmhdr->code == LVN_ITEMCHANGED) {
@@ -1246,6 +1304,10 @@ _tpm_dlg_proc(
 
             // Setup tabs
             g_tpm_state->h_tab = GetDlgItem(hwnd, IDT_TPM_TAB);
+
+            // Add owner-draw style for custom tab rendering
+            LONG_PTR style = GetWindowLongPtr(g_tpm_state->h_tab, GWL_STYLE);
+            SetWindowLongPtr(g_tpm_state->h_tab, GWL_STYLE, style | TCS_OWNERDRAWFIXED);
 
             TCITEM tci = {0};
             tci.mask = TCIF_TEXT;
@@ -1308,11 +1370,18 @@ _tpm_dlg_proc(
             ShowWindow(g_tpm_state->h_pcrs_dlg, SW_HIDE);
             ShowWindow(g_tpm_state->h_nv_dlg, SW_HIDE);
 
-            // Refresh content
-            _tpm_refresh_entries(hwnd);
+            // Refresh content (info first to set tpm_version)
             _tpm_refresh_info(hwnd);
-            _tpm_refresh_pcrs(hwnd);
-            _tpm_refresh_nv(hwnd);
+            _tpm_refresh_entries(hwnd);
+
+            // Only refresh PCR/NV if TPM is available
+            if (g_tpm_state->tpm_version != 0) {
+                _tpm_refresh_pcrs(hwnd);
+                _tpm_refresh_nv(hwnd);
+            }
+
+            // Update tab states based on TPM availability
+            _tpm_update_tab_states(hwnd);
 
             // Set initial button states
             _tpm_update_buttons(hwnd);
@@ -1325,6 +1394,58 @@ _tpm_dlg_proc(
         case WM_CTLCOLOREDIT:
         {
             return _ctl_color(wparam, _cl(COLOR_BTNFACE, LGHT_CLR));
+        }
+        break;
+
+        case WM_DRAWITEM:
+        {
+            DRAWITEMSTRUCT *dis = (DRAWITEMSTRUCT*)lparam;
+            if (dis->CtlType == ODT_TAB && dis->CtlID == IDT_TPM_TAB) {
+                tpm_dlg_state *state = g_tpm_state;
+                BOOL is_disabled = FALSE;
+                BOOL is_selected = (dis->itemState & ODS_SELECTED) != 0;
+
+                // Check if this tab should be disabled (PCR or NV tab when no TPM)
+                if (state && state->tpm_version == 0) {
+                    if (dis->itemID == TAB_PCRS || dis->itemID == TAB_NV) {
+                        is_disabled = TRUE;
+                    }
+                }
+
+                // Get tab text
+                wchar_t text[64] = {0};
+                TCITEM tci = {0};
+                tci.mask = TCIF_TEXT;
+                tci.pszText = text;
+                tci.cchTextMax = countof(text);
+                TabCtrl_GetItem(dis->hwndItem, dis->itemID, &tci);
+
+                // Fill background
+                HBRUSH hBrush = GetSysColorBrush(COLOR_BTNFACE);
+                FillRect(dis->hDC, &dis->rcItem, hBrush);
+
+                // Adjust rect for selected tab
+                RECT rc = dis->rcItem;
+                if (is_selected) {
+                    rc.top -= 2;
+                }
+
+                // Set text color (gray for disabled, normal for enabled)
+                SetBkMode(dis->hDC, TRANSPARENT);
+                if (is_disabled) {
+                    SetTextColor(dis->hDC, GetSysColor(COLOR_GRAYTEXT));
+                } else {
+                    SetTextColor(dis->hDC, GetSysColor(COLOR_BTNTEXT));
+                }
+
+                // Draw text centered
+                DrawTextW(dis->hDC, text, -1, &rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+                return TRUE;
+            }
+            // Let other controls (buttons, etc.) be handled by default/draw_proc
+            int rlt = _draw_proc(WM_DRAWITEM, lparam);
+            if (rlt != -1) return rlt;
         }
         break;
 
