@@ -732,7 +732,7 @@ int dc_set_boot_interactive(int d_num, int small_boot)
 	return resl;
 }
 
-int dc_set_efi_boot_interactive(int d_num, int add_bme, int shim, int esp)
+int dc_set_efi_boot_interactive(int d_num, int add_bme, int shim, int esp, int esp_size_mb)
 {
 	int        resl;
 	int        replace_ms = 0;
@@ -753,7 +753,7 @@ int dc_set_efi_boot_interactive(int d_num, int add_bme, int shim, int esp)
 		/* Use dedicated DCS ESP partition */
 		wprintf(L"Setting up dedicated DCS ESP partition...\n");
 
-		resl = dc_get_or_create_dcs_esp(&d_num, esp_path, &esp_part);
+		resl = dc_get_or_create_dcs_esp(&d_num, esp_path, &esp_part, esp_size_mb);
 		if (resl != ST_OK) {
 			wprintf(L"Failed to create DCS ESP partition\n");
 			return resl;
@@ -1460,7 +1460,7 @@ int wmain(int argc, wchar_t *argv[])
 					if (getchr('1', '2') == '1') 
 					{
 						if (is_efi) {
-							if ((resl = dc_set_efi_boot_interactive(-1, -1, -1, -1)) != ST_OK) {
+							if ((resl = dc_set_efi_boot_interactive(-1, -1, -1, -1, 0)) != ST_OK) {
 								break;
 							}
 						}

@@ -89,7 +89,8 @@ int dc_api dc_find_free_space(int dsk_num, u64 required_bytes, u64 *start_lba, u
 int dc_api dc_create_dcs_esp(int dsk_num, u64 esp_size, wchar_t *esp_path, int *new_part_num);
 
 /* Get or create DCS ESP - finds existing or creates new one
- * Returns partition number and path */
-int dc_api dc_get_or_create_dcs_esp(int *dsk_num, wchar_t *esp_path, int *esp_part);
+ * Returns partition number and path
+ * esp_size_mb: size in MB for new ESP partition (0 = use default 128MB) */
+int dc_api dc_get_or_create_dcs_esp(int *dsk_num, wchar_t *esp_path, int *esp_part, int esp_size_mb);
 
 #endif /* _GPT_SUP_H_ */

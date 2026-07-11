@@ -20,9 +20,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/BaseMemoryLib.h>
 #include <Library/PrintLib.h>
 #include "../DcsTpm/DcsTpmProto.h"
-#ifndef NO_BML
 #include <Protocol/DcsBmlProto.h>
-#endif
 #include <DcsConfig.h>
 #include <Guid/Gpt.h>
 #include <Guid/GlobalVariable.h>
@@ -49,13 +47,6 @@ DoExecCmd()
 	if (!EFI_ERROR(res)) {
 		res = FileOpenRoot(gFileRootHandle, &gFileRoot);
 		if (!EFI_ERROR(res)) {
-#ifndef NO_BML
-			UINT32 lockFlags = 0;
-			// Lock EFI boot variables
-			InitBml();
-			lockFlags = ConfigReadInt("DcsBmlLockFlags", BML_LOCK_SETVARIABLE | BML_SET_BOOTNEXT | BML_UPDATE_BOOTORDER);
-			BmlLock(lockFlags);
-#endif
 			res = EfiExec(NULL, gEfiExecCmd);
 			if (EFI_ERROR(res))
 				AsciiSPrint(gDoExecCmdMsg, sizeof(gDoExecCmdMsg), "\nCannot execute %s start partition %g\n", gEfiExecCmd, gEfiExecPartGuid);
@@ -157,26 +148,27 @@ BootMenuShow(
 //////////////////////////////////////////////////////////////////////////
 // BML - Boot Menu Lock
 //////////////////////////////////////////////////////////////////////////
-#ifndef NO_BML
+
 CHAR16* sDcsBmlEfi = L"EFI\\" DCS_DIRECTORY L"\\DcsBml.dcs";
 CHAR16* sDcsBmlEfiDesc = _T(DCS_CAPTION) L"(DcsBml) driver";
 CHAR16* sDcsBmlDriverVar = L"DriverDC5B";
 UINT16  DcsBmlDriverNum = 0x0DC5B;
 
 VOID
-UpdateDriverBmlStart() {
+UpdateDriverBmlStart(int bmeEnabled) {
     EFI_STATUS          res;
     UINTN               len;
     UINT32              attr;
-    int                 drvInst;
     CHAR16*             tmp = NULL;
 
     // Driver load selected?
-    drvInst = ConfigReadInt("DcsBmlDriver", 0);
-    if (drvInst) {
+    if (bmeEnabled == 2) {
         res = EfiGetVar(sDcsBmlDriverVar, &gEfiGlobalVariableGuid, &tmp, &len, &attr);
         // Driver installed?
         if (EFI_ERROR(res)) {
+			if (gConfigDebug) {
+				OUT_PRINT(L"Installing Boot Menu Lock driver...\n");
+			}
             // No -> install
             res = BootMenuItemCreate(sDcsBmlDriverVar, sDcsBmlEfiDesc, gFileRootHandle, sDcsBmlEfi, FALSE);
 //            ERR_PRINT(L"Drv %s %r\n", sDcsBmlDriverVar, res);
@@ -194,13 +186,15 @@ UpdateDriverBmlStart() {
         // uninstall driver
         res = EfiGetVar(sDcsBmlDriverVar, &gEfiGlobalVariableGuid, &tmp, &len, &attr);
         if (!EFI_ERROR(res)) {
+			if (gConfigDebug) {
+				OUT_PRINT(L"Removing Boot Menu Lock driver...\n");
+			}
             BootMenuItemRemove(sDcsBmlDriverVar);
             BootOrderRemove(L"DriverOrder", DcsBmlDriverNum);
         }
     }
     MEM_FREE(tmp);
 }
-#endif
 
 /**
 The actual entry point for the application.
@@ -225,6 +219,8 @@ DcsBootMain(
 	EFI_GUID			*pEfiExecPartBackup = NULL;
 	DCS_BOOT_CONFIG     bootConfig;
 //	EFI_INPUT_KEY       key;
+	UINT32              bmeEnabled;
+	UINT32              lockFlags;
 
 #ifdef DEBUG_BUILD
 	OUT_PRINT(L"DcsBoot - DEBUG Build %s %s\n", _T(__DATE__), _T(__TIME__));
@@ -236,6 +232,7 @@ DcsBootMain(
 		res = InitPxe2(); // check and Initialize PXE boot
 	}
 	InitConfig(CONFIG_FILE_PATH); // Initialize Config
+	InitParams();
 
 	if (gConfigDebug && !IsPxeBoot()) {
 		OUT_PRINT(L"Root Device: ");
@@ -243,19 +240,19 @@ DcsBootMain(
 		OUT_PRINT(L"\n");
 	}
 
-#ifndef NO_BML
 	// BML installed?
-	if (EFI_ERROR(InitBml())) { // if not
+	bmeEnabled = (ConfigReadInt("BootMenuLock", 1) != 0);
+	if (bmeEnabled && !(gExternMode || IsPxeBoot()) && EFI_ERROR(InitBml())) { // if not
 		// Install the Boot Menu Lock
-		if (IsPxeBoot()) {
-			PxeExec(sDcsBmlEfi);
-		} else {
-			EfiExec(NULL, sDcsBmlEfi);
+		if (gConfigDebug) {
+			OUT_PRINT(L"Loading Boot Menu Lock driver...\n");
+		}
+		res = EfiExec(NULL, sDcsBmlEfi);
+		if (EFI_ERROR(res)) {
+			ERR_PRINT(L"Failed to load Boot Menu Lock driver: %r\n", res);
 		}
 	}
-
-	UpdateDriverBmlStart();
-#endif
+	UpdateDriverBmlStart(bmeEnabled);
 
 	// Dump platform info
 	if (ConfigReadInt("CollectPlatformInfo", 0) && !IsPxeBoot() &&
@@ -361,6 +358,11 @@ DcsBootMain(
 	ConnectAllEfi(); // this applies the installed IO hook
 	InitBio();
 	InitFS();
+
+	if (bmeEnabled) {
+		lockFlags = ConfigReadInt("BootMenuLockFlags", BML_LOCK_SETVARIABLE | BML_SET_BOOTNEXT | BML_UPDATE_BOOTORDER);
+		BmlLock(lockFlags);
+	}
 
 	if (res == EFI_DCS_INPUT_REQUIRED) {
 		res = BootMenuShow();

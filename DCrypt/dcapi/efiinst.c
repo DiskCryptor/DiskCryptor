@@ -66,6 +66,7 @@ static const efi_file_t dcs_files[] = {
 	{L"DcsBoot32.efi",		L"\\EFI\\DCS\\DcsBoot.efi"}, // boot file must be first
 	{L"DcsInt32.dcs",		L"\\EFI\\DCS\\DcsInt.dcs"},
 	{L"DcsTpm32.dcs",		L"\\EFI\\DCS\\DcsTpm.dcs"},
+	{L"DcsBml32.dcs",		L"\\EFI\\DCS\\DcsBml.dcs"},
 	{L"DcsInfo32.dcs",		L"\\EFI\\DCS\\DcsInfo.dcs"},
 	//{L"DcsCfg32.dcs",		L"\\EFI\\DCS\\DcsCfg.dcs"},
 	{L"LegacySpeaker32.dcs",L"\\EFI\\DCS\\LegacySpeaker.dcs"},
@@ -81,6 +82,7 @@ static const efi_file_t dcs_files[] = {
 	{L"DcsBoot.efi",		L"\\EFI\\DCS\\DcsBoot.efi"}, // boot file must be first
 	{L"DcsInt.dcs",			L"\\EFI\\DCS\\DcsInt.dcs"},
 	{L"DcsTpm.dcs",			L"\\EFI\\DCS\\DcsTpm.dcs"},
+	{L"DcsBml.dcs",			L"\\EFI\\DCS\\DcsBml.dcs"},
 	{L"DcsInfo.dcs",		L"\\EFI\\DCS\\DcsInfo.dcs"},
 	//{L"DcsCfg.dcs",			L"\\EFI\\DCS\\DcsCfg.dcs"},
 	{L"LegacySpeaker.dcs",	L"\\EFI\\DCS\\LegacySpeaker.dcs"},

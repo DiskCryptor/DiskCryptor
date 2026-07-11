@@ -54,7 +54,8 @@ BmlSetVariable(
 	if (BootMenuLocked) {
 		// Block all Boot*
 		if (VariableName != NULL && StrStr(VariableName, L"Boot") == VariableName) {
-			return EFI_ACCESS_DENIED;
+			//return EFI_ACCESS_DENIED;
+			return EFI_SUCCESS; // Report success to avoid error messages in logs, but do not allow changes
 		}
 	}
 	return orgSetVariable(VariableName, VendorGuid, Attributes, DataSize, Data);
@@ -85,7 +86,7 @@ BmlVirtualNotifyEvent(
 // Boot order
 //////////////////////////////////////////////////////////////////////////
 CHAR16* sDcsBootEfi = L"EFI\\" DCS_DIRECTORY L"\\DcsBoot.efi";
-CHAR16* sDcsBootEfiDesc = _T(DCS_CAPTION) L"(Dsc) loader";
+CHAR16* sDcsBootEfiDesc = _T(DCS_CAPTION) L"(DCS) loader";
 
 EFI_STATUS
 UpdateBootOrder()
@@ -200,6 +201,10 @@ DcsBmlMain(
    if (!EFI_ERROR(InitBml())) {
        return EFI_ACCESS_DENIED;
    }
+
+#ifdef DEBUG_BUILD
+   OUT_PRINT(L"DcsBml - DEBUG Build %s %s\n", _T(__DATE__), _T(__TIME__));
+#endif
 
    //
    // Install DcsBml protocol onto ImageHandle

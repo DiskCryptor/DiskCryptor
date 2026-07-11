@@ -538,6 +538,10 @@ int boot_menu(int argc, wchar_t *argv[])
 	if (is_param(L"-esp")) is_esp = 1;
 	else if (is_param(L"-noesp")) is_esp = 0;
 
+	int esp_size_mb = 0;  /* 0 = use default (128MB) */
+	wchar_t *size_param = get_param(L"-size");
+	if (size_param) esp_size_mb = _wtoi(size_param);
+
 	do
 	{
 		if ((argc == 3) && (wcscmp(argv[2], L"-mode") == 0))
@@ -856,7 +860,7 @@ int boot_menu(int argc, wchar_t *argv[])
 				resl = ST_OK; break;
 			}
 
-			if ((resl = dc_set_efi_boot_interactive(d_num, is_bme, is_shim, is_esp)) == ST_OK) {
+			if ((resl = dc_set_efi_boot_interactive(d_num, is_bme, is_shim, is_esp, esp_size_mb)) == ST_OK) {
 				wprintf(L"EFI bootloader successfully installed to %s\n", argv[3]);
 			}
 			break;

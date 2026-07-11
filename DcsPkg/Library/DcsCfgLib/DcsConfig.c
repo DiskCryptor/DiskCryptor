@@ -62,7 +62,7 @@ InitConfig(CHAR16* configFileName)
 	}
 
 #ifdef DEBUG_BUILD
-	gConfigDebug = ConfigReadInt("VerboseDebug", 1) ? TRUE : FALSE;
+	gConfigDebug = TRUE;
 #else
 	gConfigDebug = ConfigReadInt("VerboseDebug", 0) ? TRUE : FALSE;
 #endif

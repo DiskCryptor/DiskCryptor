@@ -631,8 +631,8 @@ int _set_boot_loader_efi(
 	}
 
 	if (add_esp == 1) {
-		/* User wants dedicated DCS ESP - find or create it */
-		rlt = dc_get_or_create_dcs_esp(&dsk_num, esp_path, &esp_part);
+		/* User wants dedicated DCS ESP - find or create it (0 = default 128MB) */
+		rlt = dc_get_or_create_dcs_esp(&dsk_num, esp_path, &esp_part, 0);
 		if (rlt != ST_OK) {
 			__error_s(hwnd, L"Failed to create DCS ESP partition", rlt);
 			return rlt;

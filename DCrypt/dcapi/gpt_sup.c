@@ -1147,11 +1147,13 @@ format_partition:
 	return ST_OK;
 }
 
-/* Get or create DCS ESP - finds existing or creates new one */
-int dc_get_or_create_dcs_esp(int *dsk_num, wchar_t *esp_path, int *esp_part)
+/* Get or create DCS ESP - finds existing or creates new one
+ * esp_size_mb: size in MB for new ESP partition (0 = use default 128MB) */
+int dc_get_or_create_dcs_esp(int *dsk_num, wchar_t *esp_path, int *esp_part, int esp_size_mb)
 {
 	int existing_part;
 	int resl;
+	u64 esp_size;
 
 	if (*dsk_num == -1) {
 		*dsk_num = dc_efi_get_os_disk();
@@ -1170,8 +1172,11 @@ int dc_get_or_create_dcs_esp(int *dsk_num, wchar_t *esp_path, int *esp_part)
 		return ST_OK;
 	}
 
-	/* Create new DCS ESP (64MB) */
-	resl = dc_create_dcs_esp(*dsk_num, 64 * 1024 * 1024, esp_path, esp_part);
+	/* Calculate ESP size: use specified size or default to 128MB */
+	esp_size = (esp_size_mb > 0) ? ((u64)esp_size_mb * 1024 * 1024) : (128 * 1024 * 1024);
+
+	/* Create new DCS ESP */
+	resl = dc_create_dcs_esp(*dsk_num, esp_size, esp_path, esp_part);
 
 	return resl;
 }

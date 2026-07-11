@@ -512,10 +512,8 @@ UefiMain(
 	InitParams();
 	InitAuxDrivers();
 
-#ifndef NO_BML
 	// Remove BootNext to restore boot order
-	BootMenuItemRemove(L"BootNext");
-#endif
+	//BootMenuItemRemove(L"BootNext");
 
 	//if (gExternMode) {
 	//	ERR_PRINT(L"Extern Mode\n");
@@ -550,7 +548,8 @@ UefiMain(
 			ERR_PRINT(L"Failed to setup VirtualAddrChangeEvent to Clean Sensitive Data from RAM after boot!\n");
 		}
 
-		res = OnExit(OnExitSuccess, res);
+		if (res != EFI_DCS_INPUT_REQUIRED)
+			res = OnExit(OnExitSuccess, res);
 	}
 
 	// clear all sensitive data on failure
