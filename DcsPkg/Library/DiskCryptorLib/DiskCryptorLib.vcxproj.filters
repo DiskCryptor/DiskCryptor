@@ -295,5 +295,8 @@
     <ClCompile Include="crypto_fast\xts_serpent_neon.c">
       <Filter>crypto_fast</Filter>
     </ClCompile>
+    <ClCompile Include="DcsCliHelpers.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
 </Project>

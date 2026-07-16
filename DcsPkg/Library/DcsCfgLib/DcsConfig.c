@@ -19,7 +19,7 @@ https://opensource.org/licenses/Apache-2.0
 #include <Library/CommonLib.h>
 #include <Library/BaseMemoryLib.h>
 #include <Library/PrintLib.h>
-#include "../MiscUtilsLib/MiscUtilsLib.h"
+#include "../Library/MiscUtilsLib/MiscUtilsLib.h"
 #include "common/Xml.h"
 
 

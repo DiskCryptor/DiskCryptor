@@ -22,21 +22,17 @@
   FILE_GUID                      = 7A3E9D1C-5F42-4B8A-9C6E-2D1F8A7B3C5E
   MODULE_TYPE                    = UEFI_DRIVER
   VERSION_STRING                 = 1.0
-  LIBRARY_CLASS                  = MiscUtilsLib
+  LIBRARY_CLASS                  = MiscUtilsLib|DXE_DRIVER DXE_RUNTIME_DRIVER UEFI_APPLICATION UEFI_DRIVER
 
 [Sources]
   MiscUtilsLib.c
   MiscUtilsLib.h
   Base64.c
   EfiPxe.c
-  verify.h
-  verify.c
-  ec_dsa.c
 
 [Packages]
   MdePkg/MdePkg.dec
   DcsPkg/DcsPkg.dec
-  CryptoPkg/CryptoPkg.dec
 
 [LibraryClasses]
   BaseLib
@@ -48,7 +44,6 @@
   DevicePathLib
   DebugLib
   PrintLib
-  BaseCryptLib
 
 [Guids]
   gEfiSmbiosTableGuid            ## CONSUMES

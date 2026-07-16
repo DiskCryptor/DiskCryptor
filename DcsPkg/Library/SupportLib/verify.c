@@ -17,7 +17,7 @@
 #include <Library/DebugLib.h>
 #include <Library/PrintLib.h>
 #include <Library/BaseCryptLib.h>
-#include "MiscUtilsLib.h"
+#include "../MiscUtilsLib/MiscUtilsLib.h"
 #include "verify.h"
 
 //#define DEBUG_BUILD

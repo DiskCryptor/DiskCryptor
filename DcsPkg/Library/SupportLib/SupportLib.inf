@@ -1,0 +1,45 @@
+## @file
+#  SupportLib - Certificate verification support for DiskCryptor UEFI
+#
+#  This library provides certificate verification using ECDSA P-256.
+#  Separated from MiscUtilsLib to isolate BaseCryptLib dependency.
+#
+#  SPDX-License-Identifier: MIT
+#
+#  Copyright (c) 2024-2026 David Xanatos
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010005
+  BASE_NAME                      = SupportLib
+  FILE_GUID                      = 8B4E9D2C-6F53-4C9B-AD7F-3E2F9B8C4D6F
+  MODULE_TYPE                    = UEFI_DRIVER
+  VERSION_STRING                 = 1.0
+  LIBRARY_CLASS                  = SupportLib
+
+[Sources]
+  verify.h
+  verify.c
+  ec_dsa.c
+
+[Packages]
+  MdePkg/MdePkg.dec
+  DcsPkg/DcsPkg.dec
+  CryptoPkg/CryptoPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  UefiLib
+  UefiBootServicesTableLib
+  UefiRuntimeServicesTableLib
+  DebugLib
+  PrintLib
+  BaseCryptLib
+  MiscUtilsLib
+
+[Guids]
+
+[Protocols]

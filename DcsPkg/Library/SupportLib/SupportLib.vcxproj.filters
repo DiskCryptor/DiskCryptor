@@ -15,20 +15,6 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <None Include="MiscUtilsLib.inf">
-      <Filter>Resource Files</Filter>
-    </None>
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="Base64.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="MiscUtilsLib.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="EfiPxe.c">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="verify.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -37,11 +23,13 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="MiscUtilsLib.h">
-      <Filter>Header Files</Filter>
-    </ClInclude>
     <ClInclude Include="verify.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="SupportLib.inf">
+      <Filter>Resource Files</Filter>
+    </None>
   </ItemGroup>
 </Project>

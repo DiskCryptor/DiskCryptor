@@ -101,6 +101,7 @@
     <ClCompile Include="crypto_small\sha512_small.c" />
     <ClCompile Include="crypto_small\twofish_small.c" />
     <ClCompile Include="crypto_small\xts_small.c" />
+    <ClCompile Include="DcsCliHelpers.c" />
     <ClCompile Include="DcsConfigMenu.c" />
     <ClCompile Include="DcsDiskCryptor.c" />
     <ClCompile Include="DcsTpmSupport.c" />

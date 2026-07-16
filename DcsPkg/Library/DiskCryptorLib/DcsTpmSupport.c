@@ -29,7 +29,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <DcsConfig.h>
 
 #include "../DcsTpm/DcsTpmProto.h"
-#include "../MiscUtilsLib/MiscUtilsLib.h"
+#include "../Library/MiscUtilsLib/MiscUtilsLib.h"
 
 EFI_DCS_TPM_PROTOCOL* gDcsTpm = NULL;
 
@@ -164,7 +164,7 @@ AskOwnerPassword (
 	g_Con->Print(L"TIP: For TPM 2.0 Windows leaves owner auth EMPTY.\n");
 
 	ZeroMem(OwnerPassword, maxLen * sizeof(CHAR16));
-	DcsAskPassword("Enter TPM owner password: ", &len, OwnerPassword, &pwdCode, maxLen - 1, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+	DcsAskPassword("Enter TPM owner password: ", &len, OwnerPassword, &pwdCode, (maxLen - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 	if (pwdCode == AskPwdRetCancel) {
 		g_Con->Print(L"Cancelled.\n");
 		return EFI_ABORTED;
@@ -384,14 +384,14 @@ DcTpmAskTpmPin(
 retry:
 	// Get PIN
 	ZeroMem(TpmPin, MaxLen * sizeof(CHAR16));
-	DcsAskPassword("Enter TPM PIN: ", &pinLen, TpmPin, &pwdCode, MaxLen - 1, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+	DcsAskPassword("Enter TPM PIN: ", &pinLen, TpmPin, &pwdCode, (MaxLen - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 	if (pwdCode == AskPwdRetCancel)
 		return EFI_ABORTED;
 
 	if (pinLen > 0) {
 		// Confirm PIN
 		ZeroMem(confirmPin, sizeof(confirmPin));
-		DcsAskPassword("Confirm TPM PIN: ", &confirmLen, confirmPin, &pwdCode, DCS_TPM_OWNER_PWD_MAX - 1, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+		DcsAskPassword("Confirm TPM PIN: ", &confirmLen, confirmPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 		if (pwdCode == AskPwdRetCancel)
 			return EFI_ABORTED;
 
@@ -1017,7 +1017,7 @@ DcTpmRestoreFromSrkBackup(
 retry:
 	g_Con->Print(L"\n%HTPM recovery file available.%N\n");
 	ZeroMem(recoveryPin, sizeof(recoveryPin));
-	DcsAskPassword("Enter recovery PIN: ", &recoveryPinLen, recoveryPin, &pwdCode, DCS_TPM_OWNER_PWD_MAX - 1, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+	DcsAskPassword("Enter recovery PIN: ", &recoveryPinLen, recoveryPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 
 	if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
 		MEM_BURN(recoveryPin, sizeof(recoveryPin));
@@ -1200,7 +1200,7 @@ DcTpmLoadSrk(
 retry:
 	// Prompt for PIN if required
 	if (pinRequired && pinToUse == NULL) {
-		DcsAskPassword("Enter TPM PIN: ", &pinLen, tpmPin, &pwdCode, DCS_TPM_OWNER_PWD_MAX - 1, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+		DcsAskPassword("Enter TPM PIN: ", &pinLen, tpmPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 		if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
 			MEM_BURN(sealedBuffer, sealedSize);
 			MEM_FREE(sealedBuffer);
@@ -1280,7 +1280,7 @@ DcTpmRestoreFromNvBackup(
 retry:
 	g_Con->Print(L"\n%HRecovery entry available.%N\n");
 	ZeroMem(recoveryPin, sizeof(recoveryPin));
-	DcsAskPassword("Enter recovery PIN: ", &recoveryPinLen, recoveryPin, &pwdCode, DCS_TPM_OWNER_PWD_MAX - 1, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+	DcsAskPassword("Enter recovery PIN: ", &recoveryPinLen, recoveryPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 
 	if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
 		MEM_BURN(recoveryPin, sizeof(recoveryPin));
@@ -1447,7 +1447,7 @@ DcTpmLoadNv(
 retry:
 	// Prompt for PIN if required
 	if (pinRequired && pinToUse == NULL) {
-		DcsAskPassword("Enter TPM PIN: ", &pinLen, tpmPin, &pwdCode, DCS_TPM_OWNER_PWD_MAX - 1, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+		DcsAskPassword("Enter TPM PIN: ", &pinLen, tpmPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 		if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
 			return EFI_ABORTED;
 		}
@@ -1563,7 +1563,7 @@ DcTpmCreateFileBackup(
 retry:
 	// Ask for backup password
 	ZeroMem(backupPwd, sizeof(backupPwd));
-	DcsAskPassword("Enter backup password: ", &bpLen, backupPwd, &pwdCode, MAX_PASSWORD, FALSE, TRUE, HandleFuncKeys, FormatStatus, &Params);
+	DcsAskPassword("Enter backup password: ", &bpLen, backupPwd, &pwdCode, MAX_PASSWORD * 2, FALSE, TRUE, HandleFuncKeys, FormatStatus, &Params);
 
 	if (pwdCode == AskPwdRetCancel) {
 		g_Con->Print(L"Backup cancelled.\n");
@@ -1579,7 +1579,7 @@ retry:
 
 	// Confirm backup password
 	ZeroMem(confirmPwd, sizeof(confirmPwd));
-	DcsAskPassword("Confirm backup password: ", &cpLen, confirmPwd, &pwdCode, MAX_PASSWORD, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
+	DcsAskPassword("Confirm backup password: ", &cpLen, confirmPwd, &pwdCode, MAX_PASSWORD * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 
 	if (pwdCode == AskPwdRetCancel) {
 		g_Con->Print(L"Backup cancelled.\n");
@@ -1718,7 +1718,7 @@ DcTpmRestoreFromFileBackup(
 	g_Con->Print(L"\n%HEncrypted file backup available.%N\n");
 	ZeroMem(backupPwd, sizeof(backupPwd));
 retry:
-	DcsAskPassword("Backup password: ", &bpLen, backupPwd, &bpCode, MAX_PASSWORD, FALSE, TRUE, HandleFuncKeys, FormatStatus, &Params);
+	DcsAskPassword("Backup password: ", &bpLen, backupPwd, &bpCode, MAX_PASSWORD  *2, FALSE, TRUE, HandleFuncKeys, FormatStatus, &Params);
 
 	if (bpCode == AskPwdRetCancel || bpLen == 0) {
 		ret = EFI_ABORTED;
@@ -1886,7 +1886,7 @@ DcTpmStore(VOID)
 
 		// Prompt for password
 		ZeroMem(password, sizeof(password));
-		DcsAskPassword("Enter secret: ", &password_size, password, &pwdCode, MAX_PASSWORD, gPasswordVisible, TRUE, HandleFuncKeys, FormatStatus, &Params);
+		DcsAskPassword("Enter secret: ", &password_size, password, &pwdCode, MAX_PASSWORD * 2, gPasswordVisible, TRUE, HandleFuncKeys, FormatStatus, &Params);
 
 		if (pwdCode == AskPwdRetCancel) {
 			MEM_BURN(password, sizeof(password));
@@ -1901,7 +1901,7 @@ DcTpmStore(VOID)
 
 		// Password confirmation
 		ZeroMem(confirmPassword, sizeof(confirmPassword));
-		DcsAskPassword("Confirm secret: ", &confirmSize, confirmPassword, &confirmCode, MAX_PASSWORD, gPasswordVisible, TRUE, HandleFuncKeysSimple, NULL, NULL);
+		DcsAskPassword("Confirm secret: ", &confirmSize, confirmPassword, &confirmCode, MAX_PASSWORD * 2, gPasswordVisible, TRUE, HandleFuncKeysSimple, NULL, NULL);
 
 		if (confirmCode == AskPwdRetCancel) {
 			MEM_BURN(password, sizeof(password));

@@ -19,22 +19,18 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <None Include="MiscUtilsLib.inf" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClCompile Include="Base64.c" />
     <ClCompile Include="ec_dsa.c" />
-    <ClCompile Include="EfiPxe.c" />
-    <ClCompile Include="MiscUtilsLib.c" />
     <ClCompile Include="verify.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="MiscUtilsLib.h" />
     <ClInclude Include="verify.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="SupportLib.inf" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>
-    <ProjectGuid>{F6F68F87-86EA-4D5D-A99E-44E3C55BEA8B}</ProjectGuid>
+    <ProjectGuid>{98C81EC9-AF05-41F7-99FB-2AC989C383E3}</ProjectGuid>
     <Keyword>Win32Proj</Keyword>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />

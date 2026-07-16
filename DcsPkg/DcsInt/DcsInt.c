@@ -26,7 +26,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <DcsConfig.h>
 #include <Guid/EventGroup.h>
 
-#include "../MiscUtilsLib/MiscUtilsLib.h"
+#include "../Library/MiscUtilsLib/MiscUtilsLib.h"
 
 //////////////////////////////////////////////////////////////////////////
 // Auxiliary hardware

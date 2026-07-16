@@ -24,7 +24,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <DcsConfig.h>
 #include <Guid/Gpt.h>
 #include <Guid/GlobalVariable.h>
-#include "../MiscUtilsLib/MiscUtilsLib.h"
+#include "../Library/MiscUtilsLib/MiscUtilsLib.h"
 #include "TpmKill.h"
 
 EFI_GUID          ImagePartGuid;

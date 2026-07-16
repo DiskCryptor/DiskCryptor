@@ -20,7 +20,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/BaseMemoryLib.h>
 #include <Guid/GlobalVariable.h>
 #include <DcsConfig.h>
-#include "../MiscUtilsLib/MiscUtilsLib.h"
+#include "../Library/MiscUtilsLib/MiscUtilsLib.h"
 
 #if defined(_M_X64)
 #define ARCHdot L"x64."

@@ -8,7 +8,7 @@
 #include <Library/DebugLib.h>
 #include <Library/PrintLib.h>
 #include <Library/BaseCryptLib.h>
-#include "MiscUtilsLib.h"
+#include "../MiscUtilsLib/MiscUtilsLib.h"
 
 #define SHA256_HASH_SIZE        32
 #define ECC_P256_KEY_SIZE       32
@@ -1329,7 +1329,7 @@ VerifySelfTest (
         DebugLogPrint("\r\n");
     }
 
-    // Test: Verify squaring using identity (Gx+Gy)² = Gx² + 2·Gx·Gy + Gy²
+    // Test: Verify squaring using identity (Gx+Gy)ï¿½ = Gxï¿½ + 2ï¿½Gxï¿½Gy + Gyï¿½
     DebugLogPrint("Test 1e: Verify (Gx+Gy)^2 = Gx^2 + 2*Gx*Gy + Gy^2\r\n");
     {
         BN256 GxPlusGy, GxPlusGySquared;
@@ -1337,12 +1337,12 @@ VerifySelfTest (
         BN256 RHS, Tmp;
         BN256 Scalar2;
 
-        // Left side: (Gx + Gy)²
+        // Left side: (Gx + Gy)ï¿½
         Bn256ModAddP(&GxPlusGy, &gP256Gx, &gP256Gy);
         Bn256ModMulGeneric(&GxPlusGySquared, &GxPlusGy, &GxPlusGy, &gP256Prime);
         DebugLogBn256("  (Gx+Gy)^2", &GxPlusGySquared);
 
-        // Right side: Gx² + 2·Gx·Gy + Gy²
+        // Right side: Gxï¿½ + 2ï¿½Gxï¿½Gy + Gyï¿½
         Bn256ModMulGeneric(&GxSquared, &gP256Gx, &gP256Gx, &gP256Prime);
         Bn256ModMulGeneric(&GySquared, &gP256Gy, &gP256Gy, &gP256Prime);
         Bn256ModMulGeneric(&GxTimesGy, &gP256Gx, &gP256Gy, &gP256Prime);

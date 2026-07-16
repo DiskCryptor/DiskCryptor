@@ -32,7 +32,7 @@ https://opensource.org/licenses/LGPL-3.0
 
 #include "../DcsTpm/DcsTpmProto.h"
 #include "../MiscUtilsLib/MiscUtilsLib.h"
-#include "../MiscUtilsLib/Verify.h"
+#include "../SupportLib/verify.h"
 
 #include "include/dc_header.h"
 #include "include/dc_keyfiles.h"
@@ -2480,7 +2480,7 @@ DcMain(int* vol_found, int* hdr_found)
 
 	do {
 		// password prompt - uses g_Con abstraction to select touch or console mode
-		DcsAskPassword(gDCryptPasswordMsg, &password_size, password, &gDCryptPwdCode, MAX_PASSWORD, gPasswordVisible, TRUE, HandleFuncKeys, FormatStatus, &Params);
+		DcsAskPassword(gDCryptPasswordMsg, &password_size, password, &gDCryptPwdCode, MAX_PASSWORD * 2, gPasswordVisible, TRUE, HandleFuncKeys, FormatStatus, &Params);
 
 		//if (gDCryptPwdCode == AskPwdRetChange) {
 		//	gDcsTpm->MenuShow(gDcsTpm);  
