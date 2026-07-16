@@ -1,6 +1,6 @@
 
 
-[12.07.2026] - 2.0.2/887.118.242
+[??.07.2026] - 2.0.2/887.118.242
   [+] Added Hardware Crypto Support to ARM64
   [*] Fixed default TPM PCR mask was incomplete
   [*] Added workaround to TPM issue on some on ARM64 devices
@@ -8,6 +8,7 @@
   [*] Added TpmKill option to DCS, access to TPM can be entierly blocked before OS handof
   [*] Reworked DCS inter module communication
   [+] Added Boot Menu Lock driver (prevents windows from changing boot order away from DCS)
+  [-] Fixed DCS allowed only for 64 cahrs in password should be 128
 
 
 [05.07.2026] - 2.0.1/886.118.238
