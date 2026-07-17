@@ -127,7 +127,7 @@ static CFG_VALUE_NAME gHandoffModeValues[] = {
 };
 #else
 static CFG_VALUE_NAME gHandoffModeValues[] = {
-	{ 0, L"Default" },
+	//{ 0, L"Default" },
 	{ 1, L"Legacy" },
 	{ 2, L"Full" },
 	{ 3, L"Keys Only" },
