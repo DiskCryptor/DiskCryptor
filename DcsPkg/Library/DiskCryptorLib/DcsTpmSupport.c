@@ -841,7 +841,7 @@ DcApplyBackup(
 		else {
 			tpm_backup* backup = (tpm_backup*)BackupBuffer;
 
-			if (gDCryptTpmPcrMask != backup->PcrMask) {
+			if (gDCryptTpmPcrMask != (int)backup->PcrMask) {
 				g_Con->Print(L"Using Current PCR mask: 0x%x (Original PCR mask: 0x%x)\n", gDCryptTpmPcrMask, backup->PcrMask);
 			} else {
 				g_Con->Print(L"Using PCR mask: 0x%x\n", gDCryptTpmPcrMask);
