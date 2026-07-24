@@ -1003,6 +1003,7 @@ _password_dlg_proc(
 				else
 				{
 					info->unmount_timeout = 0;
+					_unmount_timer_save_defaults(info->unmount_timeout, UNMOUNT_TIMEOUT_UNIT_MIN);
 				}
 
 					if (IsWindowEnabled(GetDlgItem(hwnd, IDC_COMBO_MNPOINT)) &&
