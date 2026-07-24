@@ -263,3 +263,94 @@ void _unmount_timer_load_defaults(int *value, int *unit)
 	*value = (int)data[0];
 	*unit  = (int)data[1];
 }
+
+
+static const _init_list _unmount_units[] = {
+	{ UNMOUNT_TIMEOUT_UNIT_SEC,  L"sec" },
+	{ UNMOUNT_TIMEOUT_UNIT_MIN,  L"min" },
+	{ UNMOUNT_TIMEOUT_UNIT_HOUR, L"hour" },
+	{ 0, STR_NULL }
+};
+
+static INT_PTR CALLBACK
+_set_unmount_timer_dlg_proc(
+		HWND   hwnd,
+		UINT   message,
+		WPARAM wparam,
+		LPARAM lparam
+	)
+{
+	WORD id = LOWORD(wparam);
+
+	switch (message)
+	{
+		case WM_INITDIALOG:
+		{
+			int def_val, def_unit;
+
+			SetWindowLongPtr(hwnd, GWLP_USERDATA, lparam);
+
+			_unmount_timer_load_defaults(&def_val, &def_unit);
+
+			SetDlgItemInt(hwnd, IDE_UNMOUNT_TIMEOUT,
+				def_val > 0 ? (UINT)def_val : 5, FALSE);
+			SendMessage(GetDlgItem(hwnd, IDE_UNMOUNT_TIMEOUT),
+				EM_LIMITTEXT, 5, 0);
+
+			_init_combo(GetDlgItem(hwnd, IDC_COMBO_UNMOUNT_UNIT),
+				_unmount_units, def_unit, FALSE, -1);
+
+			SetForegroundWindow(hwnd);
+			return 1L;
+		}
+
+		case WM_COMMAND:
+		{
+			if (id == IDCANCEL)
+			{
+				EndDialog(hwnd, IDCANCEL);
+				return 1L;
+			}
+
+			if (id == IDOK)
+			{
+				const wchar_t **pp = (const wchar_t **)GetWindowLongPtr(hwnd, GWLP_USERDATA);
+				const wchar_t *device   = pp[0];
+				const wchar_t *mnt_point = pp[1];
+				BOOL   translated;
+				int    value = (int)GetDlgItemInt(hwnd, IDE_UNMOUNT_TIMEOUT, &translated, FALSE);
+				int    unit  = _get_combo_val(GetDlgItem(hwnd, IDC_COMBO_UNMOUNT_UNIT), _unmount_units);
+
+				if (translated && value > 0)
+				{
+					DWORD timeout_ms = _unmount_timer_calc_ms(value, unit);
+					_unmount_timer_add(device, mnt_point, timeout_ms);
+				}
+
+				EndDialog(hwnd, IDOK);
+				return 1L;
+			}
+		}
+		break;
+	}
+	return 0L;
+}
+
+void _dlg_set_unmount_timer(
+		HWND          hwnd,
+		const wchar_t *device,
+		const wchar_t *mnt_point
+	)
+{
+	const wchar_t *params[2];
+	params[0] = device;
+	params[1] = mnt_point;
+
+	DialogBoxParam(
+		__hinst,
+		MAKEINTRESOURCE(IDD_DIALOG_SET_UNMOUNT_TIMER),
+		hwnd,
+		_set_unmount_timer_dlg_proc,
+		(LPARAM)params
+	);
+}

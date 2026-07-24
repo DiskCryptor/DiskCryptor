@@ -33,4 +33,6 @@ DWORD _unmount_timer_calc_ms(int value, int unit);
 void _unmount_timer_save_defaults(int value, int unit);
 void _unmount_timer_load_defaults(int *value, int *unit);
 
+void _dlg_set_unmount_timer(HWND hwnd, const wchar_t *device, const wchar_t *mnt_point);
+
 #endif

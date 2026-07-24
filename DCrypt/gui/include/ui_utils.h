@@ -30,6 +30,7 @@
 
 #define IDS_MOUNTALL		L"Mount &All"
 #define IDS_UNMOUNTALL		L"U&nmount All"
+#define IDS_SET_UNMOUNT_TIMER	L"Set &Unmount Timer..."
 
 #define IDS_SETTINGS		L"&Settings"
 #define IDS_ABOUT			L"&About"

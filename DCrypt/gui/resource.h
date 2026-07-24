@@ -615,12 +615,16 @@
 // Cancel all unmount timers menu item
 #define ID_VOLUMES_CANCEL_UNMOUNT_TIMERS 40094
 
+// Set Unmount Timer dialog and menu item
+#define IDD_DIALOG_SET_UNMOUNT_TIMER    1501
+#define ID_VOLUMES_SET_UNMOUNT_TIMER    40095
+
 // Next default values for new objects
 //
 #ifdef APSTUDIO_INVOKED
 #ifndef APSTUDIO_READONLY_SYMBOLS
-#define _APS_NEXT_RESOURCE_VALUE        186
-#define _APS_NEXT_COMMAND_VALUE         40094
+#define _APS_NEXT_RESOURCE_VALUE        187
+#define _APS_NEXT_COMMAND_VALUE         40096
 #define _APS_NEXT_CONTROL_VALUE         1334
 #define _APS_NEXT_SYMED_VALUE           101
 #endif

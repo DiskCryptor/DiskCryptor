@@ -33,6 +33,7 @@
 
 #include "hotkeys.h"
 #include "threads.h"
+#include "unmount_timer.h"
 
 #include "prc_common.h"
 #include "prc_options.h"
@@ -41,7 +42,6 @@
 #include "prc_tpm.h"
 #include "prc_wait.h"
 #include "tpm_sup.h"
-#include "unmount_timer.h"
 
 static int _dlg_height;
 static int _dlg_width;
@@ -604,6 +604,7 @@ _main_dialog_proc(
 								if ( mnt->info.status.flags & F_CDROM )
 								{
 									AppendMenu( h_popup, MF_STRING, ID_VOLUMES_UNMOUNT, IDS_UNMOUNT );
+									AppendMenu( h_popup, MF_STRING, ID_VOLUMES_SET_UNMOUNT_TIMER, IDS_SET_UNMOUNT_TIMER );
 								} else 
 								{
 									if ( mnt->info.status.flags & F_FORMATTING )
@@ -614,6 +615,10 @@ _main_dialog_proc(
 										if ( IS_UNMOUNTABLE(&mnt->info.status) )
 										{
 											AppendMenu( h_popup, MF_STRING, ID_VOLUMES_UNMOUNT, IDS_UNMOUNT );
+										}
+										if ( IS_UNMOUNTABLE(&mnt->info.status) )
+										{
+											AppendMenu( h_popup, MF_STRING, ID_VOLUMES_SET_UNMOUNT_TIMER, IDS_SET_UNMOUNT_TIMER );
 										}
 										if ( !(mnt->info.status.flags & F_SYNC) )
 										{
@@ -696,6 +701,10 @@ _main_dialog_proc(
 							case ID_VOLUMES_CHANGEPASS	: _menu_change_pass(sel); break;
 
 							case ID_TOOLS_HEADER_CONFIG	: _menu_header_config(sel); break;
+
+							case ID_VOLUMES_SET_UNMOUNT_TIMER:
+								_dlg_set_unmount_timer(hwnd, sel->mnt.info.device, sel->mnt.info.status.mnt_point);
+								break;
 						}
 						if ( item )
 						{
