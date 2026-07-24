@@ -729,6 +729,7 @@ _password_dlg_proc(
 				HWND mnt_label = GetDlgItem( hwnd, IDC_MNT_POINT );
 				HWND mnt_ro = GetDlgItem( hwnd, IDC_CHECK_RO_SET );
 				HWND mnt_no_hiber = GetDlgItem( hwnd, IDC_NO_HIBERNATION );
+				HWND mnt_lock_unmount = GetDlgItem( hwnd, IDC_DISMOUNT_ON_LOCK );
 				HWND mnt_header = GetDlgItem( hwnd, IDC_HEAD_MOUNT_OPTIONS );
 
 				BOOL enable;
@@ -750,6 +751,7 @@ _password_dlg_proc(
 					ShowWindow( mnt_label, SW_HIDE );
 					ShowWindow( mnt_ro, SW_HIDE );
 					ShowWindow( mnt_no_hiber, SW_HIDE );
+					ShowWindow( mnt_lock_unmount, SW_HIDE );
 				}
 
 				_sub_class( mnt_check, SUB_STATIC_PROC, HWND_NULL );
@@ -757,6 +759,9 @@ _password_dlg_proc(
 
 				_sub_class( mnt_no_hiber, SUB_STATIC_PROC, HWND_NULL );
 				_set_check( hwnd, IDC_NO_HIBERNATION, enable );
+
+				_sub_class( mnt_lock_unmount, SUB_STATIC_PROC, HWND_NULL );
+				_set_check( hwnd, IDC_DISMOUNT_ON_LOCK, FALSE );
 
 			}
 			SendMessage(
@@ -956,6 +961,7 @@ _password_dlg_proc(
 
 					info->mnt_ro = _get_check(hwnd, IDC_CHECK_RO_SET);
 					info->no_hiber = _get_check(hwnd, IDC_NO_HIBERNATION);
+					info->dismount_on_lock = _get_check(hwnd, IDC_DISMOUNT_ON_LOCK);
 					info->skip_unused = _get_check(hwnd, IDC_CHECK_SKIP_UNUSED);
 					info->use_backup = _get_check(hwnd, IDC_CHECK_USE_BACKUP);
 
