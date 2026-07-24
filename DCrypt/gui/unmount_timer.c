@@ -181,13 +181,8 @@ void _unmount_timer_check(void)
 
 		if (elapsed >= unmount_timers[i].timeout_ms)
 		{
-			wchar_t *dev = unmount_timers[i].device;
-
-			LeaveCriticalSection(&unmount_timer_cs);
-
-			dc_unmount_volume(dev, MF_FORCE);
-
-			EnterCriticalSection(&unmount_timer_cs);
+			wchar_t dev[MAX_PATH];
+			wcscpy_s(dev, MAX_PATH, unmount_timers[i].device);
 
 			memset(&unmount_timers[i], 0, sizeof(_unmount_timer_entry));
 			if (i < unmount_timer_count - 1)
@@ -196,6 +191,12 @@ void _unmount_timer_check(void)
 					(unmount_timer_count - i - 1) * sizeof(_unmount_timer_entry));
 			}
 			unmount_timer_count--;
+
+			LeaveCriticalSection(&unmount_timer_cs);
+
+			dc_unmount_volume(dev, MF_FORCE);
+
+			EnterCriticalSection(&unmount_timer_cs);
 		}
 		else
 		{

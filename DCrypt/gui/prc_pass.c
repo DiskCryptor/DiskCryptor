@@ -37,7 +37,7 @@ static const _init_list unmount_timeout_units[] = {
 	{ UNMOUNT_TIMEOUT_UNIT_SEC,  L"sec" },
 	{ UNMOUNT_TIMEOUT_UNIT_MIN,  L"min" },
 	{ UNMOUNT_TIMEOUT_UNIT_HOUR, L"hour" },
-	{ 0, NULL }
+	{ 0, STR_NULL }
 };
 
 // Per-dialog-instance data for password change dialog
