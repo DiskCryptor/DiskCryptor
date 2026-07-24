@@ -33,6 +33,7 @@
 
 #include "hotkeys.h"
 #include "threads.h"
+#include "unmount_timer.h"
 
 #include "prc_common.h"
 #include "prc_options.h"
@@ -327,6 +328,7 @@ _main_dialog_proc(
 			_set_timer( MAIN_TIMER, TRUE, TRUE );
 			_set_timer( RAND_TIMER, TRUE, FALSE );
 			_set_timer( POST_TIMER, TRUE, FALSE );
+			_set_timer( UNMOUNT_TIMER, TRUE, FALSE );
 
 			return 0L;
 		} 
@@ -602,6 +604,7 @@ _main_dialog_proc(
 								if ( mnt->info.status.flags & F_CDROM )
 								{
 									AppendMenu( h_popup, MF_STRING, ID_VOLUMES_UNMOUNT, IDS_UNMOUNT );
+									AppendMenu( h_popup, MF_STRING, ID_VOLUMES_SET_UNMOUNT_TIMER, IDS_SET_UNMOUNT_TIMER );
 								} else 
 								{
 									if ( mnt->info.status.flags & F_FORMATTING )
@@ -612,6 +615,10 @@ _main_dialog_proc(
 										if ( IS_UNMOUNTABLE(&mnt->info.status) )
 										{
 											AppendMenu( h_popup, MF_STRING, ID_VOLUMES_UNMOUNT, IDS_UNMOUNT );
+										}
+										if ( IS_UNMOUNTABLE(&mnt->info.status) )
+										{
+											AppendMenu( h_popup, MF_STRING, ID_VOLUMES_SET_UNMOUNT_TIMER, IDS_SET_UNMOUNT_TIMER );
 										}
 										if ( !(mnt->info.status.flags & F_SYNC) )
 										{
@@ -694,6 +701,10 @@ _main_dialog_proc(
 							case ID_VOLUMES_CHANGEPASS	: _menu_change_pass(sel); break;
 
 							case ID_TOOLS_HEADER_CONFIG	: _menu_header_config(sel); break;
+
+							case ID_VOLUMES_SET_UNMOUNT_TIMER:
+								_dlg_set_unmount_timer(hwnd, sel->mnt.info.device, sel->mnt.info.status.mnt_point);
+								break;
 						}
 						if ( item )
 						{
@@ -850,6 +861,12 @@ _main_dialog_proc(
 
 			case IDC_BTN_DECRYPT_ :
 			case ID_VOLUMES_DECRYPT : _menu_decrypt( node ); break;
+
+			case ID_VOLUMES_CANCEL_UNMOUNT_TIMERS :
+			{
+				_unmount_timer_cancel_all();
+			}
+			break;
 
 			case IDC_BTN_ENCRYPT_ :
 			case ID_VOLUMES_ENCRYPT : _menu_encrypt( node ); break;
