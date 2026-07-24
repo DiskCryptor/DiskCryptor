@@ -135,6 +135,7 @@ typedef struct _dlgpass
 	int		 clear_slots;  // clear key slots when changing password
 	int		 no_hiber;     // force unmount on hibernation
 	int		 use_backup;   // use backup header when mounting
+	int		 dismount_on_lock; // dismount on session lock
 
 } dlgpass, *pdlgpass;
 

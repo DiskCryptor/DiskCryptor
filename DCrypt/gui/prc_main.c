@@ -22,6 +22,8 @@
 
 #include <windows.h>
 #include <commctrl.h>
+#include <wtsapi32.h>
+#pragma comment(lib, "wtsapi32.lib")
 
 #include "main.h"
 #include "dcconst.h"
@@ -51,6 +53,12 @@ static int _dlg_bottom;
 
 static HWND __h_statusbar;
 static int  __cached_count = 0;  /* Cached password count from status bar update */
+
+/* In-memory table of device names to unmount on session lock */
+#define MAX_LOCK_DEVICES 64
+static wchar_t _lock_unmount_devices[MAX_LOCK_DEVICES][MAX_PATH];
+static int _lock_unmount_count = 0;
+static int _wts_registered = 0;
 
 /* Forward declarations */
 static int _count_mounted_volumes(void);
@@ -224,6 +232,50 @@ void _update_status_bar(void)
 }
 
 
+void _lock_unmount_add(
+		const wchar_t *device
+	)
+{
+	EnterCriticalSection(&crit_sect);
+	if (_lock_unmount_count < MAX_LOCK_DEVICES) {
+		wcsncpy(_lock_unmount_devices[_lock_unmount_count], device, MAX_PATH - 1);
+		_lock_unmount_devices[_lock_unmount_count][MAX_PATH - 1] = L'\0';
+		_lock_unmount_count++;
+	}
+	LeaveCriticalSection(&crit_sect);
+}
+
+
+void _lock_unmount_remove(
+		const wchar_t *device
+	)
+{
+	int i;
+	EnterCriticalSection(&crit_sect);
+	for (i = 0; i < _lock_unmount_count; i++) {
+		if (_wcsicmp(_lock_unmount_devices[i], device) == 0) {
+			int remaining = _lock_unmount_count - i - 1;
+			if (remaining > 0) {
+				memmove(_lock_unmount_devices[i], _lock_unmount_devices[i + 1],
+					(size_t)remaining * sizeof(wchar_t) * MAX_PATH);
+			}
+			_lock_unmount_devices[--_lock_unmount_count][0] = L'\0';
+			break;
+		}
+	}
+	LeaveCriticalSection(&crit_sect);
+}
+
+
+void _lock_unmount_remove_all(void)
+{
+	EnterCriticalSection(&crit_sect);
+	_lock_unmount_count = 0;
+	memset(_lock_unmount_devices, 0, sizeof(_lock_unmount_devices));
+	LeaveCriticalSection(&crit_sect);
+}
+
+
 INT_PTR 
 CALLBACK
 _main_dialog_proc(
@@ -327,6 +379,10 @@ _main_dialog_proc(
 			_set_timer( MAIN_TIMER, TRUE, TRUE );
 			_set_timer( RAND_TIMER, TRUE, FALSE );
 			_set_timer( POST_TIMER, TRUE, FALSE );
+
+			if (WTSRegisterSessionNotification(hwnd, NOTIFY_FOR_THIS_SESSION)) {
+				_wts_registered = 1;
+			}
 
 			return 0L;
 		} 
@@ -915,7 +971,10 @@ _main_dialog_proc(
 			if ( lparam )
 			{
 				_tray_icon(FALSE);
-
+				if (_wts_registered) {
+					WTSUnRegisterSessionNotification(hwnd);
+					_wts_registered = 0;
+				}
 				EndDialog(hwnd, 0);
 				ExitProcess(0);
 			} else {
@@ -927,6 +986,10 @@ _main_dialog_proc(
 
 		case WM_DESTROY : 
 		{
+			if (_wts_registered) {
+				WTSUnRegisterSessionNotification(hwnd);
+				_wts_registered = 0;
+			}
 			PostQuitMessage(0);
 			return 0L;
 		}
@@ -943,11 +1006,36 @@ _main_dialog_proc(
 				}
 				break;
 
-				case 1 : dc_unmount_all( ); break;
+				case 1 : dc_unmount_all( ); _lock_unmount_remove_all(); break;
 				case 2 : dc_device_control(DC_CTL_CLEAR_PASS, NULL, 0, NULL, 0); break;
 				case 3 : dc_get_bsod( ); break;
 			}
 			return 1L;
+		}
+		break;
+
+		case WM_WTSSESSION_CHANGE :
+		{
+			if (wparam == WTS_SESSION_LOCK)
+			{
+				EnterCriticalSection(&crit_sect);
+				while (_lock_unmount_count > 0)
+				{
+					int rlt = dc_unmount_volume(_lock_unmount_devices[0], MF_FORCE);
+					if (rlt == ST_OK || rlt == ST_NO_MOUNT || rlt == ST_NF_DEVICE)
+					{
+						int remaining = _lock_unmount_count - 1;
+						if (remaining > 0) {
+							memmove(_lock_unmount_devices[0], _lock_unmount_devices[1],
+								(size_t)remaining * sizeof(wchar_t) * MAX_PATH);
+						}
+						_lock_unmount_devices[--_lock_unmount_count][0] = L'\0';
+					} else {
+						break;
+					}
+				}
+				LeaveCriticalSection(&crit_sect);
+			}
 		}
 		break;
 
