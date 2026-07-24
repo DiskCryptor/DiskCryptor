@@ -41,6 +41,7 @@
 #include "prc_tpm.h"
 #include "prc_wait.h"
 #include "tpm_sup.h"
+#include "unmount_timer.h"
 
 static int _dlg_height;
 static int _dlg_width;
@@ -327,6 +328,7 @@ _main_dialog_proc(
 			_set_timer( MAIN_TIMER, TRUE, TRUE );
 			_set_timer( RAND_TIMER, TRUE, FALSE );
 			_set_timer( POST_TIMER, TRUE, FALSE );
+			_set_timer( UNMOUNT_TIMER, TRUE, FALSE );
 
 			return 0L;
 		} 
@@ -850,6 +852,12 @@ _main_dialog_proc(
 
 			case IDC_BTN_DECRYPT_ :
 			case ID_VOLUMES_DECRYPT : _menu_decrypt( node ); break;
+
+			case ID_VOLUMES_CANCEL_UNMOUNT_TIMERS :
+			{
+				_unmount_timer_cancel_all();
+			}
+			break;
 
 			case IDC_BTN_ENCRYPT_ :
 			case ID_VOLUMES_ENCRYPT : _menu_encrypt( node ); break;

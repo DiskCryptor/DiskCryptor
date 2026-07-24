@@ -39,6 +39,7 @@
 #include "gpt_sup.h"
 #include "efiinst.h"
 #include "secure_desktop.h"
+#include "unmount_timer.h"
 
 void _state_menu(
 		HMENU	menu,
@@ -1023,6 +1024,8 @@ void _menu_unmount(
 		} else {
 			_dact *act;
 
+			_unmount_timer_remove( node->mnt.info.device );
+
 			EnterCriticalSection(&crit_sect);
 			if ( act = _create_act_thread(node, -1, -1) ) 
 			{
@@ -1061,7 +1064,20 @@ void _menu_mount(
 			secure_free( dlg_info.pass );
 
 			if ( rlt == ST_OK )
-			{						
+			{
+				if ( dlg_info.unmount_timeout > 0 )
+				{
+					DWORD timeout_ms = _unmount_timer_calc_ms(
+						dlg_info.unmount_timeout, dlg_info.unmount_timeout_unit);
+					if (timeout_ms > 0)
+					{
+						_unmount_timer_add(
+							node->mnt.info.device,
+							node->mnt.info.status.mnt_point,
+							timeout_ms);
+					}
+				}
+
 				if ( mnt_point[0] != 0 )
 				{
 					_snwprintf( vol, countof(vol), L"%s\\", node->mnt.info.w32_device );
@@ -1104,6 +1120,31 @@ void _menu_mountall( )
 			_wait_dc_mount_all( __dlg, dlg_info.pass, &mount_cnt, flags, L"Mounting volumes..." );
 			secure_free( dlg_info.pass );
 
+			if ( dlg_info.unmount_timeout > 0 && mount_cnt > 0 )
+			{
+				DWORD timeout_ms = _unmount_timer_calc_ms(
+					dlg_info.unmount_timeout, dlg_info.unmount_timeout_unit);
+				if (timeout_ms > 0)
+				{
+					list_entry *node, *sub;
+					for (node = __drives.flink; node != &__drives; node = node->flink)
+					{
+						_dnode *root = contain_record(node, _dnode, list);
+						for (sub = root->root.vols.flink; sub != &root->root.vols; sub = sub->flink)
+						{
+							_dnode *mnt = contain_record(sub, _dnode, list);
+							if (mnt->mnt.info.status.flags & F_ENABLED)
+							{
+								_unmount_timer_add(
+									mnt->mnt.info.device,
+									mnt->mnt.info.status.mnt_point,
+									timeout_ms);
+							}
+						}
+					}
+				}
+			}
+
 			__msg_i( __dlg, L"Mounted devices: %d", mount_cnt );
 		}
 	}
@@ -1117,6 +1158,7 @@ void _menu_unmountall( )
 	if ( __msg_q( __dlg, L"Unmount all volumes?" ) )
 	{
 		dc_unmount_all( );
+		_unmount_timer_cancel_all();
 		for ( ;node != &__action; node = node->flink ) 
 		{
 			((_dact *)node)->status = ACT_STOPPED;

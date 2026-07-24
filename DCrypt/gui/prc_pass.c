@@ -30,7 +30,15 @@
 #include "pass.h"
 #include "volume_header.h"
 #include "secure_desktop.h"
+#include "unmount_timer.h"
 
+
+static const _init_list unmount_timeout_units[] = {
+	{ UNMOUNT_TIMEOUT_UNIT_SEC,  L"sec" },
+	{ UNMOUNT_TIMEOUT_UNIT_MIN,  L"min" },
+	{ UNMOUNT_TIMEOUT_UNIT_HOUR, L"hour" },
+	{ 0, NULL }
+};
 
 // Per-dialog-instance data for password change dialog
 typedef struct _pass_change_dlg_data {
@@ -759,6 +767,21 @@ _password_dlg_proc(
 				_set_check( hwnd, IDC_NO_HIBERNATION, enable );
 
 			}
+			{
+				int def_val, def_unit;
+
+				_sub_class(GetDlgItem(hwnd, IDC_CHECK_UNMOUNT_TIMEOUT), SUB_STATIC_PROC, HWND_NULL);
+
+				_unmount_timer_load_defaults(&def_val, &def_unit);
+				_set_check(hwnd, IDC_CHECK_UNMOUNT_TIMEOUT, (def_val > 0) ? TRUE : FALSE);
+
+				SetDlgItemInt(hwnd, IDE_UNMOUNT_TIMEOUT, (def_val > 0) ? (UINT)def_val : 5, FALSE);
+				SendMessage(GetDlgItem(hwnd, IDE_UNMOUNT_TIMEOUT), EM_LIMITTEXT, 5, 0);
+				_init_combo(GetDlgItem(hwnd, IDC_COMBO_UNMOUNT_UNIT), unmount_timeout_units, def_unit, FALSE, -1);
+
+				EnableWindow(GetDlgItem(hwnd, IDE_UNMOUNT_TIMEOUT), (def_val > 0));
+				EnableWindow(GetDlgItem(hwnd, IDC_COMBO_UNMOUNT_UNIT), (def_val > 0));
+			}
 			SendMessage(
 				hwnd, WM_COMMAND, MAKELONG(IDE_PASS, EN_CHANGE), (LPARAM)GetDlgItem(hwnd, IDE_PASS)
 				);
@@ -837,6 +860,14 @@ _password_dlg_proc(
 			if ( (HWND)wparam == GetDlgItem(hwnd, IDC_USE_KEY_SLOTS) )
 			{
 				EnableWindow(GetDlgItem(hwnd, IDE_KEY_SLOT_INDEX), _get_check(hwnd, IDC_USE_KEY_SLOTS));
+				return 1L;
+			}
+
+			if ( (HWND)wparam == GetDlgItem(hwnd, IDC_CHECK_UNMOUNT_TIMEOUT) )
+			{
+				BOOL checked = _get_check(hwnd, IDC_CHECK_UNMOUNT_TIMEOUT);
+				EnableWindow(GetDlgItem(hwnd, IDE_UNMOUNT_TIMEOUT), checked);
+				EnableWindow(GetDlgItem(hwnd, IDC_COMBO_UNMOUNT_UNIT), checked);
 				return 1L;
 			}
 		}
@@ -956,8 +987,23 @@ _password_dlg_proc(
 
 					info->mnt_ro = _get_check(hwnd, IDC_CHECK_RO_SET);
 					info->no_hiber = _get_check(hwnd, IDC_NO_HIBERNATION);
-					info->skip_unused = _get_check(hwnd, IDC_CHECK_SKIP_UNUSED);
-					info->use_backup = _get_check(hwnd, IDC_CHECK_USE_BACKUP);
+				info->skip_unused = _get_check(hwnd, IDC_CHECK_SKIP_UNUSED);
+				info->use_backup = _get_check(hwnd, IDC_CHECK_USE_BACKUP);
+
+				if (_get_check(hwnd, IDC_CHECK_UNMOUNT_TIMEOUT))
+				{
+					BOOL translated;
+					UINT val = GetDlgItemInt(hwnd, IDE_UNMOUNT_TIMEOUT, &translated, FALSE);
+					info->unmount_timeout = (translated && val > 0) ? (int)val : 5;
+					info->unmount_timeout_unit = _get_combo_val(
+						GetDlgItem(hwnd, IDC_COMBO_UNMOUNT_UNIT), unmount_timeout_units);
+					if (info->unmount_timeout_unit < 0) info->unmount_timeout_unit = UNMOUNT_TIMEOUT_UNIT_MIN;
+					_unmount_timer_save_defaults(info->unmount_timeout, info->unmount_timeout_unit);
+				}
+				else
+				{
+					info->unmount_timeout = 0;
+				}
 
 					if (IsWindowEnabled(GetDlgItem(hwnd, IDC_COMBO_MNPOINT)) &&
 							info->mnt_point)
