@@ -53,6 +53,7 @@
   crypto_lib/Argon2/blake2/blake2-impl.h
   crypto_lib/Argon2/blake2/blamka-round-ref.h
   crypto_lib/Argon2/blake2/blamka-round-opt.h
+  crypto_lib/Argon2/blake2/blamka-round-neon.h
   include/volume_header.h
   include/bootloader.h
   include/dc_header.h
@@ -86,8 +87,6 @@
   crypto_lib/Argon2/argon2_mt.c
   crypto_lib/Argon2/core.c
   crypto_lib/Argon2/ref.c
-  crypto_lib/Argon2/opt_sse2.c
-  crypto_lib/Argon2/opt_avx2.c
   crypto_lib/Argon2/blake2/blake2b.c
 
 [Sources.X64]
@@ -108,6 +107,14 @@
   crypto_lib/xts_serpent_sse2.c
   crypto_lib/xts_twofish.c
   crypto_lib/amd64/aes_amd64.nasm
+  # Argon2's SIMD core. ref.c dispatches to fill_segment_sse2 on x64, so the
+  # file that defines it has to be here and not in the common list - an
+  # architecture that forgets its core gets a link error, not a silent
+  # fallback to the scalar one. opt_avx2.c is built but never selected:
+  # CL_ENABLE_AVX2 stays undefined for the same reason the AVX Serpent tiers
+  # are left out above.
+  crypto_lib/Argon2/opt_sse2.c
+  crypto_lib/Argon2/opt_avx2.c
 
 [Sources.AARCH64]
   crypto_lib/sha512.c
@@ -120,6 +127,10 @@
   crypto_lib/xts_aes_ce.c
   crypto_lib/xts_serpent_neon.c
   crypto_lib/xts_twofish.c
+  # the AARCH64 half of the pair above: ref.c dispatches to fill_segment_neon
+  # here. NEON needs no /arch: switch and no runtime probe, so unlike the AVX
+  # tiers this one is actually used.
+  crypto_lib/Argon2/opt_neon.c
 
 [Packages]
   MdePkg/MdePkg.dec
