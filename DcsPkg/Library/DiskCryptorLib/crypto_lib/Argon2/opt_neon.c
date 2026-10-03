@@ -18,6 +18,23 @@
 
  /* ARM64 NEON port of opt_sse2.c, for DiskCryptor - 2026 */
 
+#if defined(_M_ARM64)
+/*
+ * <arm_neon.h> before defines.h, deliberately - this is not include tidiness.
+ *
+ * arm_neon.h pulls vcruntime.h, which typedefs wchar_t and defines
+ * _WCHAR_T_DEFINED. defines.h declares its own wchar_t only when that macro is
+ * absent, so this order is what keeps the two from colliding. The other way
+ * round, EDK2's AARCH64 build fails: it compiles /W4 /WX and C4142 "benign
+ * redefinition of type" is then an error. xts_serpent_neon.c puts arm_neon.h
+ * first for the same reason.
+ *
+ * Hoisted out of blamka-round-neon.h below because that include sits after
+ * defines.h, which is already too late.
+ */
+#include <arm_neon.h>
+#endif
+
 #include "argon2.h"
 #include "core.h"
 #include "defines.h"
