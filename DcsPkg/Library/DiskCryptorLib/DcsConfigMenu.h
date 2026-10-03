@@ -16,7 +16,7 @@ DcsConfigMenuShow(
 
 // Save current configuration to the config file
 EFI_STATUS
-DCAuthStoreConfig(
+DcAuthStoreConfig(
 	VOID
 );
 

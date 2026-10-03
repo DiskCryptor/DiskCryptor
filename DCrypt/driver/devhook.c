@@ -139,3 +139,32 @@ void dc_init_devhook()
 
 	ExInitializeResourceLite(&hooks_sync_resource);
 }
+
+/*
+ * Project a dev_hook into the flat description volume_lib takes.
+ *
+ * The destination is the caller's, normally a local filled once at the top of
+ * an operation. Refreshed rather than maintained: head_len and tail_len change
+ * when a volume is resized, and a copy that outlived the change would be a
+ * silent correctness bug rather than a visible one. It is a dozen loads.
+ *
+ * Read-only by contract - nothing in volume_lib writes through this, so the
+ * hook stays the single source of truth. If something there ever needs to
+ * change device state it must return the value instead.
+ */
+void dc_dev_of(dev_hook *hook, dc_dev *dev)
+{
+	dev->ctx      = hook;
+	dev->bps      = hook->bps;
+	dev->dsk_size = hook->dsk_size;
+	dev->head_len = hook->head_len;
+	dev->tail_len = hook->tail_len;
+	dev->stor_len = hook->stor_len;
+	dev->stor_off = hook->stor_off;
+
+	/* the two questions the moved code asks of hook->flags, answered here so
+	   that F_* never crosses into the library */
+	dev->opt = 0;
+	if (hook->flags & F_HEAD_BACKUP)      dev->opt |= DC_DEV_BACKUP_HEADER;
+	if (IS_STORAGE_ON_END(hook->flags))   dev->opt |= DC_DEV_STORAGE_ON_END;
+}

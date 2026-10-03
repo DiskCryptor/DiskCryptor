@@ -1,6 +1,6 @@
 
 
-[??.07.2026] - 2.0.2/887.118.242
+[03.10.2026] - 2.0.2/888.118.242
   [+] Added Hardware Crypto Support to ARM64
   [*] Fixed default TPM PCR mask was incomplete
   [*] Added workaround to TPM issue on some on ARM64 devices
@@ -10,6 +10,12 @@
   [+] Added Boot Menu Lock driver (prevents windows from changing boot order away from DCS)
   [-] Fixed DCS allowed only for 64 cahrs in password should be 128
   [*] Fixed Hibernation issue introduced in 1.4.0, in 2.0.1 one can set the handof mode to legacy to work around the issue
+  [*] Delegated image verification ofr DcsLdr to shims service rgeatly reducing DcsLdr.efi's size
+  [+] Added commands to add/remove shim independantly from DCS loader
+  [*] Reworked and extended recovery menu
+  [*] improved encryption performance by approximately 25% overall, with up to ~60% higher throughput for some ciphers
+  [*] Fixed wrong default presets for boot volume on MBR systems
+  [*] Fixed status lien was shown even when no prompt was enabled
 
 
 [05.07.2026] - 2.0.1/886.118.238

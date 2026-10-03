@@ -7,18 +7,10 @@
 #define KEYFILE_MIX_LEGACY   0  // v1: Additive mixing (SHA512(keyfile) + password bytes)
 #define KEYFILE_MIX_HASHED   1  // v2: Canonical mixing (sorted, deduplicated, domain-separated)
 
-// SHA512 digest size
-#define DC_KF_HASH_SIZE      64
-
-// Initial capacity for keyfile hash array
-#define DC_KF_MIXER_INITIAL_CAPACITY 8
-
-// Keyfile mixer context for v2 (canonical) mixing
-typedef struct _dc_kf_mixer {
-	u8  *hashes;    // Array of SHA512 hashes (DC_KF_HASH_SIZE bytes each)
-	int  count;     // Number of hashes in array
-	int  capacity;  // Allocated capacity (number of hashes)
-} dc_kf_mixer;
+// DC_KF_HASH_SIZE, DC_KF_MIXER_INITIAL_CAPACITY and dc_kf_mixer come from
+// volume_lib, which owns the mixing itself. The functions below are the EFI
+// wrappers: they do the file loading and translate ST_* into EFI_STATUS.
+#include "volume_lib/keyfile_mix.h"
 
 //
 // Legacy v1 keyfile functions (additive mixing)

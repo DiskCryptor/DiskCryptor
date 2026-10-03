@@ -64,9 +64,7 @@ EfiExecEx(
    }
 
    res = gBS->StartImage(ImageHandle, &ExitDataSize, &ExitData);
-   if (EFI_ERROR(res)) {
-      return res;
-   }
+
    return res;
 }
 

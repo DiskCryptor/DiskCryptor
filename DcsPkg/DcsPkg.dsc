@@ -20,6 +20,16 @@
   GCC:*_*_X64_CC_FLAGS                 = -mno-mmx -mno-sse
   GCC:*_*_IA32_CC_FLAGS                = -mno-mmx -mno-sse
 
+  # The build-system macro passed as `-DDEBUG_BUILD` (see Dcs_bld.bat) is only
+  # visible to DSC/INF/FDF parsing, NOT to the C compiler. Forward it as a real
+  # preprocessor define so the `#ifdef DEBUG_BUILD` guards in the C sources take
+  # effect. Without this, -DDEBUG_BUILD has no effect on the compiled code.
+!ifdef DEBUG_BUILD
+  MSFT:*_*_*_CC_FLAGS                  = /D DEBUG_BUILD
+  INTEL:*_*_*_CC_FLAGS                 = /D DEBUG_BUILD
+  GCC:*_*_*_CC_FLAGS                   = -DDEBUG_BUILD
+!endif
+
 ################################################################################
 #
 # Library Class section - list of all Library Classes needed by this Platform.
@@ -104,6 +114,7 @@
 [LibraryClasses.common.DXE_RUNTIME_DRIVER]
   UefiDriverEntryPoint|MdePkg/Library/UefiDriverEntryPoint/UefiDriverEntryPoint.inf
   UefiRuntimeLib|MdePkg/Library/UefiRuntimeLib/UefiRuntimeLib.inf
+  BaseCryptLib|CryptoPkg/Library/BaseCryptLib/RuntimeCryptLib.inf
 
 ################################################################################
 #
@@ -115,6 +126,6 @@
   DcsPkg/DcsBoot/DcsBoot.inf
   DcsPkg/DcsRe/DcsRe.inf
   DcsPkg/DcsInfo/DcsInfo.inf
-  DcsPkg/DcsBml/DcsBml.inf
   DcsPkg/LegacySpeaker/LegacySpeaker.inf
   DcsPkg/DcsTpm/DcsTpm.inf
+  DcsPkg/DcsOwner/DcsOwner.inf

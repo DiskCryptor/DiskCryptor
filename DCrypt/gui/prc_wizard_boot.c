@@ -935,7 +935,7 @@ _wizard_boot_dlg_proc(
 
 				case IDC_BTN_UPDATE:
 				{
-					_menu_update_loader( hwnd, vol, dsk_num );
+					_menu_update_loader( hwnd, vol, dsk_num, type );
 				}
 				break;
 

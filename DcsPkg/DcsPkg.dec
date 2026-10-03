@@ -15,6 +15,8 @@
 [Includes]
   Include
   Library/DiskCryptorLib
+  Library/DiskCryptorLib/include
+  Library/DiskCryptorLib/crypto_lib
   Library/DcsCfgLib
 
 [LibraryClasses]
@@ -29,6 +31,9 @@
   # Include/CommonLib.h
   # {101F8560-D73A-4FF7-89F6-8170F6615587}
   gEfiDcsVariableGuid         = { 0x101f8560, 0xd73a, 0x4ff7, { 0x89, 0xf6, 0x81, 0x70, 0xf6, 0x61, 0x55, 0x87 } }
+  # DcsOwner config variables (MySecureBoot/MyPK and their RT mirrors)
+  # {2B6F9E14-8C3D-4A7B-BE05-1F2A3C4D5E60}
+  gEfiDcsOwnerGuid            = { 0x2b6f9e14, 0x8c3d, 0x4a7b, { 0xbe, 0x05, 0x1f, 0x2a, 0x3c, 0x4d, 0x5e, 0x60 } }
 
 [Protocols]
   # Include/Protocol/DcsBmlProto.h
@@ -37,6 +42,9 @@
   # Include/Protocol/DcsTpmProto.h
   #// {A5D3E8C2-7B4F-4D1A-9E6C-8F2B5A1D0C3E}
   gEfiDcsTpmProtocolGuid      = { 0xa5d3e8c2, 0x7b4f, 0x4d1a, { 0x9e, 0x6c, 0x8f, 0x2b, 0x5a, 0x1d, 0x0c, 0x3e } }
+  # Include/Protocol/DcsOwnerProto.h
+  #// {4E8B2F1A-D6C3-47A5-9B0E-3F1C8A5D7E20}
+  gEfiDcsOwnerProtocolGuid    = { 0x4e8b2f1a, 0xd6c3, 0x47a5, { 0x9b, 0x0e, 0x3f, 0x1c, 0x8a, 0x5d, 0x7e, 0x20 } }
   # Include/Protocol/DcsLdrProto.h
   #// {3C8A7E5D-9F12-4B6A-A831-7D4E2C1F0B9A}
   gEfiDcsLdrProtocolGuid = { 0x3c8a7e5d, 0x9f12, 0x4b6a, { 0xa8, 0x31, 0x7d, 0x4e, 0x2c, 0x1f, 0x0b, 0x9a } }

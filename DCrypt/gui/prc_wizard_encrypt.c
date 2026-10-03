@@ -29,11 +29,7 @@
 #include "prc_keyfiles.h"
 #include "pass.h"
 #include "prc_common.h"
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#else
 #include "xts_fast.h"
-//#endif
 #include "dlg_drives_list.h"
 #include "prc_pass.h"
 #include "prc_wait.h"
@@ -590,7 +586,9 @@ int _init_wizard_encrypt_pages(
 	{
 		HWND h_combo_wipe = GetDlgItem(hwnd, IDC_COMBO_PASSES);
 		int is_ssd = dc_is_device_ssd(node->mnt.info.w32_device);
-		BOOLEAN use_v2 = TRUE;
+		/* MBR bootloader supports only V1 headers with Pkcs5.2 SHA-512 */
+		BOOLEAN mbr_boot = (BOOLEAN)( boot_device && !__is_efi_boot );
+		BOOLEAN use_v2 = (BOOLEAN)!mbr_boot;
 
 		_init_combo( h_combo_wipe, wipe_modes, WP_NONE, FALSE, -1 );
 
@@ -610,7 +608,7 @@ int _init_wizard_encrypt_pages(
 		CheckRadioButton( hwnd, IDC_RADIO_HDR_V1, IDC_RADIO_HDR_V2, use_v2 ? IDC_RADIO_HDR_V2 : IDC_RADIO_HDR_V1 );
 
 		/* Disable V2 header for MBR boot system volumes - V2/Argon2 not supported by MBR bootloader */
-		if (boot_device && !__is_efi_boot)
+		if (mbr_boot)
 		{
 			EnableWindow( GetDlgItem(hwnd, IDC_RADIO_HDR_V2), FALSE );
 		}
@@ -768,9 +766,16 @@ int _init_wizard_encrypt_pages(
 		_sub_class( GetDlgItem(hwnd, IDC_USE_KEYFILES), SUB_STATIC_PROC, HWND_NULL );
 		_set_check( hwnd, IDC_USE_KEYFILES, FALSE );
 
-		_init_combo(GetDlgItem(hwnd, IDC_COMBO_KDF), kdf_names, KDF_ARGON_DEFAULT, FALSE, -1);
+		/* MBR bootloader supports only Pkcs5.2 SHA-512, Argon2 is EFI/non-boot only */
 		if (boot_device && !__is_efi_boot)
+		{
+			_init_combo(GetDlgItem(hwnd, IDC_COMBO_KDF), kdf_names, KDF_SHA512_PKCS5_2, FALSE, -1);
 			EnableWindow( GetDlgItem(hwnd, IDC_COMBO_KDF), FALSE );
+		}
+		else
+		{
+			_init_combo(GetDlgItem(hwnd, IDC_COMBO_KDF), kdf_names, KDF_ARGON_DEFAULT, FALSE, -1);
+		}
 
 		SendMessage(
 			GetDlgItem( hwnd, IDP_BREAKABLE ),

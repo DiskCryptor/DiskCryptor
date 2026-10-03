@@ -23,21 +23,26 @@
 #include "driver.h"
 #include "debug.h"
 #include "crypto_functions.h"
-#ifdef _M_ARM64
-//#include "xts_small.h"
-//#include "sha512_pkcs5_2_small.h"
 #include "xts_fast.h"
 #include "sha512_pkcs5_2.h"
+#ifdef _M_ARM64
 #include "xts_serpent_neon.h"
 #include "xts_aes_ce.h"
 #else
-#include "xts_fast.h"
+#ifdef _M_IX86
+/* VIA PadLock is 32-bit only now: crypto_lib dropped it, and Win32 is the
+   one configuration still building against crypto_fast. */
 #include "aes_padlock.h"
+#endif
 #include "xts_serpent_sse2.h"
 #include "xts_serpent_avx.h"
-#include "sha512_pkcs5_2.h"
+#ifndef _M_IX86
+/* crypto_lib: CPU feature probes, built without /arch so they are safe to
+   call on a CPU that lacks the feature. Win32 is still on crypto_fast. */
+#include "cl_cpu.h"
 #endif
-#include "..\crc32.h"
+#endif
+#include "crc32.h"
 #include "misc_mem.h"
 #include "..\crypto\Argon2\argon2.h"
 
@@ -199,6 +204,7 @@ void dc_init_encryption()
 	DbgMsg("dc_init_encryption\n");
 
 #if defined(_M_IX86) || defined(_M_X64)
+#ifdef _M_IX86
 	if (aes256_padlock_available() != 0) {
 		SetFlag(dc_load_flags, DST_VIA_PADLOCK);
 		DbgMsg("CpuFlags_VIA_PadLock: Yes\n");
@@ -206,6 +212,10 @@ void dc_init_encryption()
 		ClearFlag(dc_load_flags, DST_VIA_PADLOCK);
 		DbgMsg("CpuFlags_VIA_PadLock: No\n");
 	}
+#else
+	/* crypto_lib has no PadLock support, so it is never reported */
+	ClearFlag(dc_load_flags, DST_VIA_PADLOCK);
+#endif
 	
 	if (xts_aes_ni_available() != 0) {
 		SetFlag(dc_load_flags, DST_INTEL_NI);
@@ -233,7 +243,11 @@ void dc_init_encryption()
 #endif
 
 #if defined(_M_IX86) || defined(_M_X64)
+#ifdef _M_IX86
 	if (xts_serpent_avx_available() != 0) {
+#else
+	if (cl_cpu_has_avx() != 0) {
+#endif
 		SetFlag(dc_load_flags, DST_INSTR_AVX);
 		DbgMsg("CpuFlags_AVX: Yes\n");
 	} else {

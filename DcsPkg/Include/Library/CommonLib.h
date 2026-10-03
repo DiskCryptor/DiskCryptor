@@ -52,7 +52,9 @@ extern UINTN gCELine;
 // defines
 //////////////////////////////////////////////////////////////////////////
 #define FIELD_SIZEOF(t, f) (sizeof(((t*)0)->f))
+#ifndef FIELD_OFFSET   /* DiskCryptorLib/include/defines.h defines it too */
 #define FIELD_OFFSET(t, f) ((UINTN)(&((t*)0)->f))
+#endif
 
 //////////////////////////////////////////////////////////////////////////
 // Memory procedures wrappers

@@ -47,39 +47,19 @@
 // Global Variables
 //////////////////////////////////////////////////////////////////////////
 
-// Block I/O handles
-EFI_HANDLE  *gBIOHandles = NULL;
-UINTN       gBIOCount = 0;
-
-// File system handles
-EFI_FILE    *gFileRoot = NULL;
-EFI_HANDLE  gFileRootHandle = NULL;
-EFI_HANDLE  *gFSHandles = NULL;
-UINTN       gFSCount = 0;
-
 UINTN       gCELine = 0;
 
-//=============================================================================
-// String Utility Functions
-//=============================================================================
+//////////////////////////////////////////////////////////////////////////
+// String Utilities
+//////////////////////////////////////////////////////////////////////////
 
-/**
-Case-insensitive comparison of two Unicode strings.
-
-@param[in]  Str1  First null-terminated Unicode string.
-@param[in]  Str2  Second null-terminated Unicode string.
-
-@return  < 0 if Str1 < Str2 (case-insensitive)
-= 0 if Str1 == Str2 (case-insensitive)
-> 0 if Str1 > Str2 (case-insensitive)
-
-**/
+/* StrCmpI */
 INTN
 EFIAPI
 StrCmpI (
     IN CONST CHAR16  *Str1,
     IN CONST CHAR16  *Str2
-)
+    )
 {
     CHAR16  C1;
     CHAR16  C2;
@@ -92,7 +72,6 @@ StrCmpI (
         C1 = *Str1;
         C2 = *Str2;
 
-        // Convert to uppercase for comparison
         if (C1 >= L'a' && C1 <= L'z') {
             C1 -= (L'a' - L'A');
         }
@@ -111,27 +90,11 @@ StrCmpI (
     return *Str1 - *Str2;
 }
 
-//=============================================================================
-// EFI Variable Helper Functions
-//=============================================================================
+//////////////////////////////////////////////////////////////////////////
+// EFI Variable Helpers
+//////////////////////////////////////////////////////////////////////////
 
-/**
-Get an EFI variable value.
-
-Allocates memory for the variable data. Caller must free with FreePool.
-
-@param[in]   VarName   Name of the variable.
-@param[in]   VarGuid   GUID of the variable. If NULL, uses gEfiGlobalVariableGuid.
-@param[out]  VarValue  Receives allocated buffer with variable data.
-@param[out]  VarSize   Receives size of variable data.
-@param[out]  VarAttr   Receives variable attributes. Optional, may be NULL.
-
-@retval EFI_SUCCESS           Variable retrieved successfully.
-@retval EFI_NOT_FOUND         Variable does not exist.
-@retval EFI_OUT_OF_RESOURCES  Memory allocation failed.
-@retval Other                 Error from GetVariable.
-
-**/
+/* GetEfiVar */
 EFI_STATUS
 EFIAPI
 GetEfiVar (
@@ -140,7 +103,7 @@ GetEfiVar (
     OUT VOID          **VarValue,
     OUT UINTN         *VarSize,
     OUT UINT32        *VarAttr   OPTIONAL
-)
+    )
 {
     EFI_STATUS  Status;
     VOID        *Data;
@@ -154,7 +117,6 @@ GetEfiVar (
     *VarValue = NULL;
     *VarSize = 0;
 
-    // First call to get the size
     DataSize = 0;
     Status = gRT->GetVariable(
         (CHAR16 *)VarName,
@@ -162,26 +124,24 @@ GetEfiVar (
         &Attributes,
         &DataSize,
         NULL
-    );
+        );
 
     if (Status != EFI_BUFFER_TOO_SMALL) {
         return Status;
     }
 
-    // Allocate buffer
     Data = AllocateZeroPool(DataSize);
     if (Data == NULL) {
         return EFI_OUT_OF_RESOURCES;
     }
 
-    // Get the variable
     Status = gRT->GetVariable(
         (CHAR16 *)VarName,
         VarGuid,
         &Attributes,
         &DataSize,
         Data
-    );
+        );
 
     if (EFI_ERROR(Status)) {
         FreePool(Data);
@@ -197,19 +157,7 @@ GetEfiVar (
     return EFI_SUCCESS;
 }
 
-/**
-Set an EFI variable value.
-
-@param[in]  VarName   Name of the variable.
-@param[in]  VarGuid   GUID of the variable. If NULL, uses gEfiGlobalVariableGuid.
-@param[in]  VarValue  Variable data to set.
-@param[in]  VarSize   Size of variable data.
-@param[in]  VarAttr   Variable attributes.
-
-@retval EFI_SUCCESS  Variable set successfully.
-@retval Other        Error from SetVariable.
-
-**/
+/* SetEfiVar */
 EFI_STATUS
 EFIAPI
 SetEfiVar (
@@ -218,7 +166,7 @@ SetEfiVar (
     IN VOID          *VarValue,
     IN UINTN         VarSize,
     IN UINT32        VarAttr
-)
+    )
 {
     if (VarGuid == NULL || VarName == NULL) {
         return EFI_INVALID_PARAMETER;
@@ -230,237 +178,14 @@ SetEfiVar (
         VarAttr,
         VarSize,
         VarValue
-    );
+        );
 }
 
-
-/**
-Wait for and return a single key press.
-
-@return  The key that was pressed.
-**/
-EFI_INPUT_KEY
-EFIAPI
-UefiGetKey (
-    VOID
-)
-{
-    EFI_INPUT_KEY  Key;
-    UINTN          EventIndex;
-
-    ZeroMem(&Key, sizeof(Key));
-
-    // Wait for key event
-    gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &EventIndex);
-
-    // Read the key
-    gST->ConIn->ReadKeyStroke(gST->ConIn, &Key);
-
-    return Key;
-}
-
-/**
-Flush pending keyboard input with a delay.
-
-Discards any pending keystrokes in the input buffer.
-
-@param[in]  Delay  Delay in 100-nanosecond units (e.g., 1000000 = 100ms).
-
-**/
-VOID
-EFIAPI
-UefiFlushInputDelay (
-    IN UINTN  Delay
-)
-{
-    EFI_INPUT_KEY  Key;
-    EFI_EVENT      InputEvents[2];
-    UINTN          EventIndex = 0;
-
-    InputEvents[0] = gST->ConIn->WaitForKey;
-    gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
-    gBS->SetTimer(InputEvents[1], TimerPeriodic, Delay);
-
-    while (EventIndex == 0) {
-        gBS->WaitForEvent(2, InputEvents, &EventIndex);
-        if (EventIndex == 0) {
-            gST->ConIn->ReadKeyStroke(gST->ConIn, &Key);
-        }
-    }
-
-    gBS->CloseEvent(InputEvents[1]);
-}
-
-/**
-Flush pending keyboard input.
-
-Discards any pending keystrokes in the input buffer using a 100ms delay.
-
-**/
-VOID
-EFIAPI
-UefiFlushInput (
-    VOID
-)
-{
-    UefiFlushInputDelay(1000000);  // 100ms in 100ns units
-}
-
-/**
-Wait for a key press with a countdown timer.
-
-Displays a countdown prompt and waits for either a key press or timeout.
-The prompt should contain a %d or %2d format specifier for the countdown.
-
-@param[in]  Prompt       Format string for countdown display (e.g., L"Wait %2d...").
-@param[in]  Seconds      Number of seconds to wait.
-@param[in]  DefaultScan  Default scan code to return on timeout.
-@param[in]  DefaultChar  Default unicode char to return on timeout.
-
-@return  The key that was pressed, or default values if timeout occurred.
-
-**/
-EFI_INPUT_KEY
-EFIAPI
-UefiKeyWait (
-    IN CHAR16  *Prompt,
-    IN UINTN   Seconds,
-    IN UINT16  DefaultScan,
-    IN UINT16  DefaultChar
-)
-{
-    EFI_INPUT_KEY  Key;
-    EFI_EVENT      InputEvents[2];
-    UINTN          EventIndex;
-
-    // Flush any pending input first
-    UefiFlushInput();
-
-    // Set default return values
-    Key.ScanCode = DefaultScan;
-    Key.UnicodeChar = DefaultChar;
-
-    InputEvents[0] = gST->ConIn->WaitForKey;
-
-    // Create a 1-second periodic timer
-    gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
-    gBS->SetTimer(InputEvents[1], TimerPeriodic, 10000000);  // 1 second in 100ns units
-
-    while (Seconds > 0) {
-        // Display countdown
-        Print(Prompt, Seconds);
-
-        // Wait for either key press or timer
-        gBS->WaitForEvent(2, InputEvents, &EventIndex);
-
-        if (EventIndex == 0) {
-            // Key was pressed
-            if (!EFI_ERROR(gST->ConIn->ReadKeyStroke(gST->ConIn, &Key))) {
-                break;
-            }
-            // ReadKeyStroke failed, continue waiting
-            continue;
-        } else {
-            // Timer fired, decrement countdown
-            Seconds--;
-        }
-    }
-
-    // Final display update
-    Print(Prompt, Seconds);
-
-    gBS->CloseEvent(InputEvents[1]);
-    return Key;
-}
-
-/**
-Print bytes in hexadecimal format.
-
-@param[in] Data  Pointer to the data buffer.
-@param[in] Size  Number of bytes to print.
-**/
-VOID
-EFIAPI
-UefiPrintBytes (
-    IN UINT8  *Data,
-    IN UINTN  Size
-)
-{
-    UINTN  Index;
-
-    if (Data == NULL || Size == 0) {
-        return;
-    }
-
-    for (Index = 0; Index < Size; Index++) {
-        Print(L"%02x", Data[Index]);
-    }
-}
-
-//////////////////////////////////////////////////////////////////////////
-// Block I/O
-//////////////////////////////////////////////////////////////////////////
-
-/**
-Initialize block I/O device handles.
-**/
-EFI_STATUS
-UefiInitBio(
-    VOID
-)
-{
-    EFI_STATUS  Status;
-    UINTN       BufferSize;
-
-    if (gBIOHandles != NULL) {
-        FreePool(gBIOHandles);
-        gBIOHandles = NULL;
-    }
-    gBIOCount = 0;
-
-    BufferSize = 0;
-    Status = gBS->LocateHandle(
-        ByProtocol,
-        &gEfiBlockIoProtocolGuid,
-        NULL,
-        &BufferSize,
-        NULL
-    );
-
-    if (Status != EFI_BUFFER_TOO_SMALL) {
-        return Status;
-    }
-
-    gBIOHandles = AllocateZeroPool(BufferSize);
-    if (gBIOHandles == NULL) {
-        return EFI_OUT_OF_RESOURCES;
-    }
-
-    Status = gBS->LocateHandle(
-        ByProtocol,
-        &gEfiBlockIoProtocolGuid,
-        NULL,
-        &BufferSize,
-        gBIOHandles
-    );
-
-    if (EFI_ERROR(Status)) {
-        FreePool(gBIOHandles);
-        gBIOHandles = NULL;
-        return Status;
-    }
-
-    gBIOCount = BufferSize / sizeof(EFI_HANDLE);
-    return EFI_SUCCESS;
-}
-
-/**
-Get the device handle from which the current image was loaded.
-**/
+/* UefiGetStartDevice */
 EFI_STATUS
 UefiGetStartDevice(
     OUT EFI_HANDLE  *handle
-)
+    )
 {
     EFI_STATUS                 Status;
     EFI_LOADED_IMAGE_PROTOCOL  *LoadedImage;
@@ -479,389 +204,184 @@ UefiGetStartDevice(
 }
 
 //////////////////////////////////////////////////////////////////////////
-// File System
+// File System Initialization & Dispatch
 //////////////////////////////////////////////////////////////////////////
 
-/**
-Open the root directory of a file system.
-**/
+/* UefiFileDeletePath */
 EFI_STATUS
-EfiFileOpenRoot(
-    IN  EFI_HANDLE  rootHandle,
-    OUT EFI_FILE    **rootFile
-)
-{
-    EFI_STATUS                       Status;
-    EFI_SIMPLE_FILE_SYSTEM_PROTOCOL  *SimpleFileSystem;
-
-    Status = gBS->HandleProtocol(
-        rootHandle,
-        &gEfiSimpleFileSystemProtocolGuid,
-        (VOID **)&SimpleFileSystem
-    );
-    if (EFI_ERROR(Status)) {
-        return Status;
-    }
-
-    return SimpleFileSystem->OpenVolume(SimpleFileSystem, rootFile);
-}
-
-/**
-Initialize the file system from the boot device.
-**/
-EFI_STATUS
-UefiInitFS(
-    VOID
-)
-{
-    EFI_STATUS  Status;
-    UINTN       BufferSize;
-
-    // Get all file system handles
-    if (gFSHandles != NULL) {
-        FreePool(gFSHandles);
-        gFSHandles = NULL;
-    }
-    gFSCount = 0;
-
-    BufferSize = 0;
-    Status = gBS->LocateHandle(
-        ByProtocol,
-        &gEfiSimpleFileSystemProtocolGuid,
-        NULL,
-        &BufferSize,
-        NULL
-    );
-
-    if (Status == EFI_BUFFER_TOO_SMALL) {
-        gFSHandles = AllocateZeroPool(BufferSize);
-        if (gFSHandles != NULL) {
-            Status = gBS->LocateHandle(
-                ByProtocol,
-                &gEfiSimpleFileSystemProtocolGuid,
-                NULL,
-                &BufferSize,
-                gFSHandles
-            );
-            if (!EFI_ERROR(Status)) {
-                gFSCount = BufferSize / sizeof(EFI_HANDLE);
-            }
-        }
-    }
-
-    // Get root file system from boot device
-    Status = UefiGetStartDevice(&gFileRootHandle);
-    if (!EFI_ERROR(Status)) {
-        Status = EfiFileOpenRoot(gFileRootHandle, &gFileRoot);
-    }
-
-    return Status;
-}
-
-/**
-Check if a file exists.
-**/
-EFI_STATUS
-UefiFileExist(
-    IN EFI_FILE  *root,
-    IN CHAR16    *name
-)
-{
-    EFI_STATUS  Status;
-    EFI_FILE    *File;
-    EFI_FILE    *Root;
-
-    Root = (root != NULL) ? root : gFileRoot;
-    if (Root == NULL) {
-        return EFI_NOT_READY;
-    }
-
-    Status = Root->Open(
-        Root,
-        &File,
-        name,
-        EFI_FILE_MODE_READ,
-        0
-    );
-
-    if (!EFI_ERROR(Status)) {
-        File->Close(File);
-        return EFI_SUCCESS;
-    }
-
-    return EFI_NOT_FOUND;
-}
-
-/**
-  Save data to a file.
-
-  Creates or overwrites the file with the specified data.
-
-  @param[in]  Root  Root directory handle.
-  @param[in]  Name  File name/path.
-  @param[in]  Data  Data to write.
-  @param[in]  Size  Size of data in bytes.
-
-  @retval EFI_SUCCESS           File saved successfully.
-  @retval EFI_INVALID_PARAMETER Invalid parameters.
-  @retval Other                 Error from file operations.
-
-**/
-EFI_STATUS
-EFIAPI
-SimpleFileSave (
-    IN EFI_FILE  *Root,
-    IN CHAR16    *Name,
-    IN VOID      *Data,
-    IN UINTN     Size
+UefiFileDeletePath(
+    IN CONST CHAR16 *FilePath
     )
 {
-    EFI_STATUS  Status;
-    EFI_FILE    *File;
-    UINTN       WriteSize;
-
-    if (Root == NULL) {
-		Root = gFileRoot;
+    if (IsPxeBoot()) {
+        return EFI_UNSUPPORTED;
     }
-
-    if (Name == NULL || Data == NULL) {
-        return EFI_INVALID_PARAMETER;
-    }
-
-    // Try to delete existing file first (ignore errors)
-    Status = Root->Open(
-        Root,
-        &File,
-        Name,
-        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE,
-        0
-        );
-    if (!EFI_ERROR(Status)) {
-        File->Delete(File);
-    }
-
-    // Create new file
-    Status = Root->Open(
-        Root,
-        &File,
-        Name,
-        EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE | EFI_FILE_MODE_CREATE,
-        0
-        );
-    if (EFI_ERROR(Status)) {
-        return Status;
-    }
-
-    // Write data
-    WriteSize = Size;
-    Status = File->Write(File, &WriteSize, Data);
-
-    File->Close(File);
-
-    return Status;
+    return FsFileDelete(NULL, (CHAR16*)FilePath);
 }
 
-/**
-  Load data from a file.
-
-  Allocates buffer and reads the entire file contents.
-  Caller must free the buffer with FreePool.
-
-  @param[in]   Root    Root directory handle.
-  @param[in]   Name    File name/path.
-  @param[out]  Data    Receives allocated buffer with file data.
-  @param[out]  Size    Receives size of data in bytes.
-
-  @retval EFI_SUCCESS           File loaded successfully.
-  @retval EFI_INVALID_PARAMETER Invalid parameters.
-  @retval EFI_NOT_FOUND         File not found or empty.
-  @retval EFI_OUT_OF_RESOURCES  Memory allocation failed.
-  @retval Other                 Error from file operations.
-
-**/
-EFI_STATUS
-EFIAPI
-SimpleFileLoad (
-    IN  EFI_FILE  *Root,
-    IN  CHAR16    *Name,
-    OUT VOID      **Data,
-    OUT UINTN     *Size
+/* UefiFileExistsPath */
+BOOLEAN
+UefiFileExistsPath(
+    IN CONST CHAR16 *FilePath
     )
 {
-    EFI_STATUS     Status;
-    EFI_FILE       *File;
-    EFI_FILE_INFO  *FileInfo;
-    UINTN          FileInfoSize;
-    VOID           *Buffer;
-    UINTN          FileSize;
+    if (IsPxeBoot()) {
+        return !EFI_ERROR(PxeFileExist((CHAR16*)FilePath));
+    }
+    return !EFI_ERROR(FsFileExist(NULL, (CHAR16*)FilePath));
+}
 
-    if (Root == NULL) {
-        Root = gFileRoot;
+/* UefiFileReadPath */
+EFI_STATUS
+UefiFileReadPath(
+    IN     CONST CHAR16 *FilePath,
+    OUT    UINT8        **Buffer,
+    IN OUT UINT32       *BufferSize
+    )
+{
+    EFI_STATUS ret;
+    VOID       *fileData = NULL;
+    UINTN      fileSize = 0;
+
+    if (IsPxeBoot()) {
+        ret = PxeDownloadFile((CHAR16*)FilePath, &fileData, &fileSize);
+    } else {
+        ret = FsFileLoad(NULL, (CHAR16*)FilePath, &fileData, &fileSize);
     }
 
-    if (Name == NULL || Data == NULL || Size == NULL) {
-        return EFI_INVALID_PARAMETER;
+    if (EFI_ERROR(ret)) {
+        return ret;
     }
 
-    *Data = NULL;
-    *Size = 0;
-
-    // Open the file
-    Status = Root->Open(
-        Root,
-        &File,
-        Name,
-        EFI_FILE_MODE_READ,
-        0
-        );
-    if (EFI_ERROR(Status)) {
-        return Status;
-    }
-
-    // Get file size
-    FileInfoSize = 0;
-    Status = File->GetInfo(File, &gEfiFileInfoGuid, &FileInfoSize, NULL);
-    if (Status != EFI_BUFFER_TOO_SMALL) {
-        File->Close(File);
-        return EFI_DEVICE_ERROR;
-    }
-
-    FileInfo = AllocatePool(FileInfoSize);
-    if (FileInfo == NULL) {
-        File->Close(File);
-        return EFI_OUT_OF_RESOURCES;
-    }
-
-    Status = File->GetInfo(File, &gEfiFileInfoGuid, &FileInfoSize, FileInfo);
-    if (EFI_ERROR(Status)) {
-        FreePool(FileInfo);
-        File->Close(File);
-        return Status;
-    }
-
-    FileSize = (UINTN)FileInfo->FileSize;
-    FreePool(FileInfo);
-
-    if (FileSize == 0) {
-        File->Close(File);
+    if (fileData == NULL || fileSize == 0) {
+        if (fileData) MEM_FREE(fileData);
         return EFI_NOT_FOUND;
     }
 
-    // Allocate buffer and read file
-    Buffer = AllocatePool(FileSize);
-    if (Buffer == NULL) {
-        File->Close(File);
-        return EFI_OUT_OF_RESOURCES;
-    }
+    *Buffer = (UINT8*)fileData;
+    *BufferSize = (UINT32)fileSize;
 
-    Status = File->Read(File, &FileSize, Buffer);
-    if (EFI_ERROR(Status)) {
-        FreePool(Buffer);
-        File->Close(File);
-        return Status;
-    }
-
-    File->Close(File);
-
-    *Data = Buffer;
-    *Size = FileSize;
     return EFI_SUCCESS;
 }
 
-/**
-Execute an EFI application from the file system.
-**/
+/* UefiFileWritePath */
 EFI_STATUS
-UefiExec(
-    IN EFI_HANDLE  deviceHandle,
-    IN CHAR16      *path
-)
+UefiFileWritePath(
+    IN CONST CHAR16 *FilePath,
+    IN UINT8        *Buffer,
+    IN UINT32       BufferSize
+    )
 {
-    EFI_STATUS                 Status;
-    EFI_HANDLE                 ImageHandle;
-    EFI_DEVICE_PATH_PROTOCOL   *FilePath;
-    EFI_HANDLE                 Device;
+    EFI_STATUS ret;
 
-    Device = (deviceHandle != NULL) ? deviceHandle : gFileRootHandle;
-    if (Device == NULL) {
-        return EFI_NOT_READY;
+    if (IsPxeBoot()) {
+        ret = PxeUploadFile((CHAR16*)FilePath, Buffer, BufferSize);
+    } else {
+        FsDirectoryCreate(gFileRoot, L"\\EFI\\DCS");
+        ret = FsFileSave(gFileRoot, (CHAR16*)FilePath, Buffer, BufferSize);
     }
 
-    FilePath = FileDevicePath(Device, path);
-    if (FilePath == NULL) {
-        return EFI_OUT_OF_RESOURCES;
-    }
-
-    Status = gBS->LoadImage(
-        FALSE,
-        gImageHandle,
-        FilePath,
-        NULL,
-        0,
-        &ImageHandle
-    );
-    FreePool(FilePath);
-
-    if (EFI_ERROR(Status)) {
-        return Status;
-    }
-
-    Status = gBS->StartImage(ImageHandle, NULL, NULL);
-
-    return Status;
+    return ret;
 }
 
-//=============================================================================
-// SMBIOS / UUID Functions
-//=============================================================================
+/* EfiExecEx */
+STATIC
+EFI_STATUS
+EfiExecEx(
+   IN    EFI_HANDLE  deviceHandle,
+   IN    CHAR16*     path,
+   IN    VOID*       LoadOptions,
+   IN    UINTN       LoadOptionsSize
+   )
+{
+   EFI_STATUS                  Status;
+   EFI_DEVICE_PATH*            DevicePath;
+   EFI_HANDLE                  ImageHandle;
+   EFI_LOADED_IMAGE_PROTOCOL   *LoadedImage;
+   UINTN                       ExitDataSize;
+   CHAR16                      *ExitData;
 
-/**
-Get the next SMBIOS structure in the table.
+   if (deviceHandle == NULL) {
+      deviceHandle = gFileRootHandle;
+   }
+   if (!path || !deviceHandle) return EFI_INVALID_PARAMETER;
+   DevicePath = FileDevicePath(deviceHandle, path);
 
-@param[in]  Current  Current SMBIOS structure pointer.
+   Status = gBS->LoadImage(FALSE, gImageHandle, DevicePath, NULL, 0, &ImageHandle);
+   if (EFI_ERROR(Status)) {
+      return Status;
+   }
 
-@return  Pointer to the next SMBIOS structure.
+   // Pass LoadOptions to the loaded image
+   if (LoadOptions != NULL && LoadOptionsSize > 0) {
+       Status = gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID**)&LoadedImage);
+      if (!EFI_ERROR(Status) && LoadedImage != NULL) {
+         LoadedImage->LoadOptions = LoadOptions;
+         LoadedImage->LoadOptionsSize = (UINT32)LoadOptionsSize;
+      }
+   }
 
-**/
+   Status = gBS->StartImage(ImageHandle, &ExitDataSize, &ExitData);
+
+   return Status;
+}
+
+/* UefiExecEx */
+EFI_STATUS
+UefiExecEx(
+    IN    CHAR16*     path,
+    IN    VOID*       LoadOptions      OPTIONAL,
+    IN    UINTN       LoadOptionsSize
+    )
+{
+    if (IsPxeBoot()) {
+        return PxeExecEx(path, LoadOptions, LoadOptionsSize);
+    } else {
+        return EfiExecEx(NULL, path, LoadOptions, LoadOptionsSize);
+    }
+}
+
+/* UefiExec */
+EFI_STATUS
+UefiExec(
+    IN CHAR16  *path
+    )
+{
+    return UefiExecEx(path, NULL, 0);
+}
+
+//////////////////////////////////////////////////////////////////////////
+// SMBIOS / UUID
+//////////////////////////////////////////////////////////////////////////
+
+/* SmbiosGetNextStructure */
 STATIC
 SMBIOS_STRUCTURE_POINTER
 SmbiosGetNextStructure (
     IN SMBIOS_STRUCTURE_POINTER  Current
-)
+    )
 {
     SMBIOS_STRUCTURE_POINTER  Next;
     UINT8                     *Ptr;
 
-    // Skip to the end of the formatted area
     Ptr = (UINT8 *)Current.Raw + Current.Hdr->Length;
 
-    // Skip past the string table (double null terminated)
     while (Ptr[0] != 0 || Ptr[1] != 0) {
         Ptr++;
     }
 
-    // Skip the double null terminator
     Next.Raw = Ptr + 2;
     return Next;
 }
 
-/**
-Find an SMBIOS structure by type.
-
-@param[in]  TableBase    Base address of SMBIOS table.
-@param[in]  TableLength  Length of SMBIOS table.
-@param[in]  Type         SMBIOS structure type to find.
-
-@return  Pointer to the found structure, or NULL if not found.
-
-**/
+/* SmbiosFindStructure */
 STATIC
 SMBIOS_STRUCTURE_POINTER
 SmbiosFindStructure (
     IN UINT8  *TableBase,
     IN UINTN  TableLength,
     IN UINT8  Type
-)
+    )
 {
     SMBIOS_STRUCTURE_POINTER  Current;
     UINT8                     *TableEnd;
@@ -880,22 +400,7 @@ SmbiosFindStructure (
     return Current;
 }
 
-/**
-Get the system UUID from SMBIOS and format it as a string.
-
-Retrieves the UUID from SMBIOS Type 1 (System Information) structure
-and formats it as a standard UUID string: XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX
-
-@param[out]  UuidString   Buffer to receive the UUID string.
-Must be at least UUID_STRING_LENGTH characters.
-@param[in]   BufferSize   Size of UuidString buffer in bytes.
-
-@retval EFI_SUCCESS           UUID retrieved and formatted successfully.
-@retval EFI_NOT_FOUND         SMBIOS table or Type 1 structure not found.
-@retval EFI_BUFFER_TOO_SMALL  UuidString buffer is too small.
-@retval EFI_INVALID_PARAMETER UuidString is NULL.
-
-**/
+/* GetSystemUuid */
 EFI_STATUS
 EFIAPI
 GetSystemUuid (
@@ -1000,28 +505,29 @@ GetSystemUuid (
     return EFI_SUCCESS;
 }
 
-
-//=============================================================================
+//////////////////////////////////////////////////////////////////////////
 // DCS Ldr
-//=============================================================================
+//////////////////////////////////////////////////////////////////////////
 
 EFI_GUID gEfiDcsLdrProtocolGuid = EFI_DCS_LDR_PROTOCOL_GUID;
 EFI_DCS_LDR_PROTOCOL* gDcsLdr = NULL;
 
+/* InitDcsLdr */
 EFI_STATUS
 InitDcsLdr(
     VOID
-)
+    )
 {
     EFI_STATUS res;
     res = gBS->LocateProtocol(&gEfiDcsLdrProtocolGuid, NULL, (VOID**)&gDcsLdr);
     return res;
 }
 
+/* DcsLdrGetMokSBState */
 EFI_STATUS
 DcsLdrGetMokSBState(
     OUT UINT8* MokSBState
-)
+    )
 {
     EFI_STATUS res;
     if (gDcsLdr == NULL) {
@@ -1034,10 +540,11 @@ DcsLdrGetMokSBState(
     return gDcsLdr->GetMokSBState(gDcsLdr, MokSBState);
 }
 
+/* DcsLdrSetMokSBState */
 EFI_STATUS
 DcsLdrSetMokSBState(
     IN UINT8 MokSBState
-)
+    )
 {
     EFI_STATUS res;
     if (gDcsLdr == NULL) {
@@ -1050,10 +557,11 @@ DcsLdrSetMokSBState(
     return gDcsLdr->SetMokSBState(gDcsLdr, MokSBState);
 }
 
+/* DcsLdrGetCertState */
 EFI_STATUS
 DcsLdrGetCertState(
     OUT UINT64* State
-)
+    )
 {
     EFI_STATUS res;
     if (gDcsLdr == NULL) {
@@ -1064,4 +572,31 @@ DcsLdrGetCertState(
     }
 
     return gDcsLdr->GetCertState(gDcsLdr, State);
+}
+
+/* IsSecureBootEnabled */
+BOOLEAN
+IsSecureBootEnabled(
+    VOID
+    )
+{
+    EFI_STATUS  Status;
+    UINT8       *SecureBoot = NULL;
+    UINTN       Size = 0;
+    UINT32      Attr = 0;
+    BOOLEAN     Enabled = FALSE;
+
+    Status = GetEfiVar(L"SecureBoot", &gEfiGlobalVariableGuid, (VOID**)&SecureBoot, &Size, &Attr);
+    if (!EFI_ERROR(Status) && SecureBoot != NULL && Size == sizeof(UINT8)) {
+        Enabled = (*SecureBoot == 1);
+        MEM_FREE(SecureBoot);
+    }
+
+    // check if shim has disabled all verification
+    UINT8 sbState = 0;
+    if (!EFI_ERROR(DcsLdrGetMokSBState(&sbState)) && sbState == 1) {
+        return FALSE;
+    }
+
+    return Enabled;
 }

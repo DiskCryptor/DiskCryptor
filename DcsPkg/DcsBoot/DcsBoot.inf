@@ -28,7 +28,6 @@
 
 [Sources]
   DcsBoot.c
-  TpmKill.c
 
 
 [Packages]
@@ -49,6 +48,7 @@
 [Guids]
   gEfiGlobalVariableGuid
   gEfiDcsVariableGuid
+  gEfiDcsOwnerGuid
   gEfiFileInfoGuid
   gEfiPartTypeSystemPartGuid
   gEfiGlobalVariableGuid
@@ -57,6 +57,7 @@
 
 [Protocols]
   gEfiBlockIoProtocolGuid
+  gEfiDcsOwnerProtocolGuid
   gEfiTcgProtocolGuid
   gEfiTcg2ProtocolGuid
 

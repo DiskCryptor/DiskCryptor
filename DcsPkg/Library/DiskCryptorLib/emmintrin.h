@@ -130,7 +130,21 @@ __m128i __cdecl _mm_set_epi32(int _I3, int _I2, int _I1, int _I0);
 __m128i __cdecl _mm_setr_epi32(int _I0, int _I1, int _I2, int _I3);
 __m128i __cdecl _mm_set1_epi32(int _I);
 
-/* AES-NI intrinsic */
+/*
+ * AES-NI, plus the one SSE2 compare crypto_lib needs.
+ *
+ * crypto_fast reached these through amd64/*.nasm, so only
+ * _mm_aesenc_si128 was ever declared here. crypto_lib writes XTS-AES
+ * and XTS-Serpent in C, which needs the decrypt direction, the
+ * last-round forms, and the compare the bitsliced S-boxes build their
+ * all-ones masks with.
+ *
+ * Declarations only: MSVC knows these names and emits the instructions.
+ */
 __m128i __cdecl _mm_aesenc_si128(__m128i /* v */, __m128i /* rkey */);
+__m128i __cdecl _mm_aesenclast_si128(__m128i /* v */, __m128i /* rkey */);
+__m128i __cdecl _mm_aesdec_si128(__m128i /* v */, __m128i /* rkey */);
+__m128i __cdecl _mm_aesdeclast_si128(__m128i /* v */, __m128i /* rkey */);
+__m128i __cdecl _mm_cmpeq_epi32(__m128i /* a */, __m128i /* b */);
 
 #endif /* _EMMINTRIN_UEFI_H */

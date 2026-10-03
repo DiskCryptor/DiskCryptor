@@ -97,7 +97,8 @@ int _menu_unset_loader(
 int _menu_update_loader(
 		HWND     hwnd,
 		wchar_t *vol,
-		int      dsk_num
+		int      dsk_num,
+		int      type
 	);
 
 int _menu_set_loader_file_mbr(
@@ -114,6 +115,20 @@ int _menu_set_loader_file_efi(
 	int      is_shim
 );
 
+
+int _menu_add_shim(
+	HWND     hwnd,
+	wchar_t *vol,
+	int      dsk_num,
+	int      type
+);
+
+int _menu_del_shim(
+	HWND     hwnd,
+	wchar_t *vol,
+	int      dsk_num,
+	int      type
+);
 
 int _menu_add_bme(
 	HWND     hwnd,

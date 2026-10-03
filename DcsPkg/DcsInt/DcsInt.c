@@ -91,7 +91,7 @@ InitAuxDrivers()
 //////////////////////////////////////////////////////////////////////////
 enum OnExitTypes{
 	OnExitAuthFailed = 1,
-	OnExitAuthNotFound,
+	//OnExitAuthNotFound,
 	OnExitAuthTimeout,
 	OnExitAuthCancelled,
 	OnExitSuccess
@@ -187,9 +187,9 @@ OnExit(
 	
 	switch (type) {
 	case OnExitAuthFailed:		ConfigReadString("ActionFailed", "Exit", action, sizeof(action));		break;
-	case OnExitAuthNotFound:	ConfigReadString("ActionNotFound", "Exit", action, sizeof(action));		break;
+	//case OnExitAuthNotFound:	ConfigReadString("ActionNotFound", "Exit", action, sizeof(action));		break;
 	case OnExitAuthTimeout:		ConfigReadString("ActionTimeout", "Shutdown", action, sizeof(action));	break;
-	case OnExitAuthCancelled:	ConfigReadString("ActionCancelled", "Continue", action, sizeof(action));break;
+	case OnExitAuthCancelled:	ConfigReadString("ActionCancelled", "Cancel", action, sizeof(action));  break;
 	case OnExitSuccess:			ConfigReadString("ActionSuccess", "Exit", action, sizeof(action));		break;
 	}
 
@@ -255,7 +255,7 @@ OnExit(
 			res = EfiFindPartByGUID(guid, &h);
 			if (EFI_ERROR(res)) {
 				ERR_PRINT(L"\nCannot find start partition\n");
-				retValue = EFI_DCS_HALT_REQUESTED;
+				retValue = EFI_DCS_SHUTDOWN_REQUESTED;
 				goto exit;
 			}
 			// Try to exec
@@ -263,13 +263,13 @@ OnExit(
 				res = EfiExec(h, fileStr);
 				if (EFI_ERROR(res)) {
 					ERR_PRINT(L"\nStart %s - %r\n", fileStr, res);
-					retValue = EFI_DCS_HALT_REQUESTED;
+					retValue = EFI_DCS_SHUTDOWN_REQUESTED;
 					goto exit;
 				}
 			}
 			else {
-				ERR_PRINT(L"\nNo EFI execution path specified. Halting!\n");
-				retValue = EFI_DCS_HALT_REQUESTED;
+				ERR_PRINT(L"\nNo EFI execution path specified.\n");
+				retValue = EFI_DCS_SHUTDOWN_REQUESTED;
 				goto exit;
 			}
 		}		
@@ -482,16 +482,10 @@ UefiMain(
 		LoadedImage->LoadOptionsSize >= sizeof(DCS_BOOT_CONFIG))
 	{
 		BootConfig = (DCS_BOOT_CONFIG*)LoadedImage->LoadOptions;
-		if (BootConfig->Size >= sizeof(DCS_BOOT_CONFIG)) {
-			// Use config from DcsBoot (avoids re-reading config file)
-			if (!InitConfigFromBootConfig(BootConfig)) {
-				ERR_PRINT(L"InitConfigFromBootConfig failed\n");
-				BootConfig = NULL;
-			}
-		} else {
-#ifdef DEBUG_BUILD
-			OUT_PRINT(L"BootConfig->Size mismatch: %d vs %d\n", BootConfig->Size, sizeof(DCS_BOOT_CONFIG));
-#endif
+		
+		// Use config from DcsBoot (avoids re-reading config file)
+		if (!InitConfigFromBootConfig(BootConfig)) {
+			ERR_PRINT(L"InitConfigFromBootConfig failed\n");
 			BootConfig = NULL;
 		}
 	}
@@ -507,36 +501,22 @@ UefiMain(
 	// Fallback: load config ourselves if not provided via LoadOptions
 	if (BootConfig == NULL) {
 		InitConfig(CONFIG_FILE_PATH);
+		InitParams();
 	}
 
-	InitParams();
 	InitAuxDrivers();
 
 	// Remove BootNext to restore boot order
 	//BootMenuItemRemove(L"BootNext");
-
-	//if (gExternMode) {
-	//	ERR_PRINT(L"Extern Mode\n");
-	//}
 
 	res = DcsDiskCryptor(ImageHandle, SystemTable);
 
 	if (gConfigDebug) {
 		OUT_PRINT(L"DcsInt done, ret:  %r\n", res);
 	}
-
-	if (EFI_ERROR(res)) {
-		if (res == EFI_DCS_USER_TIMEOUT)
-			res = OnExit(OnExitAuthTimeout, res);
-		else if (res == EFI_DCS_USER_CANCELED)
-			res = OnExit(OnExitAuthCancelled, res);
-		else if (res == EFI_DCS_DATA_NOT_FOUND)
-			res = OnExit(OnExitAuthNotFound, res);
-		else
-			res = OnExit(OnExitAuthFailed, res);
-	}
-	else {
-
+	
+	if (!EFI_ERROR(res)) 
+	{
 		if (EFI_ERROR(gBS->CreateEventEx(
 			EVT_NOTIFY_SIGNAL,
 			TPL_NOTIFY,
@@ -550,6 +530,17 @@ UefiMain(
 
 		if (res != EFI_DCS_INPUT_REQUIRED)
 			res = OnExit(OnExitSuccess, res);
+	} 
+	else if (!gExternMode) // in rescue mode, return orriginal error code
+	{
+		if (res == EFI_DCS_USER_TIMEOUT)
+			res = OnExit(OnExitAuthTimeout, res);
+		else if (res == EFI_DCS_USER_CANCELED)
+			res = OnExit(OnExitAuthCancelled, res);
+		//else if (res == EFI_DCS_DATA_NOT_FOUND)
+		//	res = OnExit(OnExitAuthNotFound, res);
+		else
+			res = OnExit(OnExitAuthFailed, res);
 	}
 
 	// clear all sensitive data on failure
@@ -561,7 +552,7 @@ UefiMain(
 	// Caution: installing hooks but returning error will cause ConnectAllEfi to randomly crash!
 	if (EFI_ERROR(DscInstallHook(ImageHandle, SystemTable))) {
 		ERR_PRINT(L"Failed to install EFI Hooks!\n");
-		return EFI_DCS_HALT_REQUESTED;
+		return EFI_DCS_SHUTDOWN_REQUESTED;
 	}
 	return res;
 }

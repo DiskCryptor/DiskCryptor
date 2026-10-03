@@ -1,0 +1,83 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source Files">
+      <UniqueIdentifier>{92165e95-ebaa-5267-8cc9-ff18422d3671}</UniqueIdentifier>
+      <Extensions>cpp;c;cc;cxx;def;odl;idl;hpj;bat;asm;asmx</Extensions>
+    </Filter>
+    <Filter Include="Header Files">
+      <UniqueIdentifier>{021facdf-6630-5f56-a77f-9cc84991c8d2}</UniqueIdentifier>
+      <Extensions>h;hpp;hxx;hm;inl;inc;xsd</Extensions>
+    </Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="test_alloc.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="aes_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="argon2_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="crc32_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="crypto_tests.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="pkcs5_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="serpent_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sha512_hmac_drbg_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sha512_hmac_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="sha512_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="twofish_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="xts_test.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="aes_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="argon2_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="crc32_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="pkcs5_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="serpent_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sha512_hmac_drbg_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sha512_hmac_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="sha512_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="twofish_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="xts_test.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+  </ItemGroup>
+</Project>

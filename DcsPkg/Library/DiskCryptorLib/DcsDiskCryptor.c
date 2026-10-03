@@ -30,11 +30,15 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/PasswordLib.h>
 #include <DcsConfig.h>
 
+#include <Protocol/DcsOwnerProto.h>
+#include "../DcsOwner/DcsOwner.h"
+
 #include "../DcsTpm/DcsTpmProto.h"
 #include "../MiscUtilsLib/MiscUtilsLib.h"
 #include "../SupportLib/verify.h"
 
 #include "include/dc_header.h"
+#include "volume_lib/crypto_head.h"
 #include "include/dc_keyfiles.h"
 #include "include/dc_io.h"
 #include "DcsConfigMenu.h"
@@ -700,7 +704,10 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 		}
 
 		// Determine header size to read based on the password (key slot)
-		hdr_len = ROUND_TO_FULL_SECTORS(dc_get_min_header_len(&gDCryptPassword), partBlockIo->Media->BlockSize);
+		/* installs volume_lib's host on the first call; cheap and idempotent */
+		dcs_volume_lib_init();
+
+		hdr_len = ROUND_TO_FULL_SECTORS(cp_get_min_header_len(&gDCryptPassword), partBlockIo->Media->BlockSize);
 		if (hdr_len > header_size) {
 			if (header) {
 				MEM_BURN(header, header_size);
@@ -1319,7 +1326,7 @@ DcsDiskCryptor(
 	SetCleanSensitiveDataFunc(CleanSensitiveDataDC);
 
 	// Load auth parameters
-	DCAuthLoadConfig();
+	DcAuthLoadConfig();
 
 	// Initialize console abstraction layer (must be after gDCryptTouchInput is set)
 	ConsoleInit();
@@ -1348,7 +1355,17 @@ DcsDiskCryptor(
 	zeroauto(&iodb, sizeof(iodb));
 
 	// init crypto
-	gDCryptHwCrypto = xts_init(gDCryptHwCrypto);
+	/*
+	 * crypto_lib's xts_init returns void. The int the vendored copy
+	 * returned said whether AES actually landed on the hardware core,
+	 * which is what the availability probe answers.
+	 */
+	xts_init(gDCryptHwCrypto);
+#if defined(_M_ARM64)
+	gDCryptHwCrypto = gDCryptHwCrypto && xts_aes_ce_available();
+#else
+	gDCryptHwCrypto = gDCryptHwCrypto && xts_aes_ni_available();
+#endif
 	if (gConfigDebug && gDCryptHwCrypto != 0) {
 		g_Con->PrintError(L"Using Hardware Crypt, Type %d\n", gDCryptHwCrypto);
 	}
@@ -1806,7 +1823,7 @@ char* gDCryptStartMsg = NULL;
 char* gDCryptSuccessMsg = NULL;
 char* gDCryptErrorMsg = NULL;
 
-VOID DCAuthLoadConfig()
+VOID DcAuthLoadConfig()
 {
 	// Main:
 		// Keyboard Layout
@@ -1832,12 +1849,12 @@ VOID DCAuthLoadConfig()
 	gBlockUnencryptedVolumes = (UINT8)ConfigReadInt("BlockUnencryptedVolumes", 0);
 
 	gDCryptHandoffMode = (UINT8)ConfigReadInt("HandoffMode", 0);
-#ifdef _M_ARM64 // ARM64 requires at least mode 2 for proper handoff to OS loader, otherwise it may cause boot failures on some devices (e.g. Surface Pro X)
+#ifdef _M_ARM64 // ARM64 requires at least mode 2 for proper handoff to OS loader, otherwise it may cause boot failures on some arm devices
 	if (gDCryptHandoffMode < 2) {
 #else
 	if (gDCryptHandoffMode == 0) {
 #endif
-		gDCryptHandoffMode = 2;
+		gDCryptHandoffMode = 2; // Default full
 	}
 
 // Authentication:
@@ -1973,26 +1990,40 @@ DCFinalizePassword(dc_pass* pass, CHAR16* password, UINT32 password_size, int ke
 		return EFI_SUCCESS;
 	}
 
+	//
+	// The mixing itself is volume_lib's, shared with dcapi so that a volume
+	// unlocked with keyfiles in Windows unlocks here too. It reports ST_*, so
+	// resl carries the library's answer and is translated once on the way out.
+	//
+	int resl = ST_OK;
+
 	// simple legacy mixing
 	if (gDCryptKfMixer == KEYFILE_MIX_LEGACY)
 	{
+		u8 hash[DC_KF_HASH_SIZE];
+
 		// HW Key
 		if (hw_key == DCryptTPM) {
-			ret = DCApplyKeyData(pass, gDCryptTpmSecret, sizeof(gDCryptTpmSecret));
+			if ((resl = cp_kf_hash_data(gDCryptTpmSecret, sizeof(gDCryptTpmSecret), hash)) == ST_OK)
+				cp_kf_mix_additive(pass, hash);
 		}
-		if (EFI_ERROR(ret)) goto finish;
+		if (resl != ST_OK) goto mixed;
 
 		// Key Files
 		if (keyfile_data != NULL) {
-			ret = DCApplyKeyData(pass, keyfile_data, keyfile_size);
+			if ((resl = cp_kf_hash_data(keyfile_data, (u32)keyfile_size, hash)) == ST_OK)
+				cp_kf_mix_additive(pass, hash);
 		}
-		if (EFI_ERROR(ret)) goto finish;
+		if (resl != ST_OK) goto mixed;
 
 		// Aux Key File Data
 		if (aux_data && aux_size > 0) {
-			ret = DCApplyKeyData(pass, aux_data, aux_size);
+			if ((resl = cp_kf_hash_data(aux_data, (u32)aux_size, hash)) == ST_OK)
+				cp_kf_mix_additive(pass, hash);
 		}
-		if (EFI_ERROR(ret)) goto finish;
+
+	mixed:
+		MEM_BURN(hash, sizeof(hash));
 	}
 	else // new mixing method
 	{
@@ -2000,15 +2031,15 @@ DCFinalizePassword(dc_pass* pass, CHAR16* password, UINT32 password_size, int ke
 		if (file_count == 1)
 		{
 			if (hw_key == DCryptTPM) {
-				ret = dc_kf_mixer_combine(pass, gDCryptTpmSecret);
+				cp_kf_mixer_combine(pass, gDCryptTpmSecret);
 				goto finish;
 			}
 			else if (keyfile_size == DC_KF_HASH_SIZE) {
-				ret = dc_kf_mixer_combine(pass, keyfile_data);
+				cp_kf_mixer_combine(pass, keyfile_data);
 				goto finish;
 			}
 			else if (aux_data && aux_size == DC_KF_HASH_SIZE) {
-				ret = dc_kf_mixer_combine(pass, aux_data);
+				cp_kf_mixer_combine(pass, aux_data);
 				goto finish;
 			}
 		}
@@ -2017,25 +2048,30 @@ DCFinalizePassword(dc_pass* pass, CHAR16* password, UINT32 password_size, int ke
 
 		dc_kf_mixer mixer;
 
-		ret = dc_kf_mixer_init(&mixer);
+		resl = cp_kf_mixer_init(&mixer);
 
-		if (hw_key == DCryptTPM && !EFI_ERROR(ret)) {
-			ret = dc_kf_mixer_add_data(&mixer, gDCryptTpmSecret, sizeof(gDCryptTpmSecret));
+		if (hw_key == DCryptTPM && resl == ST_OK) {
+			resl = cp_kf_mixer_add_data(&mixer, gDCryptTpmSecret, sizeof(gDCryptTpmSecret));
 		}
 
-		if (keyfile_data != NULL && !EFI_ERROR(ret)) {
-			ret = dc_kf_mixer_add_data(&mixer, keyfile_data, keyfile_size);
+		if (keyfile_data != NULL && resl == ST_OK) {
+			resl = cp_kf_mixer_add_data(&mixer, keyfile_data, (u32)keyfile_size);
 		}
 
-		if (aux_data && aux_size > 0 && !EFI_ERROR(ret)) {
-			ret = dc_kf_mixer_add_data(&mixer, aux_data, aux_size);
+		if (aux_data && aux_size > 0 && resl == ST_OK) {
+			resl = cp_kf_mixer_add_data(&mixer, aux_data, (u32)aux_size);
 		}
 
-		if (!EFI_ERROR(ret)) ret = dc_kf_mixer_finish(&mixer, pass);
-		else dc_kf_mixer_free(&mixer);
+		if (resl == ST_OK) resl = cp_kf_mixer_finish(&mixer, pass);
+		else cp_kf_mixer_free(&mixer);
 
 		//g_Con->PrintError(L"Result: \n");
 		//DumpHex(pass->pass, pass->size);
+	}
+
+	if (resl != ST_OK) {
+		ret = (resl == ST_NOMEM) ? EFI_OUT_OF_RESOURCES :
+		      (resl == ST_EMPTY_KEYFILES) ? EFI_NOT_FOUND : EFI_INVALID_PARAMETER;
 	}
 
 finish:
@@ -2283,12 +2319,12 @@ HandleFuncKeys(
 		return AskPwdRetSave;
 	}
 
-	if (key.ScanCode == SCAN_F11) {
-		// unused <---
+	if (key.ScanCode == SCAN_F11 && pParams->Type == DCryptPwPromptPassword) {
+		return AskPwdRetVars;
 	}
 
-	if (key.ScanCode == SCAN_F12) {
-		// unused <---
+	if (key.ScanCode == SCAN_F12 && pParams->Type == DCryptPwPromptPassword) {
+		return AskPwdRetOwner;
 	}
 
 	if (key.UnicodeChar == CHAR_TAB) {
@@ -2356,8 +2392,6 @@ DcMain(int* vol_found, int* hdr_found)
 	int		       retry = gDCryptAuthRetry;
 	EFI_INPUT_KEY  key;
 	DCRYPT_PW_PROMPT Params = { DCryptPwPromptPassword, gDCryptUseKeyFile };
-	UINT8          sbState = 0;
-	DcsLdrGetMokSBState(&sbState);
 
 	PlatformGetID(NULL, &gPlatformKeyFile, &gPlatformKeyFileSize);
 	//g_Con->Print(L"Platform ID: %a\n", gPlatformKeyFile);
@@ -2378,7 +2412,7 @@ DcMain(int* vol_found, int* hdr_found)
 		}
 		else if (!EFI_ERROR(ret)) {
 
-			if (!gDCryptTpmPinUsed && !gBlockUnencryptedVolumes && !sbState) {
+			if (!gDCryptTpmPinUsed && !gBlockUnencryptedVolumes && !IsSecureBootEnabled()) {
 				g_Con->Print(L"\n%OWARNING:%N %HSecure Boot is disabled%N without it unattended TPM unlock is unsafe.\n");
 				g_Con->Print(L"Please considder using a TPM PIN or enabling Secure Boot for better security.\n\n");
 				gDCryptAutoLoginDelay = 15;
@@ -2518,6 +2552,23 @@ DcMain(int* vol_found, int* hdr_found)
 			}
 			continue;
 		}
+		
+		if (gDCryptPwdCode == AskPwdRetVars) {
+			DcShowEfiVariables();
+			continue;
+		}
+		
+		if (gDCryptPwdCode == AskPwdRetOwner) {
+			static EFI_DCSOWNER_PROTOCOL *Owner = NULL;
+			if (!Owner) {
+				EFI_GUID LocDcsOwnerProtocolGuid = EFI_DCSOWNER_PROTOCOL_GUID;
+				gBS->LocateProtocol(&LocDcsOwnerProtocolGuid, NULL, (VOID**)&Owner);
+			}
+			if (Owner) {
+				Owner->ShowConfigMenu(Owner);
+			}
+			continue;
+		}
 
 		ret = DCFinalizePassword(&gDCryptPassword, password, password_size, Params.KeyFile, Params.HwKey, NULL, 0);
 		if (ret == EFI_DCS_USER_CANCELED) {
@@ -2581,3 +2632,4 @@ finish:
 	MEM_BURN(gDCryptTpmSecret, sizeof(gDCryptTpmSecret));
 	return ret;
 }
+

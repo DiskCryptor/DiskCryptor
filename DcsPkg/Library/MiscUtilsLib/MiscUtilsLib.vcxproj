@@ -23,10 +23,14 @@
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="Base64.c" />
+    <ClCompile Include="CliUtils.c" />
     <ClCompile Include="EfiPxe.c" />
+    <ClCompile Include="FsUtils.c" />
     <ClCompile Include="MiscUtilsLib.c" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CliUtils.h" />
+    <ClInclude Include="FsUtils.h" />
     <ClInclude Include="MiscUtilsLib.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

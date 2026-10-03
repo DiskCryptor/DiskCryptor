@@ -52,6 +52,7 @@
   gEfiBlockIoProtocolGuid
   gEfiDevicePathProtocolGuid
   gEfiLoadedImageProtocolGuid
+  gEfiDcsOwnerProtocolGuid
 
 [Guids]
   gEfiGlobalVariableGuid

@@ -171,3 +171,12 @@ int io_hook_rw_skip_bads(dev_hook *hook, void *buff, u32 length, u64 offset, int
 	}
 	return resl;
 }
+
+/*
+ * volume_lib's dc_rw_fn over io_hook_rw. Exists so that io_hook_rw itself,
+ * and all of its call sites, stay exactly as they are.
+ */
+int dc_hook_rw(void *ctx, void *buff, u32 length, u64 offset, int is_read)
+{
+	return io_hook_rw((dev_hook*)ctx, buff, length, offset, is_read);
+}

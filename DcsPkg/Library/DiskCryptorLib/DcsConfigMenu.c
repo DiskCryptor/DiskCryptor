@@ -20,6 +20,8 @@ https://opensource.org/licenses/LGPL-3.0
 #include "DcsConfigMenu.h"
 #include "DcsDiskCryptor.h"
 #include "common/Xml.h"
+#include "../../DcsOwner/DcsOwner.h"
+#include "../Library/MiscUtilsLib/MiscUtilsLib.h"
 
 #ifndef ARRAY_SIZE
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
@@ -42,8 +44,7 @@ typedef enum {
 	CFG_ID_BOOT_MODE,
 	CFG_ID_BLOCK_UNENCRYPTED,
 	CFG_ID_HANDOFF_MODE,
-	CFG_ID_SECURE_BOOT,
-	CFG_ID_TPM_KILL,
+	CFG_COUNT
 } CFG_MENU_ID;
 
 typedef struct _CFG_VALUE_NAME {
@@ -128,17 +129,13 @@ static CFG_VALUE_NAME gHandoffModeValues[] = {
 #else
 static CFG_VALUE_NAME gHandoffModeValues[] = {
 	//{ 0, L"Default" },
+#ifndef _M_ARM64
 	{ 1, L"Legacy" },
+#endif
 	{ 2, L"Full" },
 	{ 3, L"Keys Only" },
 };
 #endif
-
-static CFG_VALUE_NAME gTpmKillValues[] = {
-	{ 0, L"No" },
-	{ 1, L"Fully" },
-	{ 2, L"Conservative (keep UID EK variable)" },
-};
 
 // TPM PCR Mask display function - shows value as 0xHHHH
 static VOID
@@ -350,8 +347,7 @@ DcsConfigMenuShow(
 	INT32         baseRow;
 	INT32         i;
 	INT32         count = 0;
-	CFG_MENU_ITEM items[13];
-	//UINT8         sbState;
+	CFG_MENU_ITEM items[CFG_COUNT];
 
 	// Zero-initialize all items to ensure PickerFunc/DisplayFunc are NULL
 	ZeroMem(items, sizeof(items));
@@ -456,32 +452,6 @@ DcsConfigMenuShow(
 	items[count].Max          = 0;
 	count++;
 
-	// TPM Kill - disable TPM before Windows handoff
-	if (gDcsBootConfig) {
-		items[count].Id           = CFG_ID_TPM_KILL;
-		items[count].Label        = L"Block TPM after Boot";
-		items[count].Values       = gTpmKillValues;
-		items[count].ValueCount   = ARRAY_SIZE(gTpmKillValues);
-		items[count].CurrentIndex = CfgFindValueIndex(gTpmKillValues, items[count].ValueCount, gDcsBootConfig->TpmKill);
-		if (items[count].CurrentIndex < 0) items[count].CurrentIndex = 0;
-		items[count].Min          = 0;
-		items[count].Max          = 0;
-		count++;
-	}
-
-	// Secure Boot (conditionally added)
-	//if (!EFI_ERROR(DcsLdrGetMokSBState(&sbState))) {
-	//	items[count].Id           = CFG_ID_SECURE_BOOT;
-	//	items[count].Label        = L"Secure Boot";
-	//	items[count].Values       = gBoolValues;
-	//	items[count].ValueCount   = ARRAY_SIZE(gBoolValues);
-	//	items[count].CurrentIndex = CfgFindValueIndex(gBoolValues, items[count].ValueCount, sbState ? 0 : 1);
-	//	if (items[count].CurrentIndex < 0) items[count].CurrentIndex = 0;
-	//	items[count].Min          = 0;
-	//	items[count].Max          = 0;
-	//	count++;
-	//}
-
 	// Hardware Crypto
 	items[count].Id           = CFG_ID_HW_CRYPTO;
 	items[count].Label        = L"Hardware Crypto";
@@ -560,11 +530,6 @@ DcsConfigMenuShow(
 				gBlockUnencryptedVolumes = (UINT8)CfgGetValue(item);
 			if ((item = CfgFindItemById(items, count, CFG_ID_HANDOFF_MODE)) != NULL)
 				gDCryptHandoffMode = (UINT8)CfgGetValue(item);
-			if ((item = CfgFindItemById(items, count, CFG_ID_TPM_KILL)) != NULL) {
-				gDcsBootConfig->TpmKill = (UINT8)CfgGetValue(item);
-			}
-			//if ((item = CfgFindItemById(items, count, CFG_ID_SECURE_BOOT)) != NULL)
-			//	DcsLdrSetMokSBState(CfgGetValue(item) ? 0 : 1);
 
 			g_Con->EnableCursor(TRUE);
 			g_Con->Clear();
@@ -573,7 +538,7 @@ DcsConfigMenuShow(
 				g_Con->Print(L"\n%HWarning: Saving the config file will modify PCR8 used for TPM sealing.%N\n");
 			}
 			if (DcsAskYesNo(L"\n%HSave changes permanently to config file?%N [y/N]: ", FALSE)) {
-				DCAuthStoreConfig();
+				DcAuthStoreConfig();
 			}
 			g_Con->Print(L"\n");
 
@@ -658,7 +623,7 @@ DcsConfigMenuShow(
 //////////////////////////////////////////////////////////////////////////
 
 EFI_STATUS
-DCAuthStoreConfig(
+DcAuthStoreConfig(
 	VOID
 )
 {
@@ -732,11 +697,6 @@ DCAuthStoreConfig(
 
 	Status = CfgWriteInteger(&NewConfig, ConfigContent, "HandoffMode", gDCryptHandoffMode);
 	if (EFI_ERROR(Status)) goto cleanup;
-
-	if (gDcsBootConfig) {
-		Status = CfgWriteInteger(&NewConfig, ConfigContent, "TpmKill", gDcsBootConfig->TpmKill ? 1 : 0);
-		if (EFI_ERROR(Status)) goto cleanup;
-	}
 
 	// Copy all unmodified values from original config
 	if (ConfigContent != NULL) {

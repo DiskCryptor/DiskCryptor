@@ -66,7 +66,7 @@ static const efi_file_t dcs_files[] = {
 	{L"DcsBoot32.efi",		L"\\EFI\\DCS\\DcsBoot.efi"}, // boot file must be first
 	{L"DcsInt32.dcs",		L"\\EFI\\DCS\\DcsInt.dcs"},
 	{L"DcsTpm32.dcs",		L"\\EFI\\DCS\\DcsTpm.dcs"},
-	{L"DcsBml32.dcs",		L"\\EFI\\DCS\\DcsBml.dcs"},
+	{L"DcsOwner32.dcs",		L"\\EFI\\DCS\\DcsOwner.dcs"},
 	{L"DcsInfo32.dcs",		L"\\EFI\\DCS\\DcsInfo.dcs"},
 	//{L"DcsCfg32.dcs",		L"\\EFI\\DCS\\DcsCfg.dcs"},
 	{L"LegacySpeaker32.dcs",L"\\EFI\\DCS\\LegacySpeaker.dcs"},
@@ -80,12 +80,14 @@ static const wchar_t* dcs_zip_file = L"DcsPkg_X64";
 #endif
 static const efi_file_t dcs_files[] = {
 	{L"DcsBoot.efi",		L"\\EFI\\DCS\\DcsBoot.efi"}, // boot file must be first
-	{L"DcsInt.dcs",			L"\\EFI\\DCS\\DcsInt.dcs"},
+	{L"DcsInt.dcs",			L"\\EFI\\DCS\\DcsInt.dcs"}, // must be at [1] is ued to test for DCS presence
 	{L"DcsTpm.dcs",			L"\\EFI\\DCS\\DcsTpm.dcs"},
-	{L"DcsBml.dcs",			L"\\EFI\\DCS\\DcsBml.dcs"},
+	{L"DcsOwner.dcs",		L"\\EFI\\DCS\\DcsOwner.dcs"},
 	{L"DcsInfo.dcs",		L"\\EFI\\DCS\\DcsInfo.dcs"},
 	//{L"DcsCfg.dcs",			L"\\EFI\\DCS\\DcsCfg.dcs"},
+#ifndef _M_ARM64
 	{L"LegacySpeaker.dcs",	L"\\EFI\\DCS\\LegacySpeaker.dcs"},
+#endif
 	{L"DcsRe.efi",			L"\\EFI\\DCS\\DcsRe.efi"},
 };
 #endif
@@ -2095,9 +2097,166 @@ int dc_efi_is_shim_set(int dsk_num)
 	return 0;
 }
 
+int dc_efi_set_shim(int dsk_num, int esp_part)
+{
+	int      resl;
+	wchar_t  root[MAX_PATH] = { 0 };
+
+	if (!dc_efi_shim_available())
+		return ST_SHIM_MISSING;
+
+	do
+	{
+		resl = dc_efi_get_sys_part(dsk_num, esp_part, root);
+		if (resl != ST_OK) break;
+
+		if (dc_efi_file_exists(root, efi_boot_file)) { // if there is a original boot file
+			if (!dc_efi_file_exists(root, efi_boot_bak)) { // and there is no boot file backup already
+				dc_copy_efi_file(root, efi_boot_file, efi_boot_bak); // backup the boot file
+			}
+		} else { // if there is no boot file, create an empty backup file
+			resl = dc_efi_mkdir(root, L"\\EFI\\Boot");
+			if (resl != ST_OK) break;
+		}
+
+		resl = dc_copy_efi_shim(root);
+		if (resl != ST_OK) break;
+
+		resl = dc_copy_efi_file(root, shim_files[0].target, efi_boot_file); // L"\\EFI\\Boot\\shimx64.efi" -> L"\\EFI\\Boot\\BOOTx64.efi"
+		if (resl != ST_OK) break;
+
+		resl = dc_ren_efi_file(root, shim_files[shim_ldr_index].target, shim_boot_file); // L"\\EFI\\Boot\\DcsLdr.efi" -> L"\\EFI\\Boot\\grubx64.efi"
+
+		dc_mok_set_timeout(600); // 10 min, NOTE: this will be auto reset back to 10s after reboot :/
+
+		size_t end = wcslen(root);
+		const wchar_t* files[] = {root};
+		wcscat_s(root, MAX_PATH, shim_files[shim_mok_index].target);
+		dc_mok_enroll_files(files, 1, L"123", 0);
+		root[end] = 0;
+
+	} while (0);
+
+	return resl;
+}
+
+int dc_efi_unset_shim(int dsk_num, int esp_part)
+{
+	int      resl;
+	wchar_t  root[MAX_PATH] = { 0 };
+
+	do
+	{
+		resl = dc_efi_get_sys_part(dsk_num, esp_part, root);
+		if (resl != ST_OK) break;
+
+		// check if the bootloader is installed
+		if (!dc_is_shim_on_partition(root)) {
+			resl = ST_BLDR_NOTINST; break;
+		}
+
+		// remove shim and boot file
+		for (int i = 0; i < shim_files_count; i++) {
+			dc_delete_efi_file(root, shim_files[i].target);
+		}
+
+		dc_delete_efi_file(root, shim_boot_file);
+
+		// restore original boot file
+		dc_ren_efi_file(root, efi_boot_bak, efi_boot_file);
+
+	} while (0);
+
+	return resl;
+}
+
+int dc_efi_set_shim_on_partition(const wchar_t *root)
+{
+	int resl;
+
+	if (!dc_efi_shim_available())
+		return ST_SHIM_MISSING;
+
+	do
+	{
+		resl = dc_efi_mkdir(root, L"\\EFI\\Boot");
+		if (resl != ST_OK) break;
+
+		resl = dc_copy_efi_shim(root);
+		if (resl != ST_OK) break;
+
+		resl = dc_copy_efi_file(root, shim_files[0].target, efi_boot_file);
+		if (resl != ST_OK) break;
+
+		resl = dc_ren_efi_file(root, shim_files[shim_ldr_index].target, shim_boot_file);
+
+	} while (0);
+
+	return resl;
+}
+
+int dc_efi_unset_shim_on_partition(const wchar_t *root)
+{
+	int resl = ST_OK;
+
+	if (!dc_is_shim_on_partition(root)) {
+		return ST_BLDR_NOTINST;
+	}
+
+	for (int i = 0; i < shim_files_count; i++) {
+		dc_delete_efi_file(root, shim_files[i].target);
+	}
+	dc_delete_efi_file(root, shim_boot_file);
+
+	if (dc_is_dcs_on_partition(root)) {
+		resl = dc_copy_file(root, root, dcs_files[dcs_re_index].target, efi_boot_file);
+	}
+
+	return resl;
+}
+
+int dc_update_efi_boot_on_partition(const wchar_t *root)
+{
+	int resl;
+	int shim;
+
+	do
+	{
+		if (!dc_is_dcs_on_partition(root)) {
+			resl = ST_BLDR_NOTINST; break;
+		}
+
+		resl = dc_copy_efi_dcs(root, 1);
+		if (resl != ST_OK) break;
+
+		shim = dc_is_shim_on_partition(root);
+
+		if (shim) {
+			resl = dc_copy_efi_shim(root);
+			if (resl != ST_OK) break;
+
+			resl = dc_copy_efi_file(root, shim_files[0].target, efi_boot_file);
+			if (resl != ST_OK) break;
+
+			resl = dc_ren_efi_file(root, shim_files[shim_ldr_index].target, shim_boot_file);
+		}
+		else {
+			resl = dc_copy_file(root, root, dcs_files[dcs_re_index].target, efi_boot_file);
+		}
+		if (resl != ST_OK) break;
+
+		ldr_config conf;
+		dc_efi_config_init(&conf);
+		resl = dc_efi_config_by_partition(root, 1, &conf);
+
+	} while (0);
+
+	return resl;
+}
+
 int dc_is_dcs_on_partition(const wchar_t *root)
 {
-	return dc_efi_file_exists(root, dcs_files[0].target);
+	return dc_efi_file_exists(root, dcs_files[1].target);
 }
 
 int dc_is_dcs_on_disk(int dsk_num)
@@ -2126,7 +2285,7 @@ int dc_is_dcs_in_file(wchar_t* file)
 
 	if (dc_is_dir(file))
 	{
-		resl = dc_efi_file_exists(file, dcs_files[0].target);
+		resl = dc_efi_file_exists(file, dcs_files[1].target);
 	}
 	else
 	{
@@ -2376,6 +2535,7 @@ int dc_efi_set_bme_ex(wchar_t* description, int dsk_num, int setBootEntry, int f
 	wchar_t  root[MAX_PATH] = { 0 };
 	PARTITION_INFORMATION_EX ptix;
 	wchar_t  execPath[MAX_PATH];
+	wchar_t	description2[128];
 
 	do
 	{
@@ -2391,10 +2551,13 @@ int dc_efi_set_bme_ex(wchar_t* description, int dsk_num, int setBootEntry, int f
 		if (resl != ST_OK) break;
 
 		if (dc_is_shim_on_partition(root)) { // if shim is installed point the boot entry to the backup file as the original may get overwriten by windows updates
-			wsprintf(execPath, L"%s", shim_files[0].target);
+			wsprintf(execPath, L"%s", shim_files[0].target); // point the boot entry to "\\EFI\\Boot\\shimx64.efi"
+			// update descriptions
+			swprintf_s(description2, ARRAYSIZE(description2), L"%s (SHIM)", description);
+			description = description2;
 		}
-		else { // point the boot entry to "\\EFI\\DCS\\DcsBoot.efi"
-			wsprintf(execPath, L"%s", dcs_files[0].target);
+		else {
+			wsprintf(execPath, L"%s", dcs_files[0].target);  // point the boot entry to "\\EFI\\DCS\\DcsBoot.efi"
 		}
 
 		resl = dc_efi_set_bme_impl(description, &ptix, execPath, setBootEntry, forceFirstBootEntry, setBootNext, LDR_DCS_ID, NULL, 1);
@@ -2409,9 +2572,73 @@ int dc_efi_set_bme(wchar_t* description, int dsk_num)
 	return dc_efi_set_bme_ex(description, dsk_num, 1, 1, 1);
 }
 
+int dc_efi_set_bme_to_dcsboot(wchar_t* description, int dsk_num)
+{
+	int      resl;
+	wchar_t  root[MAX_PATH] = { 0 };
+	PARTITION_INFORMATION_EX ptix;
+	wchar_t  execPath[MAX_PATH];
+
+	do
+	{
+		resl = dc_efi_get_sys_part(dsk_num, -1, root);
+		if (resl != ST_OK) break;
+
+		if (!dc_is_dcs_on_partition(root)) {
+			resl = ST_BLDR_NOTINST;
+			break;
+		}
+
+		resl = dc_get_part_info(root, &ptix);
+		if (resl != ST_OK) break;
+
+		wsprintf(execPath, L"%s", dcs_files[0].target);
+
+		resl = dc_efi_set_bme_impl(description, &ptix, execPath, 1, 1, 1, LDR_DCS_ID, NULL, 1);
+
+	} while (0);
+
+	return resl;
+}
+
 int dc_efi_del_bme()
 {
 	return dc_efi_del_bme_impl(LDR_DCS_ID, NULL);
+}
+
+int dc_efi_is_bme_shim(int dsk_num)
+{
+	int      resl;
+	wchar_t  root[MAX_PATH] = { 0 };
+	PARTITION_INFORMATION_EX ptix;
+	int      is_shim = 0;
+
+	do
+	{
+		resl = dc_efi_get_sys_part(dsk_num, -1, root);
+		if (resl != ST_OK) break;
+
+		resl = dc_get_part_info(root, &ptix);
+		if (resl != ST_OK) break;
+
+		wchar_t	varName[256];
+		swprintf_s(varName, ARRAYSIZE(varName), L"Boot%04X", LDR_DCS_ID);
+
+		byte* existingVar = malloc(512);
+		DWORD existingVarLen = GetFirmwareEnvironmentVariableW(varName, efi_var_guid, existingVar, 512);
+		if (existingVarLen > 0) {
+			if (dc_buffer_contains_pattern(existingVar, existingVarLen, (byte*)&ptix.Gpt.PartitionId, 16)) {
+				if (dc_buffer_contains_wide_string(existingVar, existingVarLen, L"shimx64.efi")) {
+					is_shim = 1;
+				}
+			}
+		}
+
+		free(existingVar);
+
+	} while (0);
+
+	return is_shim;
 }
 
 int dc_efi_find_bme(int dsk_num, UINT16 statrtOrderNum, wchar_t* type)
@@ -2498,14 +2725,9 @@ int dc_efi_del_msft_bme()
 	return resl;
 }
 
-#include "..\crc32.h"
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#include "sha512_pkcs5_2_small.h"
-//#else
+#include "crc32.h"
 #include "xts_fast.h"
 #include "sha512_pkcs5_2.h"
-//#endif
 #include "drvinst.h"
 
 int dc_get_dcs_root(wchar_t* root)

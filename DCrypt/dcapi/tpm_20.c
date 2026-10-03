@@ -34,7 +34,7 @@
 #include "drv_ioctl.h"
 #include "tpm_sup.h"
 #include "tpm_20.h"
-#include "..\crc32.h"
+#include "crc32.h"
 
 /* Windows CryptoAPI for AES-256-CBC */
 #include <bcrypt.h>

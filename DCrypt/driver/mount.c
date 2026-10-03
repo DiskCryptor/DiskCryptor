@@ -25,7 +25,7 @@
 #include "devhook.h"
 #include "driver.h"
 #include "misc.h"
-#include "..\crc32.h"
+#include "crc32.h"
 #include "enc_dec.h"
 #include "misc_irp.h"
 #include "readwrite.h"
@@ -436,7 +436,7 @@ int dc_probe_decrypt_at(dev_hook *hook, dc_header **header, xts_key **res_key, d
 			if (password != NULL)
 			{
 				/* probe mount with entered password */
-				if (succs = cp_decrypt_header(hdr_key, *header, hdr_len, password, out_kdf, interrupt_cmd)) {
+				if (succs = cp_decrypt_header(hdr_key, *header, hdr_len, password, out_kdf, NULL, NULL, interrupt_cmd)) {
 					break;
 				}
 			}
@@ -461,7 +461,7 @@ int dc_probe_decrypt_at(dev_hook *hook, dc_header **header, xts_key **res_key, d
 			/* probe mount with cached passwords */
 			for (d_pass = pass_cache; d_pass; d_pass = d_pass->next)
 			{
-				if (succs = cp_decrypt_header(hdr_key, *header, hdr_len, &d_pass->pass, out_kdf, interrupt_cmd)) {
+				if (succs = cp_decrypt_header(hdr_key, *header, hdr_len, &d_pass->pass, out_kdf, NULL, NULL, interrupt_cmd)) {
 					break;
 				}
 			}
@@ -557,6 +557,7 @@ int dc_mount_device(wchar_t *dev_name, dc_pass *password, u32 mnt_flags, ULONG *
 {
 	dc_header *hcopy = NULL;
 	dc_ext_header* ext_hdr = NULL;
+	dc_dev     dev;
 	dev_hook  *hook  = NULL;
 	xts_key   *hdr_key = NULL;
 	int        resl;
@@ -600,7 +601,9 @@ int dc_mount_device(wchar_t *dev_name, dc_pass *password, u32 mnt_flags, ULONG *
 		}
 
 		/* read and decrypt rest of v2 header */
-		if ( (resl = io_read_header_full(hook, hdr_pos, &hcopy, hdr_key, hdr_len)) != ST_OK ) {
+		dc_dev_of(hook, &dev);
+
+		if ( (resl = io_read_header_full(&dev, dc_hook_rw, hdr_pos, &hcopy, hdr_key, hdr_len)) != ST_OK ) {
 			break;
 		}
 
@@ -624,7 +627,7 @@ int dc_mount_device(wchar_t *dev_name, dc_pass *password, u32 mnt_flags, ULONG *
 			hcopy->version = DC_HDR_VERSION;
 			memset(hcopy->deprecated, 0, sizeof(hcopy->deprecated));
 			
-			io_write_header(hook, 0, hcopy, hdr_key, NULL, HF_DEFAULT, NULL);
+			io_write_header(&dev, dc_hook_rw, 0, hcopy, hdr_key, NULL, HF_DEFAULT, NULL);
 		}
 #endif
 
@@ -1145,7 +1148,7 @@ int dc_get_pending_encrypt(wchar_t *dev_name, wchar_t* path)
 			resl = ST_PASS_NOT_FOUND; break;
 		}
 
-		if (!cp_decrypt_header(hdr_key, header, hdr_len, &password, NULL, NULL)) {
+		if (!cp_decrypt_header(hdr_key, header, hdr_len, &password, NULL, NULL, NULL, NULL)) {
 			resl = ST_PASS_ERR; break;
 		}
 

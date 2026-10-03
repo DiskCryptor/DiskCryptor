@@ -29,8 +29,20 @@
     <ClCompile Include="EfiPxe.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="FsUtils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="CliUtils.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="CliUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="FsUtils.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="MiscUtilsLib.h">
       <Filter>Header Files</Filter>
     </ClInclude>

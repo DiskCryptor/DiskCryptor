@@ -451,6 +451,8 @@
 #define ID_HELP_DONATE					40091
 #define ID_HELP_FORUM					40092
 #define ID_TOOLS_MOK 					40093
+#define ID_BOOT_ADD_SHIM				40094
+#define ID_BOOT_DEL_SHIM				40095
 
 // Wizard Keys Dialog (Header Configuration)
 #define IDD_DIALOG_HEADER                 178

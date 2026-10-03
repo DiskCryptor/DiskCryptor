@@ -5,7 +5,9 @@
 #else
 	#include "aes_key.h"
 	#include "aes_asm.h"
-	#ifndef _M_ARM64
+	/* PadLock was x86-only; crypto_lib is amd64 and ARM64 and has no
+	   equivalent, so there is nothing to test there. */
+	#if !defined(_M_ARM64) && !defined(CRYPTO_LIB)
 		#include "aes_padlock.h"
 	#endif
 #endif
@@ -65,7 +67,7 @@ int test_aes256()
 		if (memcmp(aes256_vectors[i].plaintext, tmp, sizeof(tmp)) != 0) return 0;
 
 		// test AES with VIA Padlock API (x86/x64 only)
-#if (!defined(SMALL_CODE) || !defined(_M_X64)) && !defined(_M_ARM64)
+#if (!defined(SMALL_CODE) || !defined(_M_X64)) && !defined(_M_ARM64) && !defined(CRYPTO_LIB)
 		if (aes256_padlock_available() != 0)
 		{
 			aes256_padlock_rekey();

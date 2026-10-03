@@ -236,17 +236,25 @@ _tab_proc(
 							{
 								AppendMenu(popup, MF_SEPARATOR, 0, NULL);
 
-								if ( wcsstr(tmpb, L", bme") != NULL )
-									AppendMenu(popup, MF_STRING, ID_BOOT_DEL_BME, IDS_BOOTDELBME);
+								if ( wcsstr(tmpb, L", shim") != NULL )
+									AppendMenu(popup, MF_STRING, ID_BOOT_DEL_SHIM, IDS_BOOTDELSHIM);
 								else
-									AppendMenu(popup, MF_STRING, ID_BOOT_ADD_BME, IDS_BOOTADDBME);
+									AppendMenu(popup, MF_STRING, ID_BOOT_ADD_SHIM, IDS_BOOTADDSHIM);
 
-								if (wcsstr(tmpb, L"ESP") == NULL) 
+								if ( type == CTL_LDR_HDD )
 								{
-									if (wcsstr(tmpb, L", ms") != NULL)
-										AppendMenu(popup, MF_STRING, ID_BOOT_RESTORE_MS, IDS_BOOTRESTOREMS);
+									if ( wcsstr(tmpb, L", bme") != NULL )
+										AppendMenu(popup, MF_STRING, ID_BOOT_DEL_BME, IDS_BOOTDELBME);
 									else
-										AppendMenu(popup, MF_STRING, ID_BOOT_REPLACE_MS, IDS_BOOTREPLACEMS);
+										AppendMenu(popup, MF_STRING, ID_BOOT_ADD_BME, IDS_BOOTADDBME);
+
+									if (wcsstr(tmpb, L"ESP") == NULL)
+									{
+										if (wcsstr(tmpb, L", ms") != NULL)
+											AppendMenu(popup, MF_STRING, ID_BOOT_RESTORE_MS, IDS_BOOTRESTOREMS);
+										else
+											AppendMenu(popup, MF_STRING, ID_BOOT_REPLACE_MS, IDS_BOOTREPLACEMS);
+									}
 								}
 							}
 
@@ -277,8 +285,10 @@ _tab_proc(
 
 						case ID_BOOT_REMOVE:		_menu_unset_loader(hwnd, vol, dsk_num, type ); break;
 
-						case ID_BOOT_UPDATE:		_menu_update_loader( hwnd, vol, dsk_num ); break;
+						case ID_BOOT_UPDATE:		_menu_update_loader( hwnd, vol, dsk_num, type ); break;
 
+						case ID_BOOT_ADD_SHIM:		_menu_add_shim( hwnd, vol, dsk_num, type ); break;
+						case ID_BOOT_DEL_SHIM:		_menu_del_shim( hwnd, vol, dsk_num, type ); break;
 						case ID_BOOT_ADD_BME:		_menu_add_bme( hwnd, vol, dsk_num ); break;
 						case ID_BOOT_DEL_BME:		_menu_del_bme( hwnd, vol, dsk_num ); break;
 						case ID_BOOT_REPLACE_MS:	_menu_repalce_msldr( hwnd, vol, dsk_num ); break;
@@ -290,7 +300,8 @@ _tab_proc(
 					}
 
 					if ( ( item == ID_BOOT_INSTALL ) || ( item == ID_BOOT_REMOVE )
-					  || ( item == ID_BOOT_ADD_BME ) || ( item == ID_BOOT_DEL_BME ) 
+					  || ( item == ID_BOOT_ADD_SHIM ) || ( item == ID_BOOT_DEL_SHIM )
+					  || ( item == ID_BOOT_ADD_BME ) || ( item == ID_BOOT_DEL_BME )
 					  || ( item == ID_BOOT_REPLACE_MS ) || ( item == ID_BOOT_RESTORE_MS ) )
 					{
 						_list_devices( __lists[HBOT_WIZARD_BOOT_DEVS], type == CTL_LDR_HDD, -1 );

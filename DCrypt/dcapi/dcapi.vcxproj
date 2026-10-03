@@ -94,6 +94,13 @@
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
   <PropertyGroup>
+    <!-- crypto_lib has no 32-bit x86 build, so Win32 stays on crypto_fast -->
+    <DcCryptoDir Condition="'$(Platform)'=='Win32'">crypto\crypto_fast</DcCryptoDir>
+    <DcCryptoDir Condition="'$(Platform)'!='Win32'">crypto_lib</DcCryptoDir>
+    <DcCryptoLib Condition="'$(Platform)'=='Win32'">$(DcCryptoLib)</DcCryptoLib>
+    <DcCryptoLib Condition="'$(Platform)'!='Win32'">crypto_lib.lib</DcCryptoLib>
+  </PropertyGroup>
+  <PropertyGroup>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(SolutionDir)Bin\$(Configuration)_i386\</OutDir>
     <IntDir Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(SolutionDir)Bin\$(Configuration)_i386\obj\$(ProjectName)\</IntDir>
     <OutDir Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(SolutionDir)Bin\$(Configuration)_amd64\</OutDir>
@@ -117,7 +124,7 @@
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
       <Optimization>Disabled</Optimization>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
       <RuntimeLibrary>MultiThreadedDebug</RuntimeLibrary>
@@ -129,7 +136,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\$(DcCryptoLib);$(SolutionDir)Bin\$(Configuration)_i386\volume_lib.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <OptimizeReferences>false</OptimizeReferences>
@@ -144,7 +151,7 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -159,7 +166,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\$(DcCryptoLib);$(SolutionDir)Bin\$(Configuration)_amd64\volume_lib.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <TargetMachine>MachineX64</TargetMachine>
@@ -170,7 +177,7 @@
     <ClCompile>
       <Optimization>Disabled</Optimization>
       <IntrinsicFunctions>true</IntrinsicFunctions>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;_DEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <BasicRuntimeChecks>EnableFastChecks</BasicRuntimeChecks>
@@ -185,7 +192,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\$(DcCryptoLib);$(SolutionDir)Bin\$(Configuration)_arm64\volume_lib.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <EnableUAC>false</EnableUAC>
       <GenerateDebugInformation>true</GenerateDebugInformation>
     </Link>
@@ -196,7 +203,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -208,7 +215,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_i386\$(DcCryptoLib);$(SolutionDir)Bin\$(Configuration)_i386\volume_lib.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\Crt\i386;$(DDK)\lib\win7\i386</AdditionalLibraryDirectories>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -224,7 +231,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -236,7 +243,7 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_amd64\$(DcCryptoLib);$(SolutionDir)Bin\$(Configuration)_amd64\volume_lib.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib;</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\Crt\amd64;$(DDK)\lib\win7\amd64</AdditionalLibraryDirectories>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
@@ -250,7 +257,7 @@
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <IntrinsicFunctions>true</IntrinsicFunctions>
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
-      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>include;$(SolutionDir)_include_;$(SolutionDir)include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <PreprocessorDefinitions>WIN32;NDEBUG;DCAPI_DLL;_CRT_SECURE_NO_WARNINGS;_WIN32_WINNT=0x0600;_CRT_NON_CONFORMING_SWPRINTFS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <StringPooling>true</StringPooling>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -262,21 +269,13 @@
       <AdditionalIncludeDirectories>include;$(SolutionDir)_include_</AdditionalIncludeDirectories>
     </ResourceCompile>
     <Link>
-      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\crypto_fast.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib</AdditionalDependencies>
+      <AdditionalDependencies>$(SolutionDir)Bin\$(Configuration)_arm64\$(DcCryptoLib);$(SolutionDir)Bin\$(Configuration)_arm64\volume_lib.lib;advapi32.lib;user32.lib;psapi.lib;ntdll.lib;oleaut32.lib;ole32.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\Crt\amd64;$(DDK)\lib\win7\amd64</AdditionalLibraryDirectories>
       <OptimizeReferences>true</OptimizeReferences>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
-    <ClCompile Include="..\crypto\Argon2\argon2.c" />
-    <ClCompile Include="..\crypto\Argon2\argon2_mt.c" />
-    <ClCompile Include="..\crypto\Argon2\blake2\blake2b.c" />
-    <ClCompile Include="..\crypto\Argon2\core.c" />
-    <ClCompile Include="..\crypto\Argon2\opt_avx2.c" />
-    <ClCompile Include="..\crypto\Argon2\opt_sse2.c" />
-    <ClCompile Include="..\crypto\Argon2\ref.c" />
-    <ClCompile Include="..\crypto\Argon2\selftest.c" />
     <ClCompile Include="benchmark.c" />
     <ClCompile Include="cd_enc.c" />
     <ClCompile Include="dcapi.c" />
@@ -307,13 +306,6 @@
     <ResourceCompile Include="dcres.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\crypto\Argon2\argon2.h" />
-    <ClInclude Include="..\crypto\Argon2\argon2_mt.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blake2-impl.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blake2b.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-opt.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-ref.h" />
-    <ClInclude Include="..\crypto\Argon2\core.h" />
     <ClInclude Include="include\benchmark.h" />
     <ClInclude Include="include\cd_enc.h" />
     <ClInclude Include="include\dcapi.h" />

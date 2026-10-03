@@ -25,6 +25,9 @@
 #define IDS_BOOTADDBME		L"&Add to EFI Boot Menu"
 #define IDS_BOOTDELBME		L"&Delete from EFI Boot Menu"
 
+#define IDS_BOOTADDSHIM		L"Install &Shim (Secure Boot)"
+#define IDS_BOOTDELSHIM		L"Remove S&him (Secure Boot)"
+
 #define IDS_BOOTREPLACEMS	L"Re&place bootmgfw.efi"
 #define IDS_BOOTRESTOREMS	L"R&estore bootmgfw.efi"
 

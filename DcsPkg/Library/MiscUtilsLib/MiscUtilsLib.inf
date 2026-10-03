@@ -27,6 +27,10 @@
 [Sources]
   MiscUtilsLib.c
   MiscUtilsLib.h
+  FsUtils.c
+  FsUtils.h
+  CliUtils.c
+  CliUtils.h
   Base64.c
   EfiPxe.c
 

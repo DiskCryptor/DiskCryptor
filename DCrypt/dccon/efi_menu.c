@@ -46,6 +46,15 @@ typedef struct _VARIABLE_NAME {
 	WCHAR Name[ANYSIZE_ARRAY];
 } VARIABLE_NAME, *PVARIABLE_NAME;
 
+typedef struct _VARIABLE_NAME_AND_VALUE {
+	ULONG NextEntryOffset;
+	ULONG ValueOffset;
+	ULONG ValueLength;
+	ULONG Attributes;
+	GUID  VendorGuid;
+	WCHAR Name[ANYSIZE_ARRAY];
+} VARIABLE_NAME_AND_VALUE, *PVARIABLE_NAME_AND_VALUE;
+
 typedef NTSTATUS (NTAPI *PFN_NtEnumerateSystemEnvironmentValuesEx)(
 	ULONG InformationClass,
 	PVOID Buffer,
@@ -118,12 +127,33 @@ int list_signer(const BYTE* hash, const char* name, PVOID param)
 	return ST_OK;
 }
 
+static const wchar_t *dcsowner_guid = L"{2B6F9E14-8C3D-4A7B-BE05-1F2A3C4D5E60}";
+
+#define DCSOWNER_VAR_SB_RT       L"SecureBootOverride_RT"
+#define DCSOWNER_VAR_PK_RT       L"OwnerPK_RT"
+
+#define DCSOWNER_SB_DISABLED     0x00    // disabled
+#define DCSOWNER_SB_REPORT_OFF   0x01    // override active, report SecureBoot = 0
+#define DCSOWNER_SB_REPORT_ON    0x03    // override active, report SecureBoot = 1
+
 static int efi_cmd_info(int argc, wchar_t *argv[])
 {
 	int sb_enabled = dc_efi_is_secureboot();
 	int sb_setup = dc_efi_is_sb_setupmode();
 
 	wprintf(L"Secure Boot is %s\n", sb_setup ? L"in Setup Mode" : (sb_enabled ? L"ENABLED" : L"DISABLED"));
+
+	BYTE sbVal = 0;
+	DWORD got = GetFirmwareEnvironmentVariableW(DCSOWNER_VAR_SB_RT, (wchar_t*)dcsowner_guid, &sbVal, sizeof(sbVal));
+	if (got >= 1 && sbVal != 0x00) {
+		const wchar_t *desc;
+		switch (sbVal) {
+		case DCSOWNER_SB_REPORT_OFF: desc = L"Report Off"; break;
+		case DCSOWNER_SB_REPORT_ON:	 desc = L"Report On"; break;
+		default:                     desc = L"Unknown"; break;
+		}
+		wprintf(L"DcsOwner Override: %s (0x%02X)\n", desc, sbVal);
+	}
 
 	wprintf(L"\nPlatform Key (PK):\n");
 
@@ -178,11 +208,39 @@ static int efi_cmd_info(int argc, wchar_t *argv[])
 	return ST_OK;
 }
 
+static void print_attributes(ULONG attr)
+{
+	int first = 1;
+	struct { ULONG bit; const wchar_t *name; } flags[] = {
+		{ 0x00000001, L"NV" },
+		{ 0x00000002, L"BS" },
+		{ 0x00000004, L"RT" },
+		{ 0x00000008, L"HW_ERR" },
+		{ 0x00000020, L"AT" },
+		{ 0x00000040, L"AW" },
+		{ 0x80000000, L"VIRTUAL" },
+	};
+
+	for (int i = 0; i < _countof(flags); i++) {
+		if (attr & flags[i].bit) {
+			wprintf(L"%s%s", first ? L"" : L"|", flags[i].name);
+			first = 0;
+			attr &= ~flags[i].bit;
+		}
+	}
+	if (attr) {
+		wprintf(L"%s0x%X", first ? L"" : L"|", attr);
+	}
+	if (first) {
+		wprintf(L"-");
+	}
+}
+
 static int efi_cmd_list(int argc, wchar_t *argv[])
 {
 	PFN_NtEnumerateSystemEnvironmentValuesEx pNtEnumEnvValuesEx;
 	PVOID buffer = NULL;
-	ULONG bufferLength = 0x1000; // Start with 4KB
+	ULONG bufferLength = 0x10000;
 	NTSTATUS status;
 	int count = 0;
 
@@ -199,8 +257,7 @@ static int efi_cmd_list(int argc, wchar_t *argv[])
 		return ST_NOMEM;
 	}
 
-	// Call with increasing buffer size until it fits
-	while ((status = pNtEnumEnvValuesEx(SystemEnvironmentNameInformation, buffer, &bufferLength)) == 0x80000005L /*STATUS_BUFFER_OVERFLOW*/
+	while ((status = pNtEnumEnvValuesEx(SystemEnvironmentValueInformation, buffer, &bufferLength)) == 0x80000005L /*STATUS_BUFFER_OVERFLOW*/
 		|| status == (NTSTATUS)0xC0000023L /*STATUS_BUFFER_TOO_SMALL*/) {
 		free(buffer);
 		buffer = malloc(bufferLength);
@@ -216,29 +273,32 @@ static int efi_cmd_list(int argc, wchar_t *argv[])
 	}
 
 	wprintf(L"EFI Variables:\n");
-	wprintf(L"--------------------------------------------------------------------------------\n");
-	wprintf(L"%-40s %s\n", L"Name", L"GUID");
-	wprintf(L"--------------------------------------------------------------------------------\n");
+	wprintf(L"------------------------------------------------------------------------------------------------------------------------------\n");
+	wprintf(L"%-40s %-38s %-7s %s\n", L"Name", L"GUID", L"Size", L"Attributes");
+	wprintf(L"------------------------------------------------------------------------------------------------------------------------------\n");
 
-	PVARIABLE_NAME varName = (PVARIABLE_NAME)buffer;
-	while (varName != NULL) {
-		wprintf(L"%-40s {%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X}\n",
-			varName->Name,
-			varName->VendorGuid.Data1,
-			varName->VendorGuid.Data2,
-			varName->VendorGuid.Data3,
-			varName->VendorGuid.Data4[0], varName->VendorGuid.Data4[1],
-			varName->VendorGuid.Data4[2], varName->VendorGuid.Data4[3],
-			varName->VendorGuid.Data4[4], varName->VendorGuid.Data4[5],
-			varName->VendorGuid.Data4[6], varName->VendorGuid.Data4[7]);
+	PVARIABLE_NAME_AND_VALUE entry = (PVARIABLE_NAME_AND_VALUE)buffer;
+	while (entry != NULL) {
+		wprintf(L"%-40s {%08X-%04X-%04X-%02X%02X-%02X%02X%02X%02X%02X%02X} %-7d ",
+			entry->Name,
+			entry->VendorGuid.Data1,
+			entry->VendorGuid.Data2,
+			entry->VendorGuid.Data3,
+			entry->VendorGuid.Data4[0], entry->VendorGuid.Data4[1],
+			entry->VendorGuid.Data4[2], entry->VendorGuid.Data4[3],
+			entry->VendorGuid.Data4[4], entry->VendorGuid.Data4[5],
+			entry->VendorGuid.Data4[6], entry->VendorGuid.Data4[7],
+			entry->ValueLength);
+		print_attributes(entry->Attributes);
+		wprintf(L"\n");
 		count++;
 
-		if (varName->NextEntryOffset == 0)
+		if (entry->NextEntryOffset == 0)
 			break;
-		varName = (PVARIABLE_NAME)((PCHAR)varName + varName->NextEntryOffset);
+		entry = (PVARIABLE_NAME_AND_VALUE)((PCHAR)entry + entry->NextEntryOffset);
 	}
 
-	wprintf(L"--------------------------------------------------------------------------------\n");
+	wprintf(L"------------------------------------------------------------------------------------------------------------------------------\n");
 	wprintf(L"Total: %d variables\n", count);
 
 	free(buffer);
@@ -1371,8 +1431,73 @@ static int efi_cmd_sb_set(int argc, wchar_t *argv[])
 	CertFreeCertificateContext(pCert);
 	CertCloseStore(hStore, 0);
 	my_free(content);
-	
+
 	return resl;
+}
+
+//
+// DcsOwner - Secure Boot / PK virtualization presets.
+//
+
+static int efi_cmd_sb_override(int argc, wchar_t *argv[])
+{
+	wchar_t *arg = argv[3];
+	BYTE     val;
+
+	if (_wcsicmp(arg, L"none") == 0) {
+		val = DCSOWNER_SB_DISABLED;   // disabled
+	} else if (_wcsicmp(arg, L"off") == 0) {
+		val = DCSOWNER_SB_REPORT_OFF; // override active, report SecureBoot = 0
+	} else if (_wcsicmp(arg, L"on") == 0) {
+		val = DCSOWNER_SB_REPORT_ON;  // override active, report SecureBoot = 1
+	} else {
+		wprintf(L"Error: use  none | off | on\n");
+		return ST_INVALID_PARAM;
+	}
+
+	if (!SetFirmwareEnvironmentVariableW(DCSOWNER_VAR_SB_RT, (wchar_t*)dcsowner_guid, &val, 1)) {
+		wprintf(L"Error writing " DCSOWNER_VAR_SB_RT ": %d\n", GetLastError());
+		return ST_ERROR;
+	}
+	wprintf(L"SecureBoot override request '%s' set. Reboot and confirm at boot to apply.\n", arg);
+	return ST_OK;
+}
+
+static int efi_cmd_sb_set_pk(int argc, wchar_t *argv[])
+{
+	wchar_t *file_path = argv[3];
+	BYTE    *buffer = NULL;
+	u32      file_size = 0;
+	int      resl;
+
+	resl = load_file(file_path, &buffer, &file_size);
+	if (resl != ST_OK) {
+		wprintf(L"Error loading file: %s\n", file_path);
+		return resl;
+	}
+
+	if (!SetFirmwareEnvironmentVariableW(DCSOWNER_VAR_PK_RT, (wchar_t*)dcsowner_guid, buffer, file_size)) {
+		wprintf(L"Error writing " DCSOWNER_VAR_PK_RT ": %d\n", GetLastError());
+		my_free(buffer);
+		return ST_ERROR;
+	}
+	my_free(buffer);
+	wprintf(L"PK override request set (%d bytes). Reboot and confirm at boot to apply.\n", file_size);
+	return ST_OK;
+}
+
+static int efi_cmd_sb_clear_pk(int argc, wchar_t *argv[])
+{
+	// DataSize 0 deletes the variable.
+	if (!SetFirmwareEnvironmentVariableW(DCSOWNER_VAR_PK_RT, (wchar_t*)dcsowner_guid, NULL, 0)) {
+		DWORD err = GetLastError();
+		if (err != ERROR_ENVVAR_NOT_FOUND) {
+			wprintf(L"Error clearing " DCSOWNER_VAR_PK_RT ": %d\n", err);
+			return ST_ERROR;
+		}
+	}
+	wprintf(L"PK override clear request set. Reboot and confirm at boot to apply.\n");
+	return ST_OK;
 }
 
 int efi_menu(int argc, wchar_t* argv[])
@@ -1428,6 +1553,21 @@ int efi_menu(int argc, wchar_t* argv[])
 
 		if ((argc >= 3) && (wcscmp(argv[2], L"-sb_set") == 0)) {
 			resl = efi_cmd_sb_set(argc, argv);
+			break;
+		}
+
+		if ((argc >= 4) && (wcscmp(argv[2], L"-sb_override") == 0)) {
+			resl = efi_cmd_sb_override(argc, argv);
+			break;
+		}
+
+		if ((argc >= 4) && (wcscmp(argv[2], L"-sb_set_pk") == 0)) {
+			resl = efi_cmd_sb_set_pk(argc, argv);
+			break;
+		}
+
+		if ((argc >= 3) && (wcscmp(argv[2], L"-sb_clear_pk") == 0)) {
+			resl = efi_cmd_sb_clear_pk(argc, argv);
 			break;
 		}
 

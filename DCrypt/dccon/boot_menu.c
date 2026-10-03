@@ -957,6 +957,64 @@ int boot_menu(int argc, wchar_t *argv[])
 			break;
 		}
 
+		if ((argc >= 4) && (wcscmp(argv[2], L"-setshim") == 0))
+		{
+			int d_num;
+
+			if (dsk_num(argv[3], &d_num) == 0) {
+				resl = ST_OK; break;
+			}
+
+			if ((resl = dc_efi_set_shim(d_num, -1)) == ST_OK) {
+				wprintf(L"Secure Boot shim successfully installed on %s\n", argv[3]);
+
+				if (is_bme == 1) {
+					if (dc_efi_set_bme(L"DiskCrypto (DCS) loader", d_num) == ST_OK)
+						wprintf(L"Boot menu entry created pointing to shim\n");
+				} else if (is_bme == 0) {
+					if (dc_efi_is_bme_shim(d_num)) {
+						dc_efi_del_bme();
+						wprintf(L"Boot menu entry pointing to shim removed\n");
+					}
+				} else {
+					if (dc_efi_is_bme_set(d_num) && !dc_efi_is_bme_shim(d_num)) {
+						dc_efi_set_bme(L"DiskCrypto (DCS) loader", d_num);
+						wprintf(L"Boot menu entry updated to point to shim\n");
+					}
+				}
+			}
+			break;
+		}
+
+		if ((argc >= 4) && (wcscmp(argv[2], L"-delshim") == 0))
+		{
+			int d_num;
+
+			if (dsk_num(argv[3], &d_num) == 0) {
+				resl = ST_OK; break;
+			}
+
+			if ((resl = dc_efi_unset_shim(d_num, -1)) == ST_OK) {
+				wprintf(L"Secure Boot shim successfully removed from %s\n", argv[3]);
+
+				if (is_bme == 1) {
+					if (dc_efi_set_bme_to_dcsboot(L"DiskCrypto (DCS) loader", d_num) == ST_OK)
+						wprintf(L"Boot menu entry created pointing to DcsBoot.efi\n");
+				} else if (is_bme == 0) {
+					if (dc_efi_is_bme_shim(d_num)) {
+						dc_efi_del_bme();
+						wprintf(L"Boot menu entry pointing to shim removed\n");
+					}
+				} else {
+					if (dc_efi_is_bme_set(d_num) && dc_efi_is_bme_shim(d_num)) {
+						dc_efi_set_bme_to_dcsboot(L"DiskCrypto (DCS) loader", d_num);
+						wprintf(L"Boot menu entry updated to point to DcsBoot.efi\n");
+					}
+				}
+			}
+			break;
+		}
+
 		if ((argc >= 3) && (wcscmp(argv[2], L"-addbme") == 0))
 		{
 			int d_num;

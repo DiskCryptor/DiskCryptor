@@ -256,6 +256,45 @@ static int dc_get_cpu_count()
 	return count;
 }
 
+
+/*
+ * volume_lib host. The library no longer links these by name, so the
+ * driver hands them over once at startup. See volume_lib/dc_dev.h.
+ */
+static void dc_lib_log(const char *fmt, va_list args)
+{
+	vDbgPrintEx(DPFLTR_DEFAULT_ID, 0xFFFFFFFF, fmt, args);
+}
+
+static void dc_lib_wipe(void *ctx, u64 offset, int size)
+{
+	dc_wipe_process((wipe_ctx*)ctx, offset, size);
+}
+
+/*
+ * cp_rand_bytes returns int and takes (u8*, int); cp_rand_add_seed takes
+ * (void*, int). The host fields are void-returning and take size_t, so both
+ * need a thunk rather than being assigned directly.
+ */
+static void dc_lib_rand(void *buff, size_t size)
+{
+	cp_rand_bytes((u8*)buff, (int)size);
+}
+
+static void dc_lib_rand_seed(const void *buff, size_t size)
+{
+	cp_rand_add_seed((void*)buff, (int)size);
+}
+
+static const dc_host g_dc_host = {
+	mm_secure_alloc,
+	mm_secure_free,
+	dc_lib_rand,
+	dc_lib_rand_seed,
+	dc_lib_log,
+	dc_lib_wipe
+};
+
 NTSTATUS 
   DriverEntry(
 	IN PDRIVER_OBJECT  DriverObject,
@@ -314,6 +353,13 @@ NTSTATUS
 
 	// init random number generator
 	if (cp_rand_init() != ST_OK) {
+		status = STATUS_UNSUCCESSFUL;
+		goto cleanup;
+	}
+
+	// hand volume_lib the driver facilities it used to link by name.
+	// after cp_rand_init, because the host it installs includes the RNG.
+	if (dc_lib_init(&g_dc_host) != ST_OK) {
 		status = STATUS_UNSUCCESSFUL;
 		goto cleanup;
 	}

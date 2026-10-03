@@ -1,6 +1,7 @@
 ﻿#include <windows.h>
 #include <stdio.h>
 #include <conio.h>
+#include <io.h>      /* _isatty */
 #include "sha512_test.h"
 #include "sha512_hmac_test.h"
 #include "pkcs5_test.h"
@@ -18,10 +19,18 @@
 		#include "xts_aes_ce.h"
 		#include "xts_serpent_neon.h"
 	#else
-		#include "aes_padlock.h"
+		/* crypto_lib has no VIA PadLock: it was x86-only, and crypto_lib is
+		   amd64 and ARM64. It does have an AVX2 Serpent tier, which
+		   crypto_fast never had. */
+		#ifndef CRYPTO_LIB
+			#include "aes_padlock.h"
+		#endif
 		#include "xts_aes_ni.h"
 		#include "xts_serpent_sse2.h"
 		#include "xts_serpent_avx.h"
+		#ifdef CRYPTO_LIB
+			#include "xts_serpent_avx2.h"
+		#endif
 	#endif
 	#include "crc32_test.h"
 	#include "sha512_hmac_drbg_test.h"
@@ -36,12 +45,23 @@ int main(int argc, char *argv[])
 	printf("ARM64 AES-CE support: %d\n", xts_aes_ce_available());
 	printf("ARM64 NEON support: %d\n", xts_serpent_neon_available());
 	#else
-		#ifndef _M_X64
+		#if !defined(_M_X64) && !defined(CRYPTO_LIB)
 	printf("VIA-Padlock support: %d\n", aes256_padlock_available());
 		#endif
 	printf("AES-NI support: %d\n", xts_aes_ni_available());
 	printf("SSE2 support: %d\n", xts_serpent_sse2_available());
+		/*
+		 * The two AVX tiers exist only where the library was built with
+		 * CL_ENABLE_AVX / CL_ENABLE_AVX2 - user mode. The kernel and EFI builds
+		 * omit them because MSVC will not take /arch:AVX with /kernel, and the
+		 * dispatcher stays on SSE2 there.
+		 */
+		#if !defined(CRYPTO_LIB) || defined(CL_ENABLE_AVX)
 	printf("AVX  support: %d\n", xts_serpent_avx_available());
+		#endif
+		#if defined(CRYPTO_LIB) && defined(CL_ENABLE_AVX2)
+	printf("AVX2 support: %d\n", xts_serpent_avx2_available());
+		#endif
 	#endif
 	printf("--------------------------\n");
 
@@ -121,6 +141,19 @@ int main(int argc, char *argv[])
 
 	printf("--------------------------\n");
 	printf("TOTAL: %s\n", passed ? "PASSED" : "FAILED");
-	_getch();
-	return 0;
+
+	/*
+	 * Wait for a key only when a person is watching.
+	 *
+	 * _getch() reads the console directly rather than stdin, so a redirected or
+	 * piped run cannot satisfy it and simply hangs - which is what happens to
+	 * anything that tries to run this from a script. Checking whether stdout is
+	 * still a console distinguishes the two cases without needing an argument.
+	 */
+	if (_isatty(_fileno(stdout))) {
+		_getch();
+	}
+
+	/* and report the result in the one way a script can read */
+	return passed ? 0 : 1;
 }

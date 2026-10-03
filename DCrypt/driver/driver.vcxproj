@@ -18,14 +18,6 @@
     <ResourceCompile Include="driver.rc" />
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="..\crypto\Argon2\argon2.c" />
-    <ClCompile Include="..\crypto\Argon2\argon2_mt.c" />
-    <ClCompile Include="..\crypto\Argon2\blake2\blake2b.c" />
-    <ClCompile Include="..\crypto\Argon2\core.c" />
-    <ClCompile Include="..\crypto\Argon2\opt_avx2.c" />
-    <ClCompile Include="..\crypto\Argon2\opt_sse2.c" />
-    <ClCompile Include="..\crypto\Argon2\ref.c" />
-    <ClCompile Include="..\crypto\Argon2\selftest.c" />
     <ClCompile Include="alloc_bitmap.c" />
     <ClCompile Include="base64.c">
       <ExcludedFromBuild Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">true</ExcludedFromBuild>
@@ -35,7 +27,6 @@
     <ClCompile Include="benchmark.c" />
     <ClCompile Include="boot_pass.c" />
     <ClCompile Include="crypto_functions.c" />
-    <ClCompile Include="crypto_head.c" />
     <ClCompile Include="data_wipe.c" />
     <ClCompile Include="debug.c" />
     <ClCompile Include="devhook.c" />
@@ -47,7 +38,6 @@
     <ClCompile Include="dump_hook.c" />
     <ClCompile Include="enc_dec.c" />
     <ClCompile Include="fast_crypt.c" />
-    <ClCompile Include="header_io.c" />
     <ClCompile Include="io_control.c" />
     <ClCompile Include="minifilter.c" />
     <ClCompile Include="misc.c" />
@@ -63,20 +53,12 @@
     <ClCompile Include="verify.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="..\crypto\Argon2\argon2.h" />
-    <ClInclude Include="..\crypto\Argon2\argon2_mt.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blake2-impl.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blake2b.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-opt.h" />
-    <ClInclude Include="..\crypto\Argon2\blake2\blamka-round-ref.h" />
-    <ClInclude Include="..\crypto\Argon2\core.h" />
     <ClInclude Include="dump_filter.h" />
     <ClInclude Include="dump_helpers.h" />
     <ClInclude Include="include\alloc_bitmap.h" />
     <ClInclude Include="include\benchmark.h" />
     <ClInclude Include="include\boot_pass.h" />
     <ClInclude Include="include\crypto_functions.h" />
-    <ClInclude Include="include\crypto_head.h" />
     <ClInclude Include="include\data_wipe.h" />
     <ClInclude Include="include\debug.h" />
     <ClInclude Include="include\devhook.h" />
@@ -86,7 +68,6 @@
     <ClInclude Include="include\dump_hook.h" />
     <ClInclude Include="include\enc_dec.h" />
     <ClInclude Include="include\fast_crypt.h" />
-    <ClInclude Include="include\header_io.h" />
     <ClInclude Include="include\io_control.h" />
     <ClInclude Include="include\minifilter.h" />
     <ClInclude Include="include\misc.h" />
@@ -150,6 +131,11 @@
     <Import Project="$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props" Condition="exists('$(UserRootDir)\Microsoft.Cpp.$(Platform).user.props')" Label="LocalAppDataPlatform" />
   </ImportGroup>
   <PropertyGroup Label="UserMacros" />
+  <PropertyGroup>
+    <!-- crypto_lib has no 32-bit x86 build, so Win32 stays on crypto_fast -->
+    <DcCryptoDir Condition="'$(Platform)'=='Win32'">crypto\crypto_fast</DcCryptoDir>
+    <DcCryptoDir Condition="'$(Platform)'!='Win32'">crypto_lib</DcCryptoDir>
+  </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <OutDir>$(SolutionDir)Bin\$(Configuration)_i386\</OutDir>
     <IntDir>$(SolutionDir)Bin\$(Configuration)_i386\obj\$(ProjectName)\</IntDir>
@@ -172,7 +158,7 @@
     <IncludePath>$(VC_IncludePath);$(WindowsSDK_IncludePath);$(KM_IncludePath)</IncludePath>
     <OutDir>$(SolutionDir)Bin\$(Configuration)_arm64\</OutDir>
     <IntDir>$(SolutionDir)Bin\$(Configuration)_arm64\obj\$(ProjectName)\</IntDir>
-    <CAExcludePath>$(SolutionDir)crypto\crypto_fast</CAExcludePath>
+    <CAExcludePath>$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</CAExcludePath>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">
     <ClCompile>
@@ -183,7 +169,7 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <StringPooling>true</StringPooling>
       <BufferSecurityCheck>false</BufferSecurityCheck>
-      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <WarningLevel>Level3</WarningLevel>
       <CallingConvention>StdCall</CallingConvention>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
@@ -206,7 +192,7 @@
       <BaseAddress>
       </BaseAddress>
       <AdditionalOptions>/pdbaltpath:%_PDB% %(AdditionalOptions)</AdditionalOptions>
-      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib;BufferOverflowK.lib</AdditionalDependencies>
+      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_i386\crypto_fast_km.lib;$(SolutionDir)Bin\$(Configuration)_i386\volume_lib_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib;BufferOverflowK.lib</AdditionalDependencies>
       <ProgramDatabaseFile>$(OutDir)$(TargetName)_sys.pdb</ProgramDatabaseFile>
     </Link>
     <PostBuildEvent />
@@ -223,7 +209,7 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <StringPooling>true</StringPooling>
       <BufferSecurityCheck>false</BufferSecurityCheck>
-      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <WarningLevel>Level3</WarningLevel>
       <InlineFunctionExpansion>AnySuitable</InlineFunctionExpansion>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
@@ -233,7 +219,7 @@
       <SubSystem>Native</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_amd64\crypto_fast_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib</AdditionalDependencies>
+      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_amd64\crypto_lib_km.lib;$(SolutionDir)Bin\$(Configuration)_amd64\volume_lib_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\wlh\amd64</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <Driver>WDM</Driver>
@@ -264,7 +250,7 @@
       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
       <StringPooling>true</StringPooling>
       <BufferSecurityCheck>false</BufferSecurityCheck>
-      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)crypto\crypto_fast</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>$(DDK)\inc\ddk;$(DDK)\inc\crt;$(DDK)\inc\api;$(SolutionDir)_include_;$(SolutionDir)include;include;$(SolutionDir)volume_lib;$(SolutionDir)crypto;$(SolutionDir)$(DcCryptoDir)</AdditionalIncludeDirectories>
       <WarningLevel>Level3</WarningLevel>
       <RuntimeLibrary>MultiThreaded</RuntimeLibrary>
       <ControlFlowGuard>false</ControlFlowGuard>
@@ -274,7 +260,7 @@
       <SubSystem>Native</SubSystem>
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
-      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_arm64\crypto_fast_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>Ksecdd.lib;$(SolutionDir)Bin\$(Configuration)_arm64\crypto_lib_km.lib;$(SolutionDir)Bin\$(Configuration)_arm64\volume_lib_km.lib;ntoskrnl.lib;hal.lib;fltmgr.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>$(DDK)\lib\wlh\amd64</AdditionalLibraryDirectories>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <Driver>WDM</Driver>

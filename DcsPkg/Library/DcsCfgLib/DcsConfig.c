@@ -95,6 +95,8 @@ InitConfigFromBootConfig(
 	gConfigBuffer = BootConfig->ConfigBuffer;
 	gConfigBufferSize = BootConfig->ConfigBufferSize;
 
+	gExternMode = BootConfig->ExternMode;
+
 #ifdef DEBUG_BUILD
 	gConfigDebug = ConfigReadInt("VerboseDebug", 1) ? TRUE : FALSE;
 #else

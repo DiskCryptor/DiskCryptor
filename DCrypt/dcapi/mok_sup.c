@@ -30,11 +30,7 @@
 #include "misc.h"
 #include "efiinst.h"
 #include "mok_sup.h"
-//#ifdef _M_ARM64
-//#include "sha512_small.h"
-//#else
 #include "sha512.h"
-//#endif
 
 /* SetFirmwareEnvironmentVariableExW - Windows 8+ API */
 typedef BOOL (WINAPI *PFN_SetFirmwareEnvironmentVariableExW)(
@@ -452,37 +448,54 @@ int dc_mok_get_db_state(void)
 	return val;
 }
 
+#define PW_CRYPT_SALT_MAX       32
+#define PW_CRYPT_HASH_MAX       128
+
+#pragma pack(push, 1)
+typedef struct {
+	UINT32 State;
+	UINT32 PWLen;
+	UINT16 Password[SB_PASSWORD_MAX];
+} MOK_TOGGLE_VAR;
+
+typedef struct {
+	UINT16 method;
+	UINT64 iter_count;
+	UINT16 salt_size;
+	UINT8  salt[PW_CRYPT_SALT_MAX];
+	UINT8  hash[PW_CRYPT_HASH_MAX];
+} MOK_PASSWORD_CRYPT;
+
+typedef struct {
+	INT32 Timeout;
+} MOK_TIMEOUT_VAR;
+#pragma pack(pop)
+
 static int mok_set_toggle(const wchar_t *var_name, UINT32 toggle_state,
                            const wchar_t *password, int pw_chars)
 {
-	/* MokSBvar: MokSBState(UINT32) + PWLen(UINT32) + Password(CHAR16[16]) = 40 bytes
-	 * PWLen is character count (not byte length) — shim uses it as index into Password[] */
-	DWORD var_size = sizeof(UINT32) + sizeof(UINT32) + SB_PASSWORD_MAX * sizeof(UINT16);
-	BYTE *var_data = (BYTE*)malloc(var_size);
-	if (var_data == NULL) return ST_NOMEM;
+	MOK_TOGGLE_VAR var;
+	memset(&var, 0, sizeof(var));
 
-	memset(var_data, 0, var_size);
-	*(UINT32*)(var_data) = toggle_state;
-	*(UINT32*)(var_data + 4) = (UINT32)pw_chars;
-	UINT16 *pw_dst = (UINT16*)(var_data + 8);
+	var.State = toggle_state;
+	var.PWLen = (UINT32)pw_chars;
 	for (int i = 0; i < pw_chars && i < SB_PASSWORD_MAX; i++)
-		pw_dst[i] = password[i];
+		var.Password[i] = password[i];
 
-	int resl = dc_mok_set_var(var_name, var_data, var_size);
-	SecureZeroMemory(var_data, var_size);
-	free(var_data);
+	int resl = dc_mok_set_var(var_name, (BYTE*)&var, sizeof(var));
+	SecureZeroMemory(&var, sizeof(var));
 	return resl;
 }
 
 int dc_mok_set_validation(int enable, const wchar_t *password, int pw_chars)
 {
-	/* mokutil convention: disable_validation -> MokSBState=0, enable_validation -> MokSBState=1 */
+	/* mokutil convention: disable_validation -> State=0, enable_validation -> State=1 */
 	return mok_set_toggle(L"MokSB", enable ? 1 : 0, password, pw_chars);
 }
 
 int dc_mok_set_db_usage(int use_db, const wchar_t *password, int pw_chars)
 {
-	/* mokutil convention: ignore_db -> MokDBState=0, use_db -> MokDBState=1 */
+	/* mokutil convention: ignore_db -> State=0, use_db -> State=1 */
 	return mok_set_toggle(L"MokDB", use_db ? 1 : 0, password, pw_chars);
 }
 
@@ -680,17 +693,7 @@ int dc_mok_test_cert(const BYTE *cert_data, DWORD cert_size)
 
 /* ---- Simple variable setters ---- */
 
-/* PASSWORD_CRYPT layout matching shim's passwordcrypt.h (packed, 172 bytes):
- *   UINT16 method;       // offset 0
- *   UINT64 iter_count;   // offset 2
- *   UINT16 salt_size;    // offset 10
- *   UINT8  salt[32];     // offset 12
- *   UINT8  hash[128];    // offset 44
- */
 #define PW_CRYPT_METHOD_SHA512  4
-#define PW_CRYPT_TOTAL_SIZE     172
-#define PW_CRYPT_SALT_MAX       32
-#define PW_CRYPT_HASH_MAX       128
 
 int dc_mok_set_password(const wchar_t *password, int pw_chars)
 {
@@ -702,17 +705,17 @@ int dc_mok_set_password(const wchar_t *password, int pw_chars)
 	int resl = dc_mok_hash_password(password, pw_chars, salt, sizeof(salt), hash, sizeof(hash));
 	if (resl != ST_OK) return resl;
 
-	BYTE pw_var[PW_CRYPT_TOTAL_SIZE];
-	memset(pw_var, 0, sizeof(pw_var));
+	MOK_PASSWORD_CRYPT pw;
+	memset(&pw, 0, sizeof(pw));
 
-	*(UINT16*)(pw_var + 0)  = PW_CRYPT_METHOD_SHA512;
-	*(UINT64*)(pw_var + 2)  = SHA512_CRYPT_ROUNDS_DEFAULT;
-	*(UINT16*)(pw_var + 10) = MOK_SALT_SIZE;
-	memcpy(pw_var + 12, salt, MOK_SALT_SIZE);
-	memcpy(pw_var + 44, hash, SHA512_DIGEST_SIZE);
+	pw.method     = PW_CRYPT_METHOD_SHA512;
+	pw.iter_count = SHA512_CRYPT_ROUNDS_DEFAULT;
+	pw.salt_size  = MOK_SALT_SIZE;
+	memcpy(pw.salt, salt, MOK_SALT_SIZE);
+	memcpy(pw.hash, hash, SHA512_DIGEST_SIZE);
 
-	resl = dc_mok_set_var(L"MokPW", pw_var, sizeof(pw_var));
-	SecureZeroMemory(pw_var, sizeof(pw_var));
+	resl = dc_mok_set_var(L"MokPW", (BYTE*)&pw, sizeof(pw));
+	SecureZeroMemory(&pw, sizeof(pw));
 	SecureZeroMemory(hash, sizeof(hash));
 	SecureZeroMemory(salt, sizeof(salt));
 	return resl;
@@ -720,11 +723,9 @@ int dc_mok_set_password(const wchar_t *password, int pw_chars)
 
 int dc_mok_clear_password(void)
 {
-	/* Set MokPW to all-zeros (PASSWORD_CRYPT_SIZE). MokManager detects this
-	 * as the clear sentinel, prompts "Clear MOK password?", and deletes MokPWStore. */
-	BYTE pw_var[PW_CRYPT_TOTAL_SIZE];
-	memset(pw_var, 0, sizeof(pw_var));
-	return dc_mok_set_var(L"MokPW", pw_var, sizeof(pw_var));
+	MOK_PASSWORD_CRYPT pw;
+	memset(&pw, 0, sizeof(pw));
+	return dc_mok_set_var(L"MokPW", (BYTE*)&pw, sizeof(pw));
 }
 
 int dc_mok_set_sbat_policy(BYTE policy_val)
@@ -742,9 +743,11 @@ int dc_mok_set_byte_var(const wchar_t *name, BYTE val)
 	return dc_mok_set_var(name, &val, sizeof(val));
 }
 
-int dc_mok_set_timeout(INT16 val)
+int dc_mok_set_timeout(INT32 val)
 {
-	return dc_mok_set_var(L"MokTimeout", (BYTE*)&val, sizeof(val));
+	MOK_TIMEOUT_VAR var;
+	var.Timeout = val;
+	return dc_mok_set_var(L"MokTimeout", (BYTE*)&var, sizeof(var));
 }
 
 /* ---- SBAT ---- */

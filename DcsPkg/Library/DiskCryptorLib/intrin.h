@@ -1,6 +1,10 @@
 #ifndef _INTRIN_H_
 #define _INTRIN_H_
 
+/* crypto_lib probes CPUID for AES-NI in xts_fast.c. Declaration only:
+   MSVC knows the name and emits the instruction. */
+void __cdecl __cpuid(int /* cpuInfo */[4], int /* function_id */);
+
 #include <Uefi.h> 
 #include <Library/BaseLib.h> 
 #include <Library/BaseMemoryLib.h>

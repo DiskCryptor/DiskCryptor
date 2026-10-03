@@ -75,15 +75,24 @@ void _set_device_item(
 
 	if (efi_ldr)
 	{
-		has_bme = dc_efi_is_bme_set(num);
-		has_shim = dc_efi_is_shim_set(num);
-		replaced_ms = dc_efi_is_msft_boot_replaced(num, -1);
-		if (has_shim)
-			wcscat(s_ldr, L", shim");
-		if (has_bme)
-			wcscat(s_ldr, L", bme");
-		if (replaced_ms)
-			wcscat(s_ldr, L", ms");
+		if (fixed)
+		{
+			has_bme = dc_efi_is_bme_set(num);
+			has_shim = dc_efi_is_shim_set(num);
+			replaced_ms = dc_efi_is_msft_boot_replaced(num, -1);
+			if (has_shim)
+				wcscat(s_ldr, L", shim");
+			if (has_bme)
+				wcscat(s_ldr, L", bme");
+			if (replaced_ms)
+				wcscat(s_ldr, L", ms");
+		}
+		else if (mnt_point)
+		{
+			has_shim = dc_is_shim_on_partition(mnt_point);
+			if (has_shim)
+				wcscat(s_ldr, L", shim");
+		}
 	}
 
 	_snwprintf(s_type, countof(s_type), L"%s%s", is_gpt ? L"GPT" : L"MBR", boot ? L", boot" : L"");

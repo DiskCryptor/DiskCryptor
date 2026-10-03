@@ -119,7 +119,7 @@ DcsAskConsolePwd(
     if (Wide)
         lineMax /= 2;
 
-    if (Msg) {
+    if (Msg && *Msg) {
         // Print status line first, then msg on next line
         if (GetStatus) {
             g_Con->Print(L"\n");

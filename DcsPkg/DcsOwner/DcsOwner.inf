@@ -1,0 +1,96 @@
+## @file
+#  DCS Owner - protected Secure Boot / PK virtualization driver
+#
+#  Reports overridden SecureBoot / SetupMode / PK values to the OS at runtime,
+#  driven by runtime-inaccessible EFI variables (MySecureBoot / MyPK) changed
+#  only via an RT-mirror + boot-time physical-presence confirmation, and
+#  measures the committed presets into PCR 7.
+#
+# Copyright (c) 2026. DiskCryptor, David Xanatos
+#
+# This program and the accompanying materials are licensed and made available
+# under the terms and conditions of the GNU Lesser General Public License, version 3.0 (LGPL-3.0).
+#
+# The full text of the license may be found at
+# https://opensource.org/licenses/LGPL-3.0
+#
+##
+
+[Defines]
+  INF_VERSION                    = 0x00010006
+  BASE_NAME                      = DcsOwner
+  FILE_GUID                      = A1B2C3D4-E5F6-4A7B-8C9D-0E1F2A3B4C5D
+  MODULE_TYPE                    = DXE_RUNTIME_DRIVER
+  VERSION_STRING                 = 1.0
+  ENTRY_POINT                    = DcsOwnerMain
+  UNLOAD_IMAGE                   = DcsOwnerUnload
+
+#
+# The following information is for reference only and not required by the build tools.
+#
+#  VALID_ARCHITECTURES           = IA32 X64 AARCH64
+
+[Sources]
+  DcsOwner.c
+  DcsOwner.h
+  DcsMatExec.c
+  DcsMatExec.h
+  ConfigMenu.c
+  ConfirmUI.c
+  TpmKill.c
+  TpmKill.h
+
+[Packages]
+  MdePkg/MdePkg.dec
+  MdeModulePkg/MdeModulePkg.dec
+  CryptoPkg/CryptoPkg.dec
+  DcsPkg/DcsPkg.dec
+
+[LibraryClasses]
+  BaseLib
+  BaseMemoryLib
+  MemoryAllocationLib
+  UefiDriverEntryPoint
+  UefiLib
+  UefiRuntimeLib
+  UefiBootServicesTableLib
+  PrintLib
+  CommonLib
+  BaseCryptLib
+  DcsCfgLib
+
+[Guids]
+  gEfiGlobalVariableGuid
+  gEfiImageSecurityDatabaseGuid
+  gEfiDcsOwnerGuid
+  gEfiDcsVariableGuid
+  gEfiEventVirtualAddressChangeGuid
+  gEfiMemoryAttributesTableGuid
+  gEfiFileInfoGuid
+  gEfiPartTypeSystemPartGuid   # referenced by DcsCfgLib (GptEdit) config file access
+
+[Protocols]
+  gEfiDcsOwnerProtocolGuid
+  gEfiLoadedImageProtocolGuid
+  gEfiTcg2ProtocolGuid
+  gEfiTcgProtocolGuid
+
+[BuildOptions.IA32]
+MSFT:RELEASE_*_IA32_CC_FLAGS  =  /arch:IA32 /FAcs /D_UEFI
+MSFT:DEBUG_*_IA32_CC_FLAGS    = /arch:IA32 /FAcs /D_UEFI
+MSFT:NOOPT_*_IA32_CC_FLAGS    = /arch:IA32  /FAcs /D_UEFI
+
+[BuildOptions.X64]
+# _UEFI selects the UEFI (no FILE/wchar_t host APIs) paths in shared headers
+# such as DcsCfgLib's Xml.h, matching DcsBoot/DcsInt/DiskCryptorLib.
+MSFT:*_*_X64_CC_FLAGS  = /D_UEFI
+
+[BuildOptions.AARCH64]
+MSFT:*_*_AARCH64_CC_FLAGS  = /D_UEFI
+
+[FeaturePcd]
+
+[Pcd]
+
+[Depex]
+  TRUE

@@ -26,11 +26,7 @@
 #include "dlg_menu.h"
 #include "dcconst.h"
 
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#else
 #include "xts_fast.h"
-//#endif
 #include "threads.h"
 #include "prc_pass.h"
 #include "prc_wait.h"
@@ -232,17 +228,27 @@ int _benchmark(
 int _menu_update_loader(
 		HWND     hwnd,
 		wchar_t *vol,
-		int      dsk_num
+		int      dsk_num,
+		int      type
 	)
 {
 	int rlt = ST_ERROR;
 	int is_dcs;
 
-	is_dcs = dc_is_dcs_on_disk(dsk_num);
-	if (is_dcs)
-		rlt = dc_update_efi_boot (dsk_num, -1);
+	if ( type == CTL_LDR_STICK )
+	{
+		is_dcs = dc_is_dcs_on_partition(vol);
+		if (is_dcs)
+			rlt = dc_update_efi_boot_on_partition(vol);
+	}
 	else
-		rlt = dc_update_boot(dsk_num);
+	{
+		is_dcs = dc_is_dcs_on_disk(dsk_num);
+		if (is_dcs)
+			rlt = dc_update_efi_boot(dsk_num, -1);
+		else
+			rlt = dc_update_boot(dsk_num);
+	}
 
 	if ( rlt == ST_OK )
 	{
@@ -669,6 +675,74 @@ int _set_boot_loader_efi(
 
 }
 
+
+int _menu_add_shim(
+	HWND     hwnd,
+	wchar_t *vol,
+	int      dsk_num,
+	int      type
+)
+{
+	int rlt = ST_ERROR;
+
+	if ( type == CTL_LDR_STICK )
+	{
+		rlt = dc_efi_set_shim_on_partition(vol);
+	}
+	else
+	{
+		rlt = dc_efi_set_shim(dsk_num, -1);
+
+		if ( rlt == ST_OK )
+		{
+			if (dc_efi_is_bme_set(dsk_num) && !dc_efi_is_bme_shim(dsk_num)) {
+				dc_efi_set_bme(L"DiskCrypto (DCS) loader", dsk_num);
+			}
+		}
+	}
+
+	if ( rlt == ST_OK )
+	{
+		__msg_i( hwnd, L"Secure Boot shim successfully installed\n");
+	} else {
+		__error_s( hwnd, L"Error installing Secure Boot shim\n", rlt );
+	}
+	return rlt;
+}
+
+int _menu_del_shim(
+	HWND     hwnd,
+	wchar_t *vol,
+	int      dsk_num,
+	int      type
+)
+{
+	int rlt = ST_ERROR;
+
+	if ( type == CTL_LDR_STICK )
+	{
+		rlt = dc_efi_unset_shim_on_partition(vol);
+	}
+	else
+	{
+		rlt = dc_efi_unset_shim(dsk_num, -1);
+
+		if ( rlt == ST_OK )
+		{
+			if (dc_efi_is_bme_set(dsk_num) && dc_efi_is_bme_shim(dsk_num)) {
+				dc_efi_set_bme_to_dcsboot(L"DiskCrypto (DCS) loader", dsk_num);
+			}
+		}
+	}
+
+	if ( rlt == ST_OK )
+	{
+		__msg_i( hwnd, L"Secure Boot shim successfully removed\n");
+	} else {
+		__error_s( hwnd, L"Error removing Secure Boot shim\n", rlt );
+	}
+	return rlt;
+}
 
 int _menu_add_bme(
 	HWND     hwnd,

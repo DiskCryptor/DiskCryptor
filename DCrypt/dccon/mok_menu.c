@@ -659,7 +659,13 @@ static int mok_cmd_verbosity(int argc, wchar_t *argv[], const wchar_t *var_name)
 		return ST_INVALID_PARAM;
 	}
 
-	int resl = dc_mok_set_byte_var(var_name, val);
+	/* Write as UINT32. shim reads SHIM_VERBOSE as UINT32 (masked to the stored
+	 * size) and FALLBACK_VERBOSE as "any non-zero byte", so both tolerate 4
+	 * bytes; but FB_NO_REBOOT is read as a UINT32 and compared == 1
+	 * (fallback.c get_fallback_no_reboot), so a 1-byte write leaves 3
+	 * uninitialized bytes and fails. Always write the full UINT32. */
+	UINT32 dword_val = val;
+	int resl = dc_mok_set_var(var_name, (BYTE*)&dword_val, sizeof(dword_val));
 	if (resl == ST_OK)
 		wprintf(L"Variable '%s' set to %s\n", var_name, val ? L"true" : L"false");
 	return resl;
@@ -678,7 +684,7 @@ static int mok_cmd_timeout(int argc, wchar_t *argv[])
 		return ST_INVALID_PARAM;
 	}
 
-	int resl = dc_mok_set_timeout((INT16)val);
+	int resl = dc_mok_set_timeout((INT32)val);
 	if (resl == ST_OK)
 		wprintf(L"MOK timeout set to %d\n", val);
 	return resl;
@@ -803,17 +809,17 @@ int mok_menu(int argc, wchar_t *argv[])
 		//}
 
 		if (wcscmp(argv[2], L"-verbose") == 0) {
-			resl = mok_cmd_verbosity(argc, argv, L"MokVerbosity");
+			resl = mok_cmd_verbosity(argc, argv, L"SHIM_VERBOSE");
 			break;
 		}
 
 		if (wcscmp(argv[2], L"-fb-verbose") == 0) {
-			resl = mok_cmd_verbosity(argc, argv, L"FBVerbosity");
+			resl = mok_cmd_verbosity(argc, argv, L"FALLBACK_VERBOSE");
 			break;
 		}
 
 		if (wcscmp(argv[2], L"-fb-noreboot") == 0) {
-			resl = mok_cmd_verbosity(argc, argv, L"FBNoReboot");
+			resl = mok_cmd_verbosity(argc, argv, L"FB_NO_REBOOT");
 			break;
 		}
 

@@ -7,6 +7,14 @@
 
 #ifdef _UEFI
  #include <Uefi.h>
+ /*
+  * memcpy and memset below map onto CopyMem and SetMem, and FIELD_OFFSET
+  * onto OFFSET_OF. A header that uses them should not also have to
+  * remember where they come from - the vendored crypto copies did, which
+  * is why they each carried their own BaseMemoryLib include.
+  */
+ #include <Library/BaseLib.h>
+ #include <Library/BaseMemoryLib.h>
 #endif
 
 #if !defined(IS_DRIVER) && !defined(BOOT_LDR) && !defined(_UEFI)
@@ -118,11 +126,42 @@ typedef void (*callback_ex)(void*,void*);
 #define sizeof_w(x)  ( sizeof(x) / sizeof(wchar_t) ) /* return number of wide characters in array */
 #define array_num(x) ( sizeof(x) / sizeof((x)[0]) )  /* return number of elements in array */
 
+#ifdef _UEFI
+/*
+ * Windows spellings the shared headers use. volume_header.h asserts its
+ * layout with FIELD_OFFSET, and volume_lib takes an abort flag as ULONG*;
+ * both belong to the driver, which is authoritative for them, so the EFI
+ * side supplies the names rather than the headers growing a branch.
+ */
+#ifndef FIELD_OFFSET   /* CommonLib.h defines it too */
+#define FIELD_OFFSET(type, field) OFFSET_OF(type, field)
+#endif
+typedef UINT32 ULONG;
+#endif
+
 #define zeromem(m,s) memset(m, 0, s)
+
+/*
+ * crypto_lib's Argon2 wipes key material with burn(), which off EFI is
+ * RtlSecureZeroMemory. Firmware has no such thing, so spell it out -
+ * volatile, so the compiler cannot decide the writes are dead. Same
+ * shape as CommonLib.h's MEM_BURN, without the dependency.
+ */
+#ifndef burn
+#define burn(ptr,count) do { volatile char *_bp = (volatile char *)(ptr); \
+                             UINTN _bc = (UINTN)(count); \
+                             while (_bc--) *_bp++ = 0; } while (0)
+#endif
 
 #ifndef memcpy
 #define memcpy(dest,source,count)         CopyMem(dest,source,(UINTN)(count))
 #endif
+
+//#ifdef _UEFI
+//#include <Library/MemoryAllocationLib.h>
+//#define calloc(n, s)  AllocateZeroPool((UINTN)(n) * (UINTN)(s))
+//#define free(p)       FreePool(p)
+//#endif
 
 #ifdef _M_ARM64
 #define mincpy(a, b, c)  CopyMem(pv(a), pv(b), (UINTN)(c))

@@ -376,7 +376,7 @@ PxeFileCopy(
 		ERR_PRINT(L"Failed to download %s: %r\n", src, res);
 		return res;
 	}
-	res = SimpleFileSave(dstroot, dst, fileBuffer, fileSize);
+	res = FsFileSave(dstroot, dst, fileBuffer, fileSize);
 	MEM_FREE(fileBuffer);
 	return res;
 }

@@ -23,22 +23,14 @@
 #include <ntifs.h>
 #include "defines.h"
 #include "driver.h"
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#else
 #include "xts_fast.h"
-//#endif
 #include "prng.h"
 #include "fast_crypt.h"
 #include "benchmark.h"
 #include "misc_mem.h"
 #include "crypto_head.h"
-//#ifdef _M_ARM64
-//#include "sha512_pkcs5_2_small.h"
-//#else
 #include "sha512_pkcs5_2.h"
-//#endif
-#include "../Argon2/argon2.h"
+#include "Argon2/argon2.h"
 
 #define TEST_BLOCK_LEN (1024*1024*8)
 #define TEST_BLOCK_NUM (4)

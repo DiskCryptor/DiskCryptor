@@ -30,7 +30,6 @@ https://opensource.org/licenses/Apache-2.0
 #define DCS_CAPTION "Disk Cryptor" //Disk Cryptography Services
 #define DCS_VERSION 242 // 2.42
 
-
 #define OPT_EXTERN_KEY L"-extern"
 
 //////////////////////////////////////////////////////////////////////////
@@ -53,8 +52,8 @@ typedef struct _DCS_BOOT_CONFIG {
     EFI_GUID    ExecPartGuid;       // Partition GUID to boot from
     CHAR16      ExecCmd[512];       // Boot command/path
 
-    // Runtime settings (updated by DcsInt, read by DcsBoot)
-    UINT8       TpmKill;            // TPM kill mode (0=off, 1=full, 2=conservative)
+    // Recovery mode (set by DcsInt to indicate recovery boot)
+    BOOLEAN     ExternMode;
 
 } DCS_BOOT_CONFIG;
 

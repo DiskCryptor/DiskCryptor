@@ -41,7 +41,8 @@
 #include "disk_info.h"
 #include "device_io.h"
 #include "header_io.h"
-#include "..\crc32.h"
+#include "volume_head.h"
+#include "crc32.h"
 #include "alloc_bitmap.h"
 
 #ifndef DC_CONCURRENT_TRANSCRYPT
@@ -435,6 +436,7 @@ static int dc_dec_update(dev_hook *hook)
 
 void dc_save_enc_state(dev_hook *hook, u32 step)
 {
+	dc_dev dev;
 	int i;
 
 	DbgMsg("dc_save_enc_state, step=%d\n", step);
@@ -472,9 +474,13 @@ void dc_save_enc_state(dev_hook *hook, u32 step)
 	// update header checksum
 	hook->tmp_header->hdr_crc = calculate_header_crc(hook->tmp_header);
 
+	// the layout does not move under us here, so one projection covers both
+	// the retry loop and the backup write below
+	dc_dev_of(hook, &dev);
+
 	// write new header to disk (retry 10 times on error)
 	for (i = 0; i < 10; i++) {
-		if (io_write_header(hook, 0, hook->tmp_header, hook->hdr_key, NULL, (step == SYNC_STEP_UPDATE) ? HF_UPDATE_BASE : HF_DEFAULT, NULL) == ST_OK) break;
+		if (io_write_header(&dev, dc_hook_rw, 0, hook->tmp_header, hook->hdr_key, NULL, (step == SYNC_STEP_UPDATE) ? HF_UPDATE_BASE : HF_DEFAULT, NULL) == ST_OK) break;
 		dc_delay(100);
 	}
 
@@ -484,7 +490,7 @@ void dc_save_enc_state(dev_hook *hook, u32 step)
 	// if we have a backup header, write it too (ignore errors)
 	if (hook->flags & F_HEAD_BACKUP)
 	{
-		dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, NULL, (step == SYNC_STEP_UPDATE) ? HF_UPDATE_BASE : HF_DEFAULT);
+		dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, NULL, (step == SYNC_STEP_UPDATE) ? HF_UPDATE_BASE : HF_DEFAULT);
 
 		io_device_request(hook->orig_dev, IRP_MJ_FLUSH_BUFFERS, NULL, 0, 0);
 	}
@@ -1709,6 +1715,7 @@ int dc_reencrypt_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, 
 {
 	dc_header *header = NULL;
 	crypt_info o_crypt;
+	dc_dev     dev;
 	dev_hook  *hook;
 	xts_key   *hdr_key = NULL;
 	xts_key   *dsk_key = NULL;
@@ -1746,8 +1753,10 @@ int dc_reencrypt_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, 
 		if ( (hdr_key = mm_secure_alloc(sizeof(xts_key))) == NULL ) {
 			resl = ST_NOMEM; break;
 		}
+		dc_dev_of(hook, &dev);
+
 		/* read volume header */
-		if ( (resl = io_read_header(hook, 0, &header, NULL, password, NULL, interrupt_cmd)) != ST_OK ) {
+		if ( (resl = io_read_header(&dev, dc_hook_rw, 0, &header, NULL, password, NULL, interrupt_cmd)) != ST_OK ) {
 			break;
 		}
 		/* copy current volume key to secondary key */
@@ -1783,7 +1792,7 @@ int dc_reencrypt_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, 
 				resl = ST_NOMEM; break;
 			}
 			// todo: hint at corerct kdf
-			resl = io_read_header(hook, hook->dsk_size - hook->head_len, &hback, &bak_key, password, NULL, interrupt_cmd);
+			resl = io_read_header(&dev, dc_hook_rw, hook->dsk_size - hook->head_len, &hback, &bak_key, password, NULL, interrupt_cmd);
 			if (resl != ST_OK) {
 				DbgMsg("reencrypt failed to load backup header, dev=%ws, error=%d\n", hook->dev_name, resl);
 				resl = ST_NOT_BACKUP;
@@ -1850,6 +1859,7 @@ int dc_reencrypt_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, 
 int dc_decrypt_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, ULONG *interrupt_cmd)
 {
 	dc_header *header = NULL;
+	dc_dev     dev;
 	dev_hook  *hook;
 	xts_key   *hdr_key = NULL;
 	int        resl;
@@ -1872,8 +1882,10 @@ int dc_decrypt_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, UL
 		{
 			resl = ST_ERROR; break;
 		}
+		dc_dev_of(hook, &dev);
+
 		/* read volume header */
-		if ( (resl = io_read_header(hook, 0, &header, &hdr_key, password, NULL, interrupt_cmd)) != ST_OK ) {
+		if ( (resl = io_read_header(&dev, dc_hook_rw, 0, &header, &hdr_key, password, NULL, interrupt_cmd)) != ST_OK ) {
 			break;
 		}
 
@@ -1883,7 +1895,7 @@ int dc_decrypt_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, UL
 				resl = ST_NOMEM; break;
 			}
 			// todo: hint at corerct kdf
-			resl = io_read_header(hook, hook->dsk_size - hook->head_len, &hback, &bak_key, password, NULL, interrupt_cmd);
+			resl = io_read_header(&dev, dc_hook_rw, hook->dsk_size - hook->head_len, &hback, &bak_key, password, NULL, interrupt_cmd);
 			if (resl != ST_OK) {
 				DbgMsg("decrypt failed to load backup header, dev=%ws, error=%d\n", hook->dev_name, resl);
 				// restore backup header from primary header
@@ -2214,6 +2226,7 @@ static int dc_expand_header(dev_hook *hook, u32 old_head_len, u32 new_head_len)
 
 void dc_write_header_safe(dev_hook *hook, u32 flags)
 {
+	dc_dev dev;
 	int i;
 
 	DbgMsg("dc_write_header_safe, flags=%x\n", flags);
@@ -2225,9 +2238,11 @@ void dc_write_header_safe(dev_hook *hook, u32 flags)
 		KeBugCheckEx(STATUS_DISK_CORRUPT_ERROR, __LINE__, 0, 0, 0);
 	}
 
+	dc_dev_of(hook, &dev);
+
 	// write new header to disk (retry 10 times on error)
 	for (i = 0; i < 10; i++) {
-		if (io_write_header(hook, 0, hook->tmp_header, hook->hdr_key, NULL, flags, NULL) == ST_OK) break;
+		if (io_write_header(&dev, dc_hook_rw, 0, hook->tmp_header, hook->hdr_key, NULL, flags, NULL) == ST_OK) break;
 		dc_delay(100);
 	}
 
@@ -2237,6 +2252,13 @@ void dc_write_header_safe(dev_hook *hook, u32 flags)
 
 static int dc_apply_layout(dev_hook *hook, u32 type)
 {
+	/*
+	 * The one place the projection cannot be hoisted: this function is what
+	 * moves the layout. head_len, stor_off, stor_len, tail_off and
+	 * F_HEAD_BACKUP all change between the writes below, so dev is refilled
+	 * immediately before each one rather than once at the top.
+	 */
+	dc_dev dev;
 	u32 head_len;
 	u32 stor_len;
 	int resl = ST_OK;
@@ -2357,7 +2379,8 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 				}
 				/* Write backup header with pre-read key slots */
 				if (resl == ST_OK) {
-					dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
+					dc_dev_of(hook, &dev);
+					dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
 				}
 			}
 		}
@@ -2432,7 +2455,8 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 				hook->tmp_header->hdr_crc = calculate_header_crc(hook->tmp_header);
 				dc_write_header_safe(hook, HF_UPDATE_BASE);
 				if (hook->flags & F_HEAD_BACKUP) {
-					dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
+					dc_dev_of(hook, &dev);
+					dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
 				}
 
 				/* Step 5: Delete old storage file */
@@ -2501,7 +2525,8 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 						hook->tmp_header->flags |= VF_BACKUP_HEADER;
 
 						hook->tmp_header->hdr_crc = calculate_header_crc(hook->tmp_header);
-						dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
+						dc_dev_of(hook, &dev);
+						dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
 						
 						dc_write_header_safe(hook, HF_UPDATE_BASE);
 					}
@@ -2564,7 +2589,8 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 				hook->tmp_header->hdr_crc = calculate_header_crc(hook->tmp_header);
 				dc_write_header_safe(hook, HF_UPDATE_BASE);
 				if (hook->flags & F_HEAD_BACKUP) {
-					dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
+					dc_dev_of(hook, &dev);
+					dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
 				}
 
 				/* If shrinking, reclaim slack space */
@@ -2636,7 +2662,8 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 
 				/* update backup at partition end if enabled */
 				if (hook->flags & F_HEAD_BACKUP) {
-					dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
+					dc_dev_of(hook, &dev);
+					dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
 				}
 
 				/* Delete old storage file */
@@ -2677,7 +2704,8 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 				}
 				/* Write backup header with pre-read key slots */
 				if (resl == ST_OK) {
-					dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
+					dc_dev_of(hook, &dev);
+					dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
 				}
 			}
 		}
@@ -2699,7 +2727,8 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 				hook->tmp_header->flags |= VF_BACKUP_HEADER;
 				hook->tmp_header->hdr_crc = calculate_header_crc(hook->tmp_header);
 				
-				resl = dc_update_backup(hook, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
+				dc_dev_of(hook, &dev);
+				resl = dc_update_backup(&dev, dc_hook_rw, hook->tmp_header, hook->bak_salt, hook->bak_key, bak_key_slots, bak_flags);
 			}
 			if (resl != ST_OK) {
 				DbgMsg("Failed to backup header, error %d\n", resl);
@@ -2723,6 +2752,7 @@ static int dc_apply_layout(dev_hook *hook, u32 type)
 int dc_update_layout(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, u32 flags, ULONG *interrupt_cmd)
 {
 	dc_header *header = NULL;
+	dc_dev     dev;
 	dev_hook  *hook;
 	xts_key   *hdr_key = NULL;
 	u32	       head_len;
@@ -2752,8 +2782,11 @@ int dc_update_layout(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, u3
 		{
 			resl = ST_ERROR; break;
 		}
+		/* filled before dc_apply_layout, which is where the layout moves */
+		dc_dev_of(hook, &dev);
+
 		/* read volume header */
-		if ( (resl = io_read_header(hook, 0, &header, &hdr_key, password, NULL, interrupt_cmd)) != ST_OK ) {
+		if ( (resl = io_read_header(&dev, dc_hook_rw, 0, &header, &hdr_key, password, NULL, interrupt_cmd)) != ST_OK ) {
 			break;
 		}
 
@@ -2865,7 +2898,7 @@ int dc_update_layout(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, u3
 				resl = ST_NOMEM; break;
 			}
 			// todo: hint at corerct kdf
-			resl = io_read_header(hook, hook->dsk_size - hook->head_len, &hback, &bak_key, password, NULL, interrupt_cmd);
+			resl = io_read_header(&dev, dc_hook_rw, hook->dsk_size - hook->head_len, &hback, &bak_key, password, NULL, interrupt_cmd);
 			if (resl != ST_OK) {
 				DbgMsg("update failed to load backup header, dev=%ws, error=%d\n", hook->dev_name, resl);
 				resl = ST_NOT_BACKUP;

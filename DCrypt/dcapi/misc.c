@@ -29,7 +29,7 @@
 #include <math.h>
 
 #include "misc.h"
-#include "..\crc32.h"
+#include "crc32.h"
 #include "drv_ioctl.h"
 
 typedef int (WINAPI fmt_callback) (int unk1, int unk2, int unk3);

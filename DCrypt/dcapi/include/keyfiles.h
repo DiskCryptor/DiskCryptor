@@ -3,11 +3,16 @@
 
 #include "volume_header.h"
 
+/*
+ * The mixing lives in volume_lib now - DcsPkg had the same scheme written a
+ * second time, and firmware cannot use dcapi's file reading. This header keeps
+ * dcapi's exported names; keyfile_mix.h brings in dc_kf_mixer and the cp_kf_*
+ * functions behind them.
+ */
+#include "keyfile_mix.h"
+
 // Legacy keyfile mixing (v1) - processes files one at a time
 int dc_api dc_add_keyfiles(dc_pass *pass, wchar_t *path);
-
-//// Simple v2 interface - file paths only
-//int dc_api dc_add_keyfiles_v2(dc_pass *pass, wchar_t **paths, int path_count);
 
 // Add a virtual keyfile (data directly in memory) - legacy mode (v1)
 int dc_api dc_add_virtual_keyfile(dc_pass *pass, u8 *data, u32 size);
@@ -19,14 +24,9 @@ int dc_api dc_hash_virtual_keyfile(u8 *data, u32 size, u8 *out_hash);
 // Context-based keyfile mixer API (v2)
 // Supports mixing both files and raw data uniformly
 //
-
-#define DC_KF_MIXER_INITIAL_CAPACITY 16
-
-typedef struct _dc_kf_mixer {
-	u8    *hashes;      // Array of SHA512 hashes
-	int    count;       // Number of hashes stored
-	int    capacity;    // Allocated capacity (in hash count)
-} dc_kf_mixer;
+// dc_kf_mixer, DC_KF_HASH_SIZE and DC_KF_MIXER_INITIAL_CAPACITY come from
+// keyfile_mix.h above.
+//
 
 // Initialize a keyfile mixer context
 // Returns: ST_OK on success, error code on failure

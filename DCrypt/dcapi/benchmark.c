@@ -25,14 +25,12 @@
 #include "drv_ioctl.h"
 #include "dc_header.h"
 #include "misc.h"
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#include "sha512_pkcs5_2_small.h"
-//#else
 #include "xts_fast.h"
 #include "sha512_pkcs5_2.h"
-//#endif
-#include "..\crypto\Argon2\argon2.h"
+#include "Argon2/argon2.h"
+/* volume_lib, called directly - the dc_api forwarders exist for
+   consumers on the far side of the DLL, not for dcapi itself */
+#include "crypto_head.h"
 
 #define TEST_BLOCK_LEN (1024*1024*8)
 #define TEST_BLOCK_NUM (4)
@@ -208,7 +206,7 @@ int dc_benchmark_kdf_um(int kdf, dc_kdf_bench_info *info)
 	else if (kdf > 0) {
 		/* Argon2id - compute parameters from kdf_cost */
 		u32 memory_cost, time_cost, parallelism;
-		argon2_mk_params_um(kdf, &memory_cost, &time_cost, &parallelism);
+		argon2_mk_params(kdf, &memory_cost, &time_cost, &parallelism);
 
 		info->memory_mib = memory_cost / 1024;
 		info->time_cost = time_cost;

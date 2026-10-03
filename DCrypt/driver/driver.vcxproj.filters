@@ -89,6 +89,9 @@
     <ClCompile Include="misc_volume.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="volume_head.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="mount.c">
       <Filter>Source Files</Filter>
     </ClCompile>

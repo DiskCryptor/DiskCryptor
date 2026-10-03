@@ -216,6 +216,12 @@ static void print_usage(int subject)
 		L"    -delefi  [hdd] [opt]         Delete DCS bootloader from HDD EFI partition\n"
 		L"		-esp                       Also delete DCS ESP partition\n"
 		L"    -getinfo [hdd]               Print collected PlatformInfo file to console\n"
+		L"    -setshim [hdd] [opt]         Install Secure Boot shim on HDD EFI partition\n"
+		L"		-bme                       Create boot menu entry pointing to shim\n"
+		L"		-nobme                     Remove boot menu entry if pointing to shim\n"
+		L"    -delshim [hdd] [opt]         Remove Secure Boot shim from HDD EFI partition\n"
+		L"		-bme                       Create boot menu entry pointing to DcsBoot.efi\n"
+		L"		-nobme                     Remove boot menu entry if pointing to shim\n"
 		L"    -addbme  [hdd]               Add DCS entry to EFI boot menu\n"
 		L"    -rembme                      Remove DCS entry from EFI boot menu\n"
 		L"    -replacems [hdd]             Replace Windows Boot Manager with DCS loader\n"
@@ -259,6 +265,10 @@ static void print_usage(int subject)
 		L"       -cert [path]              PFX certificate for signing (KEK or PK)\n"
 		L"       -pass [password]          PFX password (will prompt if not provided)\n"
 		L"       -append                   Append to existing variable instead of replace\n"
+		L"  Secure Boot overrides (DcsOwner EFI module):\n"
+		L"    -sb_override <none|off|on>   Overwrite SecureBoot status reported to windows"
+		L"    -sb_set_pk [path]            Overwrite PK with own Platform Key"
+		L"    -sb_clear_pk                 Clear own Platform Key"
 		L"________________________________________________________________________________\n"
 		L"\n");
 	if (subject & 0x08) wprintf(

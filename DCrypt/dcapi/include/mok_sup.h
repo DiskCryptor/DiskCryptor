@@ -123,7 +123,7 @@ int dc_api dc_mok_clear_password(void);
 int dc_api dc_mok_set_sbat_policy(BYTE policy_val);
 int dc_api dc_mok_del_sbat_policy(void);
 int dc_api dc_mok_set_byte_var(const wchar_t *name, BYTE val);
-int dc_api dc_mok_set_timeout(INT16 val);
+int dc_api dc_mok_set_timeout(INT32 val);
 
 /* ---- SBAT ---- */
 

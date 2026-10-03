@@ -5,7 +5,8 @@ int dc_backup_header(wchar_t *dev_name, dc_pass *password, void *out, int *size,
 int dc_restore_header(wchar_t *dev_name, dc_pass *password, void *in, int size, u32 flags, ULONG *interrupt_cmd);
 int dc_update_header(wchar_t *dev_name, dc_pass *password, void *in, int size, u32 flags, ULONG *interrupt_cmd);
 int dc_change_pass(wchar_t *dev_name, dc_pass *old_pass, dc_pass *new_pass, u32 flags, ULONG *interrupt_cmd);
-int dc_update_backup(dev_hook *hook, dc_header *header, u8 *salt, xts_key *hdr_key, u8 *key_slots, u32 flags);
+
+int init_header_v2(dc_header *header, crypt_info *crypt, dc_pass *password);
 
 int  dc_format_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, u32 flags, ULONG *interrupt_cmd);
 int  dc_format_step(wchar_t *dev_name, int wp_mode);

@@ -23,14 +23,12 @@
 #include <windows.h>
 #include "cd_enc.h"
 #include "dc_header.h"
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#include "sha512_pkcs5_2_small.h"
-//#else
 #include "xts_fast.h"
 #include "sha512_pkcs5_2.h"
-//#endif
-#include "..\crc32.h"
+#include "crc32.h"
+/* volume_lib, called directly - the dc_api forwarders exist for
+   consumers on the far side of the DLL, not for dcapi itself */
+#include "header_io.h"
 #include "drvinst.h"
 #include "misc.h"
 
@@ -88,7 +86,7 @@ DWORD dc_encrypt_iso_image(PCWSTR src_path, PCWSTR dst_path, dc_pass* password, 
 	header->flags    = VF_NO_REDIR;
 	header->alg_1    = cipher;
 	header->data_off = sizeof(dc_header);
-	header->hdr_crc  = calculate_header_crc_um(header);
+	header->hdr_crc  = calculate_header_crc(header);
 
 	// derive the header key
 	sha512_pkcs5_2(1000, password->pass, password->size, salt, HEADER_SALT_SIZE, dk, PKCS_DERIVE_MAX);

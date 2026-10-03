@@ -489,6 +489,13 @@ Utf8ToUnicode (
         return EFI_INVALID_PARAMETER;
     }
 
+    // Skip an UTF-8 BOM if present - it is not part of the signed data
+    if (Utf8Size >= 3 &&
+        (UINT8)Utf8Str[0] == 0xEF && (UINT8)Utf8Str[1] == 0xBB && (UINT8)Utf8Str[2] == 0xBF) {
+        Utf8Str  += 3;
+        Utf8Size -= 3;
+    }
+
     // First pass: count characters needed
     ResultLen = 0;
     for (i = 0; i < Utf8Size && Utf8Str[i] != '\0'; ) {
@@ -503,8 +510,9 @@ Utf8ToUnicode (
             // Three bytes
             i += 3;
         } else if ((c & 0xF8) == 0xF0) {
-            // Four bytes (surrogate pair needed, but we'll use replacement char)
+            // Four bytes -> UTF-16 surrogate pair, i.e. two CHAR16 units
             i += 4;
+            ResultLen++;
         } else {
             // Invalid, skip
             i += 1;
@@ -536,9 +544,21 @@ Utf8ToUnicode (
                                    ((Utf8Str[i + 1] & 0x3F) << 6) |
                                    (Utf8Str[i + 2] & 0x3F));
             i += 3;
-        } else if ((c & 0xF8) == 0xF0 && i + 3 < Utf8Size) {
-            // Four bytes - use replacement character (BMP only)
-            Result[j++] = 0xFFFD;
+        } else if ((c & 0xF8) == 0xF0 && i + 4 <= Utf8Size && j + 1 < ResultLen) {
+            // Four bytes - encode as UTF-16 surrogate pair so that the original
+            // UTF-8 bytes can be reproduced exactly by UnicodeToUtf8()
+            UINT32 CodePoint = (((UINT32)(c & 0x07)) << 18) |
+                               (((UINT32)(Utf8Str[i + 1] & 0x3F)) << 12) |
+                               (((UINT32)(Utf8Str[i + 2] & 0x3F)) << 6) |
+                                ((UINT32)(Utf8Str[i + 3] & 0x3F));
+            if (CodePoint >= 0x10000 && CodePoint <= 0x10FFFF) {
+                CodePoint -= 0x10000;
+                Result[j++] = (CHAR16)(0xD800 | (CodePoint >> 10));
+                Result[j++] = (CHAR16)(0xDC00 | (CodePoint & 0x3FF));
+            } else {
+                Result[j++] = 0xFFFD;
+                Result[j++] = 0xFFFD;
+            }
             i += 4;
         } else {
             // Invalid, use replacement character
@@ -553,6 +573,80 @@ Utf8ToUnicode (
     return EFI_SUCCESS;
 }
 
+/**
+  Convert a Unicode (UTF-16) string back to UTF-8.
+
+  This is the exact inverse of Utf8ToUnicode() for every valid input, so the
+  bytes produced here are byte for byte the bytes of the original certificate
+  file. Certificates are signed over their UTF-8 representation, therefore the
+  hash must be fed UTF-8. Casting CHAR16 to CHAR8 (UnicodeStrToAsciiStrS) would
+  truncate the upper byte of every non ASCII character and yield a different
+  hash than the one that was signed.
+
+  @param[in]   UnicodeStr  Null terminated UTF-16 string.
+  @param[out]  Utf8Str     Destination buffer, null terminated on success.
+  @param[in]   Utf8Max     Size of the destination buffer in bytes.
+  @param[out]  Utf8Len     Receives the byte count without null terminator.
+
+  @retval EFI_SUCCESS            Conversion successful.
+  @retval EFI_INVALID_PARAMETER  Invalid parameter.
+  @retval EFI_BUFFER_TOO_SMALL   Destination buffer too small.
+**/
+STATIC
+EFI_STATUS
+UnicodeToUtf8 (
+    IN  CONST CHAR16  *UnicodeStr,
+    OUT CHAR8         *Utf8Str,
+    IN  UINTN         Utf8Max,
+    OUT UINTN         *Utf8Len
+    )
+{
+    UINTN   i;
+    UINTN   j;
+    UINT32  CodePoint;
+
+    if (UnicodeStr == NULL || Utf8Str == NULL || Utf8Max == 0 || Utf8Len == NULL) {
+        return EFI_INVALID_PARAMETER;
+    }
+
+    j = 0;
+    for (i = 0; UnicodeStr[i] != L'\0'; i++) {
+        CodePoint = (UINT32)UnicodeStr[i];
+
+        // Recombine a UTF-16 surrogate pair into a single code point
+        if (CodePoint >= 0xD800 && CodePoint <= 0xDBFF &&
+            UnicodeStr[i + 1] >= 0xDC00 && UnicodeStr[i + 1] <= 0xDFFF) {
+            CodePoint = 0x10000 + ((CodePoint - 0xD800) << 10) +
+                        ((UINT32)UnicodeStr[i + 1] - 0xDC00);
+            i++;
+        }
+
+        if (CodePoint < 0x80) {
+            if (j + 1 >= Utf8Max) return EFI_BUFFER_TOO_SMALL;
+            Utf8Str[j++] = (CHAR8)CodePoint;
+        } else if (CodePoint < 0x800) {
+            if (j + 2 >= Utf8Max) return EFI_BUFFER_TOO_SMALL;
+            Utf8Str[j++] = (CHAR8)(0xC0 | (CodePoint >> 6));
+            Utf8Str[j++] = (CHAR8)(0x80 | (CodePoint & 0x3F));
+        } else if (CodePoint < 0x10000) {
+            if (j + 3 >= Utf8Max) return EFI_BUFFER_TOO_SMALL;
+            Utf8Str[j++] = (CHAR8)(0xE0 | (CodePoint >> 12));
+            Utf8Str[j++] = (CHAR8)(0x80 | ((CodePoint >> 6) & 0x3F));
+            Utf8Str[j++] = (CHAR8)(0x80 | (CodePoint & 0x3F));
+        } else {
+            if (j + 4 >= Utf8Max) return EFI_BUFFER_TOO_SMALL;
+            Utf8Str[j++] = (CHAR8)(0xF0 | (CodePoint >> 18));
+            Utf8Str[j++] = (CHAR8)(0x80 | ((CodePoint >> 12) & 0x3F));
+            Utf8Str[j++] = (CHAR8)(0x80 | ((CodePoint >> 6) & 0x3F));
+            Utf8Str[j++] = (CHAR8)(0x80 | (CodePoint & 0x3F));
+        }
+    }
+
+    Utf8Str[j] = '\0';
+    *Utf8Len = j;
+    return EFI_SUCCESS;
+}
+
 STATIC
 EFI_STATUS
 StreamOpenFile (
@@ -563,7 +657,7 @@ StreamOpenFile (
 {
     EFI_STATUS     Status;
     VOID           *FileBuffer = NULL;
-    UINTN          FileSize = 0;
+    UINT32          FileSize = 0;
     CHAR16         *UnicodeData = NULL;
     UINTN          UnicodeSize = 0;
     VERIFY_STREAM  *s;
@@ -573,12 +667,7 @@ StreamOpenFile (
     //
     // Load certificate file
     //
-    if (IsPxeBoot()) {
-        Status = PxeDownloadFile(Path, &FileBuffer, &FileSize);
-    } else {
-        Status = SimpleFileLoad(NULL, Path, &FileBuffer, &FileSize);
-    }
-
+    Status = UefiFileReadPath(Path, (UINT8**)&FileBuffer, &FileSize);
     if (EFI_ERROR(Status)) {
         return Status;
     }
@@ -736,6 +825,7 @@ ValidateCertificate (
     UINTN           SignatureSize = 0;
     CHAR16          Line[CONF_LINE_LEN];
     CHAR8           TempUtf8[CONF_LINE_LEN * 4];
+    UINTN           TempLen;
     CHAR16          *Type = NULL;
     CHAR16          *Level = NULL;
     INT32           Amount = 1;
@@ -833,17 +923,24 @@ ValidateCertificate (
         }
 
         //
-        // Hash the name and value (converted to UTF-8)
+        // Hash the name and value converted to UTF-8, the encoding the
+        // certificate was signed in. For pure ASCII fields this is identical
+        // to the previous behaviour; for non ASCII fields it is the only
+        // encoding that reproduces the signed bytes.
         //
-        Status = UnicodeStrToAsciiStrS(Name, TempUtf8, sizeof(TempUtf8));
-        if (!EFI_ERROR(Status)) {
-            Sha256Update(HashCtx, (UINT8*)TempUtf8, AsciiStrLen(TempUtf8));
+        Status = UnicodeToUtf8(Name, TempUtf8, sizeof(TempUtf8), &TempLen);
+        if (EFI_ERROR(Status)) {
+            ERR_PRINT(L"Verify: Failed to encode certificate name: %r\n", Status);
+            goto CleanupExit;
         }
+        Sha256Update(HashCtx, (UINT8*)TempUtf8, TempLen);
 
-        Status = UnicodeStrToAsciiStrS(Value, TempUtf8, sizeof(TempUtf8));
-        if (!EFI_ERROR(Status)) {
-            Sha256Update(HashCtx, (UINT8*)TempUtf8, AsciiStrLen(TempUtf8));
+        Status = UnicodeToUtf8(Value, TempUtf8, sizeof(TempUtf8), &TempLen);
+        if (EFI_ERROR(Status)) {
+            ERR_PRINT(L"Verify: Failed to encode certificate value: %r\n", Status);
+            goto CleanupExit;
         }
+        Sha256Update(HashCtx, (UINT8*)TempUtf8, TempLen);
 
 #ifdef DEBUG_BUILD
         OUT_PRINT(L"Verify: Cert Value: %s: %s\n", Name, Value);

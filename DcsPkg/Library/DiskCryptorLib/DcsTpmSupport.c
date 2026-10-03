@@ -14,7 +14,8 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Uefi.h>
 #include "DcsDiskCryptor.h"
 #include "include/dc_header.h"
-#include "crypto_fast/crc32.h"
+#include "volume_lib/crypto_head.h"
+#include "crypto_lib/crc32.h"
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/UefiLib.h>
 #include <Library/DevicePathLib.h>
@@ -41,11 +42,7 @@ InitDcsTpm() {
 
 	res = gBS->LocateProtocol(&gEfiDcsTpmProtocolGuid, NULL, (VOID**)&gDcsTpm);
 	if (EFI_ERROR(res)) {
-		if (IsPxeBoot()) {
-			PxeExec(sDcsTpmEfi);
-		} else {
-			EfiExec(NULL, sDcsTpmEfi);
-		}
+		UefiExec(sDcsTpmEfi);
 		res = gBS->LocateProtocol(&gEfiDcsTpmProtocolGuid, NULL, (VOID**)&gDcsTpm);
 	}
 
@@ -64,8 +61,8 @@ InitDcsTpm() {
 #define DC_TPM_NV_INDEX_PRIMARY		0x0DC5C
 #define DC_TPM_NV_INDEX_RECOVERY	0x0DC5E
 
-#define DC_TPM_SRK_FILE_PRIMARY      L"\\EFI\\DCS\\tpm_sealed.dat"
-#define DC_TPM_SRK_FILE_RECOVERY     L"\\EFI\\DCS\\tpm_recovery.dat"
+#define DC_TPM_SRK_FILE_PRIMARY      L"\\EFI\\"  DCS_DIRECTORY  "\\tpm_sealed.dat"
+#define DC_TPM_SRK_FILE_RECOVERY     L"\\EFI\\"  DCS_DIRECTORY  "\\tpm_recovery.dat"
 
 #pragma pack(push, 1)
 
@@ -430,7 +427,6 @@ GetSealOptions (
 {
 	EFI_STATUS res;
 	BOOLEAN    pinSet = FALSE;
-	UINT8      sbState;
 
 	if (Options == NULL) {
 		return EFI_INVALID_PARAMETER;
@@ -478,7 +474,7 @@ retry:
 check_sb:
 	if (!pinSet || Options->TpmPin[0] == '\0') {
 
-		if (!gBlockUnencryptedVolumes && (EFI_ERROR(DcsLdrGetMokSBState(&sbState)) || !sbState)) {
+		if (!gBlockUnencryptedVolumes && !IsSecureBootEnabled()) {
 			// If Secure Boot is disabled, warn about PIN-less protection and confirm                         |
 			g_Con->Print(L"\n%OWARNING:%N %HSecure Boot is disabled.%N TPM-only unattended unlock is not recommended.\n");
 			g_Con->Print(L"This configuration may allow an attacker to modify the boot chain and gain access to the stored secret.\n");
@@ -496,120 +492,6 @@ check_sb:
 	g_Con->Print(L"\n");
 
 	return EFI_SUCCESS;
-}
-
-
-/**
-Delete a TPM sealed file at the given path.
-
-@param[in] FilePath  Path to the sealed file
-
-@return EFI_SUCCESS or error status
-**/
-STATIC
-EFI_STATUS
-DcFileDeletePath(
-	IN CONST CHAR16 *FilePath
-)
-{
-	if (IsPxeBoot()) {
-		// TFTP doesn't support file deletion - just return success
-		return EFI_UNSUPPORTED;
-	}
-	return FileDelete(NULL, (CHAR16*)FilePath);
-}
-
-
-/**
-Check if a TPM sealed file exists at the given path.
-
-@param[in] FilePath  Path to the sealed file
-
-@return TRUE if file exists
-**/
-STATIC
-BOOLEAN
-DcFileExistsPath(
-	IN CONST CHAR16 *FilePath
-)
-{
-	if (IsPxeBoot()) {
-		return !EFI_ERROR(PxeFileExist((CHAR16*)FilePath));
-	}
-	return !EFI_ERROR(FileExist(NULL, (CHAR16*)FilePath));
-}
-
-
-/**
-Read a TPM sealed file from the given path.
-
-@param[in]     FilePath    Path to the sealed file
-@param[out]    Buffer      Buffer to receive file contents
-@param[in,out] BufferSize  On input: buffer size; On output: bytes read
-
-@return EFI_SUCCESS or error status
-**/
-STATIC
-EFI_STATUS
-DcFileReadPath(
-	IN     CONST CHAR16 *FilePath,
-	OUT    UINT8        **Buffer,
-	IN OUT UINT32       *BufferSize
-)
-{
-	EFI_STATUS ret;
-	VOID       *fileData = NULL;
-	UINTN      fileSize = 0;
-
-	if (IsPxeBoot()) {
-		ret = PxeDownloadFile((CHAR16*)FilePath, &fileData, &fileSize);
-	} else {
-		ret = FileLoad(NULL, (CHAR16*)FilePath, &fileData, &fileSize);
-	}
-
-	if (EFI_ERROR(ret)) {
-		return ret;
-	}
-
-	if (fileData == NULL || fileSize == 0) {
-		if (fileData) MEM_FREE(fileData);
-		return EFI_NOT_FOUND;
-	}
-
-	*Buffer = (UINT8*)fileData;
-	*BufferSize = (UINT32)fileSize;
-
-	return EFI_SUCCESS;
-}
-
-/**
-Write a TPM sealed file to the given path.
-
-@param[in] FilePath    Path to the sealed file
-@param[in] Buffer      Buffer containing sealed data
-@param[in] BufferSize  Size of buffer in bytes
-
-@return EFI_SUCCESS or error status
-**/
-STATIC
-EFI_STATUS
-DcFileWritePath(
-	IN CONST CHAR16 *FilePath,
-	IN UINT8        *Buffer,
-	IN UINT32       BufferSize
-)
-{
-	EFI_STATUS ret;
-
-	if (IsPxeBoot()) {
-		ret = PxeUploadFile((CHAR16*)FilePath, Buffer, BufferSize);
-	} else {
-		// Ensure directory exists
-		DirectoryCreate(gFileRoot, L"\\EFI\\DCS");
-		ret = FileSave(gFileRoot, (CHAR16*)FilePath, Buffer, BufferSize);
-	}
-
-	return ret;
 }
 
 /**
@@ -763,7 +645,7 @@ DcTpmSealToFile(
 		return ret;
 	}
 
-	ret = DcFileWritePath(FilePath, sealedBuffer, sealedSize);
+	ret = UefiFileWritePath(FilePath, sealedBuffer, sealedSize);
 	MEM_BURN(sealedBuffer, sizeof(sealedBuffer));
 
 	return ret;
@@ -1012,7 +894,7 @@ DcTpmRestoreFromSrkBackup(
 	INT32            pwdCode;
 
 	// Read recovery file
-	ret = DcFileReadPath(DC_TPM_SRK_FILE_RECOVERY, &sealedBuffer, &sealedSize);
+	ret = UefiFileReadPath(DC_TPM_SRK_FILE_RECOVERY, &sealedBuffer, &sealedSize);
 	if (EFI_ERROR(ret)) {
 		g_Con->PrintError(L"Failed to read TPM sealed backup file: %r\n", ret);
 		return ret;
@@ -1149,9 +1031,9 @@ DcTpmLoadSrk(
 	INT32       pwdCode;
 
 	// Check if sealed file exists
-	if (!DcFileExistsPath(DC_TPM_SRK_FILE_PRIMARY)) {
+	if (!UefiFileExistsPath(DC_TPM_SRK_FILE_PRIMARY)) {
 		// No primary file - check if recovery file exists
-		if (DcFileExistsPath(DC_TPM_SRK_FILE_RECOVERY)) {
+		if (UefiFileExistsPath(DC_TPM_SRK_FILE_RECOVERY)) {
 			g_Con->Print(L"No primary TPM secret file, but recovery file available.\n");
 			if (DcsAskYesNo(L"%HRestore from recovery file?%N [Y/n]: ", TRUE)) {
 				return DcTpmRestoreFromSrkBackup(Data, DataBufferSize, DataSize, DataType);
@@ -1164,7 +1046,7 @@ DcTpmLoadSrk(
 	}
 
 	// Read sealed file
-	ret = DcFileReadPath(DC_TPM_SRK_FILE_PRIMARY, &sealedBuffer, &sealedSize);
+	ret = UefiFileReadPath(DC_TPM_SRK_FILE_PRIMARY, &sealedBuffer, &sealedSize);
 	if (EFI_ERROR(ret)) {
 		g_Con->PrintError(L"Failed to read TPM sealed file: %r\n", ret);
 		return ret;
@@ -1182,7 +1064,7 @@ DcTpmLoadSrk(
 
 	// Handle PCR mismatch (locked state)
 	if (srkStatus & DCS_TPM_STATUS_LOCKED) {
-		BOOLEAN recoveryFileExists = DcFileExistsPath(DC_TPM_SRK_FILE_RECOVERY);
+		BOOLEAN recoveryFileExists = UefiFileExistsPath(DC_TPM_SRK_FILE_RECOVERY);
 
 		g_Con->PrintError(L"TPM sealed file locked (PCR mismatch)\n");
 		MEM_BURN(sealedBuffer, sealedSize);
@@ -1500,7 +1382,7 @@ cleanup:
 #define DC_TPM_BACKUP_ENCRYPTED_OFF  HEADER_SALT_SIZE  // 64
 #define DC_TPM_BACKUP_ENCRYPTED_SIZE (DC_TPM_BACKUP_FILE_SIZE - HEADER_SALT_SIZE)  // 960
 #define DC_TPM_BACKUP_DATA_SPACE     896         // Space for tpm_backup_data in union
-#define DC_TPM_BACKUP_FILE_PATH      L"\\EFI\\DCS\\tpm_backup.dat"
+#define DC_TPM_BACKUP_FILE_PATH      L"\\EFI\\"  DCS_DIRECTORY  "\\tpm_backup.dat"
 
 // CRC area: from Version field to end (excluding Magic and Crc itself)
 #define DC_TPM_BACKUP_CRC_OFF        8  // Offset within encrypted area (after Magic+Crc)
@@ -1629,7 +1511,7 @@ retry:
 	CopyMem(savedSalt, backupFile.Salt, HEADER_SALT_SIZE);
 
 	// Derive encryption key using configured KDF
-	if (!dc_derive_key(&pass, gDCryptHeaderKdf < 0 ? KDF_ARGON_DEFAULT : gDCryptHeaderKdf, backupFile.Salt, dk)) {
+	if (!dc_derive_key(&pass, gDCryptHeaderKdf < 0 ? KDF_ARGON_DEFAULT : gDCryptHeaderKdf, backupFile.Salt, dk, NULL)) {
 		g_Con->PrintError(L"Key derivation failed.\n");
 		ret = EFI_DEVICE_ERROR;
 		goto finish;
@@ -1659,7 +1541,7 @@ retry:
 	MEM_BURN(savedSalt, sizeof(savedSalt));
 
 	// Write backup file
-	DcFileWritePath(DC_TPM_BACKUP_FILE_PATH, (UINT8*)&backupFile, DC_TPM_BACKUP_FILE_SIZE);
+	UefiFileWritePath(DC_TPM_BACKUP_FILE_PATH, (UINT8*)&backupFile, DC_TPM_BACKUP_FILE_SIZE);
 	
 finish:
 	MEM_BURN(&pass, sizeof(pass));
@@ -1737,7 +1619,7 @@ retry:
 	}
 
 	// Read backup file
-	ret = DcFileReadPath(DC_TPM_BACKUP_FILE_PATH, &fileData, &fileSize);
+	ret = UefiFileReadPath(DC_TPM_BACKUP_FILE_PATH, &fileData, &fileSize);
 	if (EFI_ERROR(ret)) {
 		g_Con->PrintError(L"Failed to read backup file: %r\n", ret);
 		goto finish;
@@ -1757,7 +1639,7 @@ retry:
 		kdf = kdfs[kdfIdx];
 
 		// Derive key with this KDF (using plaintext salt from backup)
-		if (!dc_derive_key(&pass, kdf, fileData, dk)) {
+		if (!dc_derive_key(&pass, kdf, fileData, dk, NULL)) {
 			continue;  // KDF failed, try next
 		}
 
@@ -2043,7 +1925,7 @@ DcTpmLoad(CHAR16 *password, UINT32 *password_size)
 
 	// On missing entry or PCR lockout, offer recovery from file backup if available
 	if (ret == EFI_UNSUPPORTED || ret == EFI_NOT_FOUND || ret == EFI_ACCESS_DENIED) {
-		if (DcFileExistsPath(DC_TPM_BACKUP_FILE_PATH)) {
+		if (UefiFileExistsPath(DC_TPM_BACKUP_FILE_PATH)) {
 			gDCryptTpmPinUsed = TRUE;  // User interaction - skip countdown
 			ret =  DcTpmRestoreFromFileBackup(data, sizeof(data), &dataSize, &dataType);
 		}
@@ -2140,7 +2022,7 @@ DcTpmIsRecoveryAvailable(VOID)
 
 	if (DcTpmStorageUseSrkMode()) {
 		// File-based mode: check for recovery file
-		return DcFileExistsPath(DC_TPM_SRK_FILE_RECOVERY);
+		return UefiFileExistsPath(DC_TPM_SRK_FILE_RECOVERY);
 	} else {
 		// NV-based mode: check NV backup status
 		UINT32 backupStatus = 0;
@@ -2156,7 +2038,7 @@ STATIC
 BOOLEAN
 DcTpmIsBackupAvailable(VOID)
 {
-	return DcFileExistsPath(DC_TPM_BACKUP_FILE_PATH);
+	return UefiFileExistsPath(DC_TPM_BACKUP_FILE_PATH);
 }
 
 /**
@@ -2250,9 +2132,9 @@ DcTpmPrintStatus(VOID)
 		BOOLEAN isOpen;
 
 		g_Con->Print(L"Secret: ");
-		if (DcFileExistsPath(DC_TPM_SRK_FILE_PRIMARY)) {
+		if (UefiFileExistsPath(DC_TPM_SRK_FILE_PRIMARY)) {
 			// Read sealed file to check status
-			if (!EFI_ERROR(DcFileReadPath(DC_TPM_SRK_FILE_PRIMARY, &sealedBuffer, &sealedSize))) {
+			if (!EFI_ERROR(UefiFileReadPath(DC_TPM_SRK_FILE_PRIMARY, &sealedBuffer, &sealedSize))) {
 				g_Con->Print(L"%Vconfigured%N, ");
 
 				// Check status and PCR mask
@@ -2281,7 +2163,7 @@ DcTpmPrintStatus(VOID)
 				MEM_FREE(sealedBuffer);
 
 				// Show recovery file status
-				if (DcFileExistsPath(DC_TPM_SRK_FILE_RECOVERY)) {
+				if (UefiFileExistsPath(DC_TPM_SRK_FILE_RECOVERY)) {
 					g_Con->Print(L"Recovery: %Vavailable%N\n");
 				}
 			} else {
@@ -2332,7 +2214,7 @@ DcTpmPrintStatus(VOID)
 	}
 
 	// Show file backup status (common to both modes)
-	if (DcFileExistsPath(DC_TPM_BACKUP_FILE_PATH)) {
+	if (UefiFileExistsPath(DC_TPM_BACKUP_FILE_PATH)) {
 		g_Con->Print(L"File Backup: %Vavailable%N\n");
 	}
 
@@ -2364,7 +2246,7 @@ DcTpmMenuDoDelete(VOID)
 	// Check for existing secret based on storage mode
 	if (DcTpmStorageUseSrkMode()) {
 		// File-based mode: check for sealed file
-		if (!DcFileExistsPath(DC_TPM_SRK_FILE_PRIMARY)) {
+		if (!UefiFileExistsPath(DC_TPM_SRK_FILE_PRIMARY)) {
 			g_Con->Print(L"No sealed secret file found.\n");
 			return;
 		}
@@ -2387,7 +2269,7 @@ DcTpmMenuDoDelete(VOID)
 	// Handle file-based storage mode
 	if (DcTpmStorageUseSrkMode()) {
 		g_Con->Print(L"Deleting sealed file... ");
-		ret = DcFileDeletePath(DC_TPM_SRK_FILE_PRIMARY);
+		ret = UefiFileDeletePath(DC_TPM_SRK_FILE_PRIMARY);
 		if (!EFI_ERROR(ret)) {
 			g_Con->Print(L"%VDone.%N\n");
 			gDCryptTpmSecretValid = FALSE;
@@ -2397,9 +2279,9 @@ DcTpmMenuDoDelete(VOID)
 		}
 
 		// Delete recovery file if it exists
-		if (DcFileExistsPath(DC_TPM_SRK_FILE_RECOVERY)) {
+		if (UefiFileExistsPath(DC_TPM_SRK_FILE_RECOVERY)) {
 			g_Con->Print(L"Deleting recovery file... ");
-			ret = DcFileDeletePath(DC_TPM_SRK_FILE_RECOVERY);
+			ret = UefiFileDeletePath(DC_TPM_SRK_FILE_RECOVERY);
 			if (!EFI_ERROR(ret)) {
 				g_Con->Print(L"%VDone.%N\n");
 			} else {
@@ -2466,7 +2348,7 @@ DcTpmMenuDoDeleteBackup(VOID)
 {
 	EFI_STATUS ret;
 
-	if (!DcFileExistsPath(DC_TPM_BACKUP_FILE_PATH)) {
+	if (!UefiFileExistsPath(DC_TPM_BACKUP_FILE_PATH)) {
 		g_Con->Print(L"No backup file found.\n");
 		return;
 	}
@@ -2476,7 +2358,7 @@ DcTpmMenuDoDeleteBackup(VOID)
 	}
 
 	g_Con->Print(L"Deleting backup file... ");
-	ret = DcFileDeletePath(DC_TPM_BACKUP_FILE_PATH);
+	ret = UefiFileDeletePath(DC_TPM_BACKUP_FILE_PATH);
 	if (!EFI_ERROR(ret)) {
 		g_Con->Print(L"%VDone.%N\n");
 	} else {

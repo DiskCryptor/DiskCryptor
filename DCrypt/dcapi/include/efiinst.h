@@ -51,6 +51,11 @@ void dc_api dc_efi_config_init(ldr_config *conf);
 int dc_api dc_efi_shim_available();
 int dc_api dc_is_shim_on_partition(const wchar_t *root);
 int dc_api dc_efi_is_shim_set(int dsk_num);
+int dc_api dc_efi_set_shim(int dsk_num, int esp_part);
+int dc_api dc_efi_unset_shim(int dsk_num, int esp_part);
+int dc_api dc_efi_set_shim_on_partition(const wchar_t *root);
+int dc_api dc_efi_unset_shim_on_partition(const wchar_t *root);
+int dc_api dc_update_efi_boot_on_partition(const wchar_t *root);
 
 int dc_api dc_is_dcs_on_partition(const wchar_t *root);
 int dc_api dc_is_dcs_on_disk(int dsk_num);
@@ -58,8 +63,10 @@ int dc_api dc_efi_is_msft_on_disk(int dsk_num);
 int dc_api dc_is_dcs_in_file(wchar_t *file);
 
 int dc_api dc_efi_set_bme(wchar_t* description, int dsk_num);
+int dc_api dc_efi_set_bme_to_dcsboot(wchar_t* description, int dsk_num);
 int dc_api dc_efi_del_bme();
 int dc_api dc_efi_is_bme_set(int dsk_num);
+int dc_api dc_efi_is_bme_shim(int dsk_num);
 int dc_api dc_efi_del_msft_bme();
 
 int dc_api dc_prep_encrypt(const wchar_t *device, dc_pass *password, struct _crypt_info *crypt, int flags);

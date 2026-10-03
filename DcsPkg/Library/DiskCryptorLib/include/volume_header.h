@@ -1,4 +1,4 @@
-#ifndef _VOLUME_HEADER_H_
+﻿#ifndef _VOLUME_HEADER_H_
 #define _VOLUME_HEADER_H_
 
 #define DC_VOLUME_SIGN    0x50524344        // volume header signature, text value 'DCRP'
@@ -8,15 +8,16 @@
 #define PKCS_DERIVE_MAX   (MAX_KEY_SIZE*2)  // maximum key size into which password is expanded = 192 bytes
 #define DISKKEY_SIZE	  256               // number of key bytes stored in header (taken with reserve)
 
-//#define SECTOR_SIZE       512
+#define SECTOR_SIZE       512
 #define MAX_SECTOR_SIZE   4096
-//#define CD_SECTOR_SIZE    2048
+#define CD_SECTOR_SIZE    2048
 
 #define MIN_PASSWORD      1	                // Minimum password length
 #define MAX_PASSWORD      128               // Maximum password length
 
 #define KEY_SLOT_COUNT    4                 // default number of key slots in v2 header
 #define KEY_SLOT_MAX      100               // a reasonable maximum number of key slots, hard limit is 255
+#define ALL_KEY_SLOTS     (-KEY_SLOT_MAX)
 
 #define SLOT_LABEL_LEN    20
 
@@ -32,26 +33,26 @@
 #define VF_STORAGE_FILE   0x04              // redirected area are placed in file
 #define VF_NO_REDIR       0x08              // redirection area is not present - iso/file container
 #define VF_EXTENDED       0x10              // this volume placed on extended partition (used only by MBR bootloader)
-
 #define VF_BACKUP_HEADER  0x20              // backup header at partition end
-
-/* Request-only flags (not stored in header) */
-#define VF_USE_SLACK      0x40              // try to use slack space after the filesystem for redirection area
-#define VF_TRY_SHRINK     0x80              // try to shrink filesystem to create slack space
+#define VF_NO_HIBER       0x40				// this volume must be unmounted before hibernation
 
 #pragma pack (push, 1)
-#pragma warning(disable:4201)
 
 typedef struct _dc_pass {
 	int            size;                    // password length in bytes without terminating null
 	wchar_t        pass[MAX_PASSWORD];      // password in UTF16-LE encoding
 	int            kdf;                     // password cost factor, 0 for legacy PBKDF2
-	int            slot;					// s = 0 header key; s > 0 - key slot index (1-based); s < 0 try all slots and hreader up to abs(n)
+	int            slot;					// s = 0 header key; s > 0 - keyslot index (1-based); s < 0 try all slots and hreader up to abs(n)
 	unsigned long  flags;
 	char           label[SLOT_LABEL_LEN];
 	char           reserved[92];
 
-} dc_pass; // 384
+} dc_pass; //384
+
+#define PF_NONE           0x00
+#define PF_KEYFILE_MIXED  0x01
+
+static_assert(sizeof(wchar_t)* MAX_PASSWORD >= DISKKEY_SIZE, "Password field in dc_pass to short");
 
 typedef struct _dc_header {
 	unsigned char  salt[HEADER_SALT_SIZE];   // salt	64 byte - 512 bits
@@ -81,6 +82,7 @@ typedef struct _dc_header {
 	unsigned char  tmp_wp_mode;             // data wipe mode
 	// 627
 
+	// v2
 	char           footer_cnt;				// footer length in blocks of 16 bytes, reserved for future use, 0 default = 1k header base
 											// > 0 reduce base size, < 0 increase base size up to 1k - (-128 * 16) = 3k
 											// footer is excluded form v2 crc calculation, footer may be plaintext
@@ -89,14 +91,14 @@ typedef struct _dc_header {
 
 	// feature_flags & FF_KEY_SLOTS
 	unsigned char  head_kdf;                // Header Key Derivation Function, 0 for legacy PBKDF2, 1-10 for Argon2id
-	// v2 - key slots
+	// key slots
 	         //    key_slot_off     == DC_BASE_SIZE
-	unsigned short slot_area_len;           // key slot area size (must be multiple of xts block size)
+	unsigned short slot_area_len;           // keyslot area size (must be multiple of xts block size)
 	unsigned char  key_slot_count;			// number of key slots available
              //    key_slot_size    == slot_area_len / key_slot_count
-	// v2 - embedded slot info
+	// embedded slot info
 	         //    slot_info_off    == key_slot_off + slot_area_len
-	unsigned short slot_info_size;			// single key slot descriptor size
+	unsigned short slot_info_size;			// single keyslot descriptor size
 	         //    slot_info_len    == key_slot_count * slot_info_size	
 	// 640
 
@@ -124,7 +126,7 @@ typedef struct _dc_header {
 
 
 
-// Key slot format and layout in the reserved space of the header
+// Keyslot types and layout in the reserved space of the header
 
 #define DC_SLOT_TYPE_0  0					// 0 - XOR Wrap
 
@@ -137,7 +139,7 @@ typedef struct _dc_header {
 typedef struct _dc_slot_info {
 	unsigned long  crc;                     // crc32 of slot ciphertext + descriptor
 	unsigned long  flags;                   // slot flags (ACTIVE, etc.)
-	unsigned short format;                  // slot format, 0 - XOR Wrap
+	unsigned short type;                    // slot type
 	char           slot_name[SLOT_LABEL_LEN]; // slot name in UTF-8 encoding, zero padded, not required NUL terminated
 	union {
 		unsigned char data[2]; // or 34     // format specific data
@@ -171,7 +173,6 @@ typedef struct _dc_ext_header {
 //static_assert(sizeof(dc_ext_header) == 64, "Invalid dc_ext_header size");
 
 
-#pragma warning(default:4201)
 #pragma pack (pop)
 
 /* Header V1
@@ -185,8 +186,7 @@ typedef struct _dc_ext_header {
 /* Header V2
 *
 * 0-626:	 header data		
-* 640-767:   zeros
-* 768-1023:  optional footer
+* 640-1023:  optional footer
 * 1024-1919: key slots and slot info (up to 4 slots with 32 byte descriptor each)
 * 1920-2047: space for extended header
 */
@@ -194,7 +194,7 @@ typedef struct _dc_ext_header {
 // The default header layout with 4 key slots must fit into DC_AREA_SIZE (2 KiB).
 
 static_assert(sizeof(dc_header) == DC_AREA_SIZE, "Invalid dc_header size");
-//static_assert(FIELD_OFFSET(dc_header, space) == DC_BASE_SIZE, "Invalid dc_header base layout");
+static_assert(FIELD_OFFSET(dc_header, space) == DC_BASE_SIZE, "Invalid dc_header base layout");
 
 // The default header layout with 4 key slots and extended header must fit into DC_AREA_SIZE (2 KiB).
 // This maintains compatibility with existing v1 headers and avoids the need for redirection area expansion.
@@ -211,7 +211,5 @@ static_assert(DC_BASE_SIZE + KEY_SLOT_COUNT * (PKCS_DERIVE_MAX + sizeof(dc_slot_
 #define KDF_DEFAULT -2
 #define KDF_ALL		-3
 
-extern const int dc_default_kdfs[];
-extern const int dc_all_kdfs[];
 
 #endif

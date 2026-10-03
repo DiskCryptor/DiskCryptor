@@ -35,7 +35,7 @@
 #include "drv_ioctl.h"
 #include "tpm_sup.h"
 #include "tpm_12.h"
-#include "..\crc32.h"
+#include "crc32.h"
 
 #pragma comment(lib, "bcrypt.lib")
 
