@@ -36,6 +36,7 @@
 #include "dlg_drives_list.h"
 #include "drives_list.h"
 #include "prc_main.h"
+#include "unmount_timer.h"
 
 #if (_MSC_VER >= 1300) && _M_IX86
 	extern long _ftol(double);
@@ -954,6 +955,7 @@ _timer_handle(
 
 			_load_diskdrives( hwnd, &__drives, _list_volumes(0) );
 			_update_info_table( FALSE );
+			_unmount_timer_purge_unmounted( );
 
 			_set_timer( PROC_TIMER, IsWindowVisible(__dlg_act_info), FALSE );
 			_refresh_menu( );
@@ -974,6 +976,12 @@ _timer_handle(
 		{
 			_set_timer( POST_TIMER, FALSE, FALSE );
 			_is_breaking_action( );
+		}
+		break;
+
+		case UNMOUNT_TIMER :
+		{
+			_unmount_timer_check( );
 		}
 		break;
 	}

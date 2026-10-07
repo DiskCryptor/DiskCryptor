@@ -29,6 +29,7 @@
 #include "rand.h"
 #include "prc_keyfiles.h"
 #include "secure_desktop.h"
+#include "unmount_timer.h"
 
 #pragma warning(disable : 4995)
 
@@ -38,7 +39,8 @@ int _tmr_elapse[ ] =
 	100,     // PROC_TIMER
 	3000,    // RAND_TIMER
 	500,     // SHRN_TIMER
-	500      // POST_TIMER
+	500,     // POST_TIMER
+	1000     // UNMOUNT_TIMER
 };
 
 int __status;
@@ -364,6 +366,7 @@ int WINAPI wWinMain(
 		return 0;		
 	}
 	InitializeCriticalSection( &crit_sect );
+	_unmount_timer_init();
 	secure_desktop_init();
 
 #ifdef LOG_FILE
@@ -409,6 +412,7 @@ int WINAPI wWinMain(
 		DestroyAcceleratorTable( __hacc );
 	}
 
+	_unmount_timer_cleanup();
 	secure_desktop_cleanup();
 	return TRUE;
 }

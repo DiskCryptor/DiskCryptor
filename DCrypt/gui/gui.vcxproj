@@ -347,6 +347,7 @@
     <ClCompile Include="threads.c" />
     <ClCompile Include="ui_draw.c" />
     <ClCompile Include="ui_utils.c" />
+    <ClCompile Include="unmount_timer.c" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\autorun.h" />
@@ -374,6 +375,7 @@
     <ClInclude Include="include\threads.h" />
     <ClInclude Include="include\ui_draw.h" />
     <ClInclude Include="include\ui_utils.h" />
+    <ClInclude Include="include\unmount_timer.h" />
     <ClInclude Include="resource.h" />
   </ItemGroup>
   <ItemGroup>

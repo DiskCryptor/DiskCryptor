@@ -12,6 +12,7 @@
 #define RAND_TIMER			2
 #define SHRN_TIMER			3
 #define POST_TIMER			4
+#define UNMOUNT_TIMER		5
 
 #define DA_INSTAL			1
 #define DA_REMOVE			2
@@ -135,6 +136,8 @@ typedef struct _dlgpass
 	int		 clear_slots;  // clear key slots when changing password
 	int		 no_hiber;     // force unmount on hibernation
 	int		 use_backup;   // use backup header when mounting
+	int      unmount_timeout;   // auto-unmount timeout value
+	int      unmount_timeout_unit; // unit: 0=sec, 1=min, 2=hour
 
 } dlgpass, *pdlgpass;
 
