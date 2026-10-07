@@ -79,6 +79,16 @@ BOOL _is_removable_media(
 		int dsk_num
 	);
 
+void _lock_unmount_add(
+		const wchar_t *device
+	);
+
+void _lock_unmount_remove(
+		const wchar_t *device
+	);
+
+void _lock_unmount_remove_all(void);
+
 void _activate_page( );
 
 void _set_timer(

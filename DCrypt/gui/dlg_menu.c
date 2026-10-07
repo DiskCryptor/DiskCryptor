@@ -1095,6 +1095,7 @@ void _menu_unmount(
 				__dlg, L"Error unmount volume [%s]", resl, node->mnt.info.status.mnt_point
 				);
 		} else {
+			_lock_unmount_remove(node->mnt.info.device);
 			_dact *act;
 
 			EnterCriticalSection(&crit_sect);
@@ -1130,12 +1131,16 @@ void _menu_mount(
 			if (mnt_point[0] != 0)   flags = MF_DELMP;
 			if (dlg_info.mnt_ro)     flags = MF_READ_ONLY;
 			if (dlg_info.no_hiber)   flags = MF_NO_HIBER;
+			if (dlg_info.dismount_on_lock) flags = MF_DISMOUNT_ON_LOCK;
 			if (dlg_info.use_backup) flags = MF_USE_BACKUP;
 			rlt = _wait_dc_mount_volume( __dlg, node->mnt.info.device, dlg_info.pass, flags, L"Mounting volume..." );
 			secure_free( dlg_info.pass );
 
 			if ( rlt == ST_OK )
-			{						
+			{
+				if (dlg_info.dismount_on_lock) {
+					_lock_unmount_add(node->mnt.info.device);
+				}						
 				if ( mnt_point[0] != 0 )
 				{
 					_snwprintf( vol, countof(vol), L"%s\\", node->mnt.info.w32_device );
@@ -1174,9 +1179,24 @@ void _menu_mountall( )
 		{
 			if (dlg_info.mnt_ro)     flags = MF_READ_ONLY;
 			if (dlg_info.no_hiber)   flags = MF_NO_HIBER;
+			if (dlg_info.dismount_on_lock) flags = MF_DISMOUNT_ON_LOCK;
 			if (dlg_info.use_backup) flags = MF_USE_BACKUP;
 			_wait_dc_mount_all( __dlg, dlg_info.pass, &mount_cnt, flags, L"Mounting volumes..." );
 			secure_free( dlg_info.pass );
+
+			if (mount_cnt > 0 && dlg_info.dismount_on_lock)
+			{
+				vol_inf volinfo;
+				if (dc_first_volume(&volinfo) == ST_OK)
+				{
+					do {
+						if ((volinfo.status.flags & F_ENABLED) &&
+							(volinfo.status.mnt_flags & MF_DISMOUNT_ON_LOCK)) {
+							_lock_unmount_add(volinfo.device);
+						}
+					} while (dc_next_volume(&volinfo) == ST_OK);
+				}
+			}
 
 			__msg_i( __dlg, L"Mounted devices: %d", mount_cnt );
 		}
@@ -1195,6 +1215,7 @@ void _menu_unmountall( )
 		{
 			((_dact *)node)->status = ACT_STOPPED;
 		}
+		_lock_unmount_remove_all();
 	}
 }
 

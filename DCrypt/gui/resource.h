@@ -360,6 +360,7 @@
 #define IDC_CHECK_USE_BACKUP            1235
 #define IDC_BT_BLOCK_UNENCRYPTED        1237
 #define IDC_NO_HIBERNATION              1238
+#define IDC_DISMOUNT_ON_LOCK            1331
 #define ID_FILE_EXIT                    40001
 #define ID_VOLUMES_ENCRYPT              40002
 #define ID_VOLUMES_DECRYPT              40003

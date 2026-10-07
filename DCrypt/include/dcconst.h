@@ -46,6 +46,7 @@
 #define MF_READ_ONLY      0x0020 // mount volume as read only
 #define MF_NO_HIBER       0x0100 // critical volume - erase keys on hibernation (F_NO_HIBER)
 #define MF_USE_BACKUP     0x0200 // try to mount from backup header
+#define MF_DISMOUNT_ON_LOCK  0x0400 // dismount volume on workstation lock
 
 /* header operation flags */
 #define HF_DEFAULT        0x0000 // default operation - write entire header
