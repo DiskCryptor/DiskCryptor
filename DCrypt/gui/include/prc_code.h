@@ -49,9 +49,12 @@ typedef struct __dact
 {	
 	list_entry    list;	
 	HANDLE        h_thread;
+	volatile LONG worker_id;  // thread id of the act's current worker, 0 if none (see threads.c)
 	int           act;
 	int           status;
 	int           wp_mode;
+	int           bad_blocks; // steps that reported unreadable / unwritable sectors
+	int           stepped;    // a step ran in this driver session (its skip bitmap is loaded)
 	_dspeed       speed;
 	wchar_t       device[MAX_PATH];
 
@@ -121,6 +124,7 @@ typedef struct _bench_item
 #define PF_CAN_USE_BACKUP   0x10
 #define PF_SHOW_CACHE_TAG   0x20
 #define PF_RAW_PASSWORD     0x40
+#define PF_BACKUP_FORCED    0x80  // with PF_CAN_USE_BACKUP: the check is shown checked and disabled
 
 typedef struct _dlgpass
 {
@@ -135,6 +139,7 @@ typedef struct _dlgpass
 	int		 clear_slots;  // clear key slots when changing password
 	int		 no_hiber;     // force unmount on hibernation
 	int		 use_backup;   // use backup header when mounting
+	int		 safe_mode;       // SAFE_MODE_* the user selected (the list is shown with PF_SHOW_SKIP_UNUSED)
 
 } dlgpass, *pdlgpass;
 

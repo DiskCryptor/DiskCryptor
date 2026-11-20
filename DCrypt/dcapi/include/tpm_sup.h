@@ -9,6 +9,7 @@
 */
 #define DC_TPM_NV_INDEX_PRIMARY     0x0000DC5C   // Default NV index (PCR protected)
 #define DC_TPM_NV_INDEX_RECOVERY    0x0000DC5E   // Backup NV index (PIN protected)
+#define DC_TPM_NV_INDEX_MIGRATE     0x0000DC5A   // DCS: checked copy of the primary while it is resealed
 
 /*
 * Sealed data flags (matching DcsTpmLib.h)

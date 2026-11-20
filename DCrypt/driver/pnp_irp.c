@@ -31,6 +31,7 @@
 #include "debug.h"
 #include "pnp_irp.h"
 #include "dump_helpers.h"
+#include "safe_log.h"
 
 static
 NTSTATUS dc_pnp_usage_irp(dev_hook *hook, PIRP irp)
@@ -46,24 +47,36 @@ NTSTATUS dc_pnp_usage_irp(dev_hook *hook, PIRP irp)
 		{
 			if (irp_sp->Parameters.UsageNotification.InPath)
 			{
-				SetFlag(hook->flags, F_HIBERNATE);
+				dc_hook_set_flags(hook, F_HIBERNATE);
+				/* this volume now receives the hibernation image - the no-hibernation
+				 * key erase must never apply to it (it may have been mounted with it) */
+				if (hook->flags & F_NO_HIBER) {
+					DbgMsg("no-hibernation option dropped: %ws became the hibernation volume\n", hook->dev_name);
+					dc_hook_clear_flags(hook, F_NO_HIBER);
+				}
 
-				// prevent hibernating if memory contains encryption keys
-				if (dc_dump_helpers.dump_is_hibernation_allowed() == FALSE)
+				// prevent hibernating if memory contains encryption keys (CONF_HIBER_LOCK: the
+				// lockable volumes will be locked at S4, see dc_process_power_irp)
+				if (dc_dump_helpers.dump_is_hibernation_allowed((dc_conf_flags & CONF_HIBER_LOCK) != 0) == FALSE)
 				{
 					DbgMsg("hibernation prevented because memory contains encryption keys\n");
 					complete_irp = TRUE;
 					status = STATUS_UNSUCCESSFUL;
 				}
 			} else {
-				ClearFlag(hook->flags, F_HIBERNATE);
+				dc_hook_clear_flags(hook, F_HIBERNATE);
 			}
 		} else if (irp_sp->Parameters.UsageNotification.Type == DeviceUsageTypeDumpFile)
 		{
 			if (irp_sp->Parameters.UsageNotification.InPath) {
-				SetFlag(hook->flags, F_CRASHDUMP);
+				dc_hook_set_flags(hook, F_CRASHDUMP);
+				/* as above, for the crash dump volume */
+				if (hook->flags & F_NO_HIBER) {
+					DbgMsg("no-hibernation option dropped: %ws became the crash dump volume\n", hook->dev_name);
+					dc_hook_clear_flags(hook, F_NO_HIBER);
+				}
 			} else {
-				ClearFlag(hook->flags, F_CRASHDUMP);
+				dc_hook_clear_flags(hook, F_CRASHDUMP);
 			}
 		}
 
@@ -102,6 +115,15 @@ NTSTATUS dc_pnp_usage_irp(dev_hook *hook, PIRP irp)
 			if (irp_sp->Parameters.UsageNotification.InPath && hook->paging_count == 1) {
 				ClearFlag(devobj->Flags, DO_POWER_PAGABLE);
 			}
+
+			/* a volume with a paging file is never locked at hibernation, so the
+			 * no-hibernation option cannot work on it - drop it. Set-then-test against the
+			 * mount: the count was raised above, the mount sets F_NO_HIBER and then tests
+			 * paging_count. */
+			if (irp_sp->Parameters.UsageNotification.InPath && (hook->flags & F_NO_HIBER)) {
+				DbgMsg("no-hibernation option dropped: %ws received a paging file\n", hook->dev_name);
+				dc_hook_clear_flags(hook, F_NO_HIBER);
+			}
 		} else {
 			if (pagable_set) ClearFlag(devobj->Flags, DO_POWER_PAGABLE); // cleanup the changes done above
 		}
@@ -117,6 +139,62 @@ NTSTATUS dc_pnp_usage_irp(dev_hook *hook, PIRP irp)
 	return status;
 }
 
+/*
+ * IRP_MN_SURPRISE_REMOVAL. Read/write IRPs admitted before F_DISABLE may still hold raw
+ * key pointers, so the keys are freed only after a drain:
+ *  1. F_DISABLE | F_PREVENT_ENC under busy_lock (new read/write IRPs fail, no new
+ *     transcryption step).
+ *  2. Drain: wait until only the remove lock bias and this IRP's reference are left
+ *     (counted busy_lock waiters excluded). Every read/write holds the remove lock across
+ *     every key use; one that takes it after step 1 sees F_DISABLE.
+ *  3. Drained: unmount. Otherwise (or busy_lock not obtained) leave the volume mounted, keys
+ *     kept, I/O failing - IRP_MN_REMOVE_DEVICE unmounts after a full drain.
+ * busy_lock is held from 1. through 3. (dc_process_unmount re-acquires it recursively).
+ * Both waits are bounded: busy_lock may be held long (a mount's KDF).
+ */
+#define DC_SURPRISE_WAIT_MS 5000
+
+static void dc_surprise_unmount(dev_hook *hook)
+{
+	LARGE_INTEGER timeout;
+	ULONGLONG     start;
+
+	timeout.QuadPart = -((LONGLONG)DC_SURPRISE_WAIT_MS * 10000); /* relative, 100 ns units */
+
+	/* counted: this IRP holds a remove-lock reference, so a user unmount holding
+	 * busy_lock drains without waiting for it */
+	if (dc_wait_busy_lock_rl_timeout(hook, &timeout) == STATUS_TIMEOUT) {
+		/* block the I/O anyway; the keys are not touched here */
+		dc_hook_set_flags(hook, F_DISABLE | F_PREVENT_ENC);
+		DbgMsg("surprise removal: busy_lock timeout, unmount left to IRP_MN_REMOVE_DEVICE, dev=%ws\n", hook->dev_name);
+		return;
+	}
+	dc_hook_set_flags(hook, F_DISABLE | F_PREVENT_ENC);
+
+	if (hook->flags & F_ENABLED)
+	{
+		/* bias (1) + this IRP (1); not the references of requests blocked on busy_lock
+		 * (held here) */
+		BOOLEAN drained;
+
+		for (start = KeQueryInterruptTime(); (drained = dc_rl_drained(hook, 2)) == FALSE; )
+		{
+			if (KeQueryInterruptTime() - start >= (ULONGLONG)DC_SURPRISE_WAIT_MS * 10000) {
+				break;
+			}
+			dc_delay(10);
+		}
+		if (drained) {
+			dc_process_unmount(hook, MF_NOFSCTL | MF_NOWAIT_IO); /* busy_lock taken recursively */
+		} else {
+			DbgMsg("surprise removal: %d references still held, unmount left to IRP_MN_REMOVE_DEVICE, dev=%ws\n",
+				hook->remove_lock.Common.IoCount, hook->dev_name);
+		}
+	}
+	/* not mounted: no keys; F_DISABLE stays until the device is deleted */
+	KeReleaseMutex(&hook->busy_lock, FALSE);
+}
+
 NTSTATUS dc_pnp_irp(dev_hook *hook, PIRP irp)
 {
 	PIO_STACK_LOCATION irp_sp = IoGetCurrentIrpStackLocation(irp);
@@ -128,14 +206,30 @@ NTSTATUS dc_pnp_irp(dev_hook *hook, PIRP irp)
 		case IRP_MN_REMOVE_DEVICE:
 			DbgMsg("IRP_MN_REMOVE_DEVICE, dev=%ws\n", hook->dev_name);
 
-			dc_set_pnp_state(hook, Deleted);
+			/* drain every IRP holding the remove lock (no new one gets it from here on) */
 			IoReleaseRemoveLockAndWait(&hook->remove_lock, irp);
-			
+
+			/* unmount (save the transcryption state, free the keys) BEFORE the remove is
+			 * forwarded, while the stack below is still up. Deleted is set only after this:
+			 * io_hook_rw refuses I/O unless the device is Started. */
+			dc_process_unmount(hook, MF_NOFSCTL | MF_NOWAIT_IO);
+
+			/* Deleted under busy_lock: a mount / encryption start in progress completes first,
+			 * later ones fail their pnp check. Then unmount whatever got mounted in between
+			 * (normally ST_NO_MOUNT). */
+			wait_object_infinity(&hook->busy_lock);
+			dc_set_pnp_state(hook, Deleted);
+			KeReleaseMutex(&hook->busy_lock, FALSE);
+
+			dc_process_unmount(hook, MF_NOFSCTL | MF_NOWAIT_IO);
+
 			IoSkipCurrentIrpStackLocation(irp);
 			status = IoCallDriver(hook->orig_dev, irp);
 
-			dc_process_unmount(hook, MF_NOFSCTL | MF_NOWAIT_IO);
 			dc_remove_hook(hook);
+			/* defensive (the unmount freed it): no journal entry may outlive the hook, the
+			 * side table is keyed by its address */
+			dc_slog_free(hook);
 
 			IoDetachDevice(hook->orig_dev);
 			IoDeleteDevice(hook->hook_dev);
@@ -144,7 +238,7 @@ NTSTATUS dc_pnp_irp(dev_hook *hook, PIRP irp)
 			DbgMsg("IRP_MN_SURPRISE_REMOVAL, dev=%ws\n", hook->dev_name);
 
 			dc_set_pnp_state(hook, SurpriseRemove);
-			dc_process_unmount(hook, MF_NOFSCTL | MF_NOWAIT_IO);
+			dc_surprise_unmount(hook);
 
 			status = dc_forward_irp(hook, irp);
 		break;
@@ -156,7 +250,9 @@ NTSTATUS dc_pnp_irp(dev_hook *hook, PIRP irp)
 			{
 				if (hook->orig_dev->Characteristics & FILE_REMOVABLE_MEDIA) {
 					hook->hook_dev->Characteristics |= FILE_REMOVABLE_MEDIA;
-					hook->flags |= F_REMOVABLE;
+					/* interlocked: a restart can come while the volume is mounted and
+					 * other paths update hook->flags */
+					dc_hook_set_flags(hook, F_REMOVABLE);
 				}
 				dc_set_pnp_state(hook, Started);
 			}
@@ -201,7 +297,7 @@ NTSTATUS dc_add_device(PDRIVER_OBJECT drv_obj, PDEVICE_OBJECT pdo_dev)
 			DbgMsg("boot data block found on retry\n");
 		else
 			DbgMsg("boot data block NOT found on retry\n");
-		dc_load_flags &= ~DST_UEFI_RETRY;
+		InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_UEFI_RETRY);
 	}
 #endif
 
@@ -241,8 +337,24 @@ NTSTATUS dc_add_device(PDRIVER_OBJECT drv_obj, PDEVICE_OBJECT pdo_dev)
 	if (high_dev->DeviceType == FILE_DEVICE_CD_ROM) hook->flags |= F_CDROM;
 	
 	IoInitializeRemoveLock(&hook->remove_lock, 'LRCD', 0, 0);
-	KeInitializeEvent(&hook->paging_count_event, NotificationEvent, TRUE);
+	/* auto-reset, signalled = free: serialises the paging usage notifications of this volume
+	 * (dc_pnp_usage_irp waits on it and sets it again on its only exit) */
+	KeInitializeEvent(&hook->paging_count_event, SynchronizationEvent, TRUE);
 	KeInitializeMutex(&hook->busy_lock, 0);
+	KeInitializeSpinLock(&hook->id_lock); /* media identity */
+#ifdef DC_CONCURRENT_TRANSCRYPT
+	/* Transcrypt state is initialised ONCE per hook, not per session: a step left over from
+	 * the previous session may still hold (or be about to win) the in_progress slot, so
+	 * re-initialising it would corrupt a live waiter/holder. Idle: all events signalled. */
+	KeInitializeSpinLock(&hook->trans.range_lock);
+	KeInitializeEvent(&hook->trans.block_complete, NotificationEvent, TRUE); /* no active block */
+	KeInitializeEvent(&hook->trans.io_done_event,  NotificationEvent, TRUE); /* no pending I/O */
+	KeInitializeEvent(&hook->trans.idle_event,     NotificationEvent, TRUE); /* slot free */
+	hook->trans.active_start     = -1;
+	hook->trans.active_end       = 0;
+	hook->trans.pending_io_count = 0;
+	hook->trans.in_progress      = 0;
+#endif
 
 	hook_dev->Characteristics |= high_dev->Characteristics & FILE_REMOVABLE_MEDIA;
 	hook_dev->Flags |= high_dev->Flags & (DO_BUFFERED_IO | DO_DIRECT_IO | DO_POWER_PAGABLE);

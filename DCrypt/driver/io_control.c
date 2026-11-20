@@ -24,6 +24,7 @@
 #include <ntddcdrm.h>
 #include <ntdddisk.h>
 #include <ntddvol.h>
+#include <ntddscsi.h>
 #include "defines.h"
 #include "devhook.h"
 #include "driver.h"
@@ -46,6 +47,22 @@
 #define IS_VERIFY_IOCTL(_ioctl) ( \
 	(_ioctl) == IOCTL_DISK_CHECK_VERIFY || (_ioctl) == IOCTL_CDROM_CHECK_VERIFY || \
 	(_ioctl) == IOCTL_STORAGE_CHECK_VERIFY || (_ioctl) == IOCTL_STORAGE_CHECK_VERIFY2 )
+
+/* CHECK_VERIFY statuses that mean the media was changed or is gone. Parameter
+ * errors (STATUS_BUFFER_TOO_SMALL, STATUS_INVALID_PARAMETER, ...) and transient device
+ * errors (STATUS_DEVICE_BUSY, STATUS_IO_TIMEOUT, ...) do not unmount the volume. */
+#define IS_MEDIA_CHANGE_STATUS(_status) ( \
+	(_status) == STATUS_VERIFY_REQUIRED || (_status) == STATUS_NO_MEDIA_IN_DEVICE || \
+	(_status) == STATUS_NO_MEDIA || (_status) == STATUS_UNRECOGNIZED_MEDIA || \
+	(_status) == STATUS_DEVICE_NOT_CONNECTED || (_status) == STATUS_NO_SUCH_DEVICE || \
+	(_status) == STATUS_DEVICE_DOES_NOT_EXIST || (_status) == STATUS_DEVICE_NOT_READY )
+
+#ifndef IOCTL_STORAGE_MANAGE_BYPASS_IO /* ntddstor.h defines it only for newer NTDDI targets */
+#define IOCTL_STORAGE_MANAGE_BYPASS_IO CTL_CODE(IOCTL_STORAGE_BASE, 0x0230, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+#ifndef IOCTL_DISK_COPY_DATA
+#define IOCTL_DISK_COPY_DATA CTL_CODE(IOCTL_DISK_BASE, 0x0019, METHOD_BUFFERED, FILE_READ_ACCESS | FILE_WRITE_ACCESS)
+#endif
 
 #define TRIM_BUFF_MAX(_set) ( \
 	_align(sizeof(DEVICE_MANAGE_DATA_SET_ATTRIBUTES), sizeof(DEVICE_DATA_SET_RANGE)) + \
@@ -119,11 +136,41 @@ static void unmap_interrupt_cmd(mapped_interrupt *mi)
 /* function types declaration */
 IO_COMPLETION_ROUTINE dc_ioctl_complete;
 
+/* dc_pass.size comes from the caller and is the KDF input and memcmp length, cached
+ * verbatim - it must lie within pass[] (0 = no password / use the cache). */
+static int dc_pass_size_valid(const dc_pass *pass)
+{
+	return (pass->size >= 0) && (pass->size <= (int)sizeof(pass->pass));
+}
+
+/* DC_CTL_RESOLVE follows a chain of symbolic links; the bound stops a link cycle (a -> b -> a).
+ * Real chains (\??\Volume{GUID} -> \Device\HarddiskVolumeN) are 1-2 links long. */
+#define DC_MAX_LINK_DEPTH 32
+
 static int dc_ioctl_process(u32 code, dc_ioctl *data)
 {
 	int resl = ST_ERROR;
 	mapped_interrupt mi;
 	ULONG *interrupt_cmd;
+
+	/* validate the password length of every request that consumes a password,
+	 * before anything (KDF, memcmp, cache) touches it */
+	switch (code)
+	{
+		case DC_CTL_CHANGE_PASS:
+			if (!dc_pass_size_valid(&data->passw2)) return ST_INVALID_PARAM;
+			/* fall through - passw1 is the current password */
+		case DC_CTL_ADD_PASS:
+		case DC_CTL_MOUNT:
+		case DC_CTL_MOUNT_ALL:
+		case DC_CTL_ENCRYPT_START:
+		case DC_CTL_DECRYPT_START:
+		case DC_CTL_RE_ENC_START:
+		case DC_CTL_UPDATE_LAYOUT:
+		case DC_FORMAT_START:
+			if (!dc_pass_size_valid(&data->passw1)) return ST_INVALID_PARAM;
+		break;
+	}
 
 	/* Map user-mode interrupt pointer to kernel space for system thread access */
 	map_interrupt_cmd(data->interrupt_cmd, &mi);
@@ -138,7 +185,8 @@ static int dc_ioctl_process(u32 code, dc_ioctl *data)
 		break;
 		case DC_CTL_MOUNT:
 			{
-				resl = dc_mount_device(data->device, &data->passw1, data->flags, interrupt_cmd);
+				/* MF_PROBE_RL is driver-internal */
+				resl = dc_mount_device(data->device, &data->passw1, data->flags & ~MF_PROBE_RL, interrupt_cmd);
 
 				if ( (resl == ST_OK) && (dc_conf_flags & CONF_CACHE_PASSWORD) ) {
 					dc_add_password(&data->passw1);
@@ -147,7 +195,7 @@ static int dc_ioctl_process(u32 code, dc_ioctl *data)
 		break;
 		case DC_CTL_MOUNT_ALL:
 			{
-				data->n_mount = dc_mount_all(&data->passw1, data->flags, interrupt_cmd);
+				data->n_mount = dc_mount_all(&data->passw1, data->flags & ~(MF_PROBE_RL | MF_IGNORE_CRC), interrupt_cmd); /* MF_IGNORE_CRC: per volume only */
 				resl          = ST_OK;
 
 				if ( (data->n_mount != 0) && (dc_conf_flags & CONF_CACHE_PASSWORD) ) {
@@ -245,8 +293,14 @@ static int dc_ioctl_process(u32 code, dc_ioctl *data)
 		break;
 		case DC_CTL_RESOLVE:
 			{
+				int depth = 0;
+
 				while (dc_resolve_link(data->device, data->device, sizeof(data->device)) == ST_OK) {
 					resl = ST_OK;
+					/* bound the chain - a cycle never stops resolving */
+					if (++depth >= DC_MAX_LINK_DEPTH) {
+						resl = ST_ERROR; break;
+					}
 				}
 			}
 		break;
@@ -271,7 +325,9 @@ static int dc_ioctl_process(u32 code, dc_ioctl *data)
 		break;
 	}
 
-	if (resl == ST_PASS_ERR && interrupt_cmd && *interrupt_cmd) {
+	/* a cancelled key derivation fails the search (ST_PASS_ERR) or, where a key is derived
+	   for writing, the derive itself (ST_INVALID_PARAM, before anything is written) */
+	if ((resl == ST_PASS_ERR || resl == ST_INVALID_PARAM) && interrupt_cmd && *interrupt_cmd) {
 		resl = ST_CANCEL;
 	}
 
@@ -316,6 +372,9 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 				}
 
 				max_items = (out_len - FIELD_OFFSET(dc_pass_enum, items)) / sizeof(dc_pass_info);
+				/* the reserved[] fields are never written - don't return stale SystemBuffer
+				 * contents (this request has no input) */
+				RtlZeroMemory(data, out_len);
 				returned = dc_enum_pass_cache(penum->items, max_items, &total);
 				penum->count = total;
 
@@ -377,9 +436,9 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 				status = STATUS_INVALID_PARAMETER;
 				break;
 			}
+			/* the result of the last certificate check (driver load, DC_CTL_CHECK_CERT) */
 			if (irp_sp->Parameters.DeviceIoControl.OutputBufferLength == sizeof(DC_FLAGS2))
 			{
-				dc_verify_cert();
 				((PDC_FLAGS2)irp->AssociatedIrp.SystemBuffer)->flag_options = 0;
 				((PDC_FLAGS2)irp->AssociatedIrp.SystemBuffer)->verify_flags = Verify_CertInfo.State;
 			}
@@ -388,6 +447,10 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 			((PDC_FLAGS)irp->AssociatedIrp.SystemBuffer)->boot_flags = dc_boot_flags;
 			status = STATUS_SUCCESS;
 			length = irp_sp->Parameters.DeviceIoControl.OutputBufferLength;
+		break;
+		case DC_CTL_CHECK_CERT:
+			/* a certificate was applied or removed: check the registry value again */
+			status = (dc_verify_cert() == STATUS_DEVICE_BUSY) ? STATUS_DEVICE_BUSY : STATUS_SUCCESS;
 		break;
 		case DC_CTL_SET_FLAGS:
 			if (irp_sp->Parameters.DeviceIoControl.InputBufferLength != sizeof(DC_FLAGS))
@@ -492,7 +555,12 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 					if (hook = dc_find_hook(dctl->device))
 					{
 						if (hook->pdo_dev->Flags & DO_SYSTEM_BOOT_PARTITION) {
-							hook->flags |= F_SYSTEM;
+							dc_hook_set_flags(hook, F_SYSTEM); /* no lock held here, may overlap a step */
+						}
+						/* a no-hibernation flag that lingers on the system / dump volume has no
+						 * effect - drop it so the status reported to the GUI is truthful */
+						if ((hook->flags & F_NO_HIBER) && DC_NO_HIBER_FORBIDDEN(hook)) {
+							dc_hook_clear_flags(hook, F_NO_HIBER);
 						}
 
 						dc_get_mount_point(hook, stat->mnt_point, sizeof(stat->mnt_point));
@@ -517,7 +585,10 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 			{
 				 if ( (in_len == sizeof(int)) && (out_len == sizeof(dc_bench_info)) )
 				 {
-					 if (dc_k_benchmark(p32(data)[0], pv(data)) == ST_OK) {
+					 int cipher = p32(data)[0];
+					 /* reserved[] is never written - zero the output after reading the input */
+					 RtlZeroMemory(data, out_len);
+					 if (dc_k_benchmark(cipher, pv(data)) == ST_OK) {
 						 status = STATUS_SUCCESS;
 						 length = sizeof(dc_bench_info);
 					 }
@@ -529,6 +600,9 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 				 if ( (in_len == sizeof(int) * 1) && (out_len == sizeof(dc_kdf_bench_info)) )
 				 {
 					 int kdf = p32(data)[0];
+					 /* reserved[] (and some fields for some kdf values) is never written -
+					  * zero the output after reading the input */
+					 RtlZeroMemory(data, out_len);
 					 if (dc_k_benchmark_kdf(kdf, pv(data)) == ST_OK) {
 						 status = STATUS_SUCCESS;
 						 length = sizeof(dc_kdf_bench_info);
@@ -549,7 +623,10 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 
 					back->device[MAX_DEVICE] = 0;
 
-					if (back->size > sizeof(back->backup)) {
+					/* reject a password length outside pass[] before the KDF sees it */
+					if ( (back->size > sizeof(back->backup)) || !dc_pass_size_valid(&back->pass) ) {
+						/* don't leave the password in the freed SystemBuffer */
+						burn(&back->pass, sizeof(back->pass));
 						status = STATUS_INVALID_PARAMETER;
 						break;
 					}
@@ -589,17 +666,25 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 					status = STATUS_SUCCESS;
 					length = sizeof(dc_backup_ctl);
 				}
+				else if ( (data != NULL) && (in_len != 0) )
+				{
+					/* a malformed request may still carry the password - wipe the input */
+					RtlSecureZeroMemory(data, in_len);
+				}
 			}
 		break;
 		default: 
 			{
 				dc_ioctl *dctl = data;
 
-				if ( (in_len == sizeof(dc_ioctl)) && (out_len == sizeof(dc_ioctl)) )
-				{					
+				/* data == NULL: a METHOD_NEITHER code has no SystemBuffer */
+				if ( (data != NULL) && (in_len == sizeof(dc_ioctl)) && (out_len == sizeof(dc_ioctl)) )
+				{
 					/* limit null-terminated string length */
 					dctl->device[MAX_DEVICE] = 0;
-					
+					/* path[] (DC_CTL_ENCRYPT_START2) goes to RtlInitUnicodeString */
+					dctl->path[MAX_PATH - 1] = 0;
+
 					/* process IOCTL */
 					dctl->status = dc_ioctl_process(irp_sp->Parameters.DeviceIoControl.IoControlCode, dctl);
 
@@ -610,10 +695,43 @@ NTSTATUS dc_drv_control_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 					status = STATUS_SUCCESS;
 					length = sizeof(dc_ioctl);
 				}
+				else if ( (data != NULL) && (in_len != 0) &&
+					      ((irp_sp->Parameters.DeviceIoControl.IoControlCode & 3) != METHOD_NEITHER) )
+				{
+					/* a malformed (wrong-size) request may still carry passwords - wipe the
+					 * input (BUFFERED / *_DIRECT: SystemBuffer holds in_len bytes of input) */
+					RtlSecureZeroMemory(data, in_len);
+				}
 			}
 		break;
 	}
 	return dc_complete_irp(irp, status, length);
+}
+
+/*
+ * The volume length an encrypted volume reports is use_size. During a partition grow use_size
+ * stays the old one until dc_update_volume has relocated the layout, but the storage provider
+ * checks the length right away and would skip the file system extend. So report
+ * max(use_size, lower length - the layout's fixed part): the fixed part is 0 for a $dcsys$
+ * storage file and stor_len otherwise (see dc_header_layout), used only when consistent with
+ * dsk_size - use_size. Outside a resize this is use_size. Only reported: the I/O bounds stay
+ * use_size, and the minifilter waits for the update and clamps a file system extend to
+ * use_size (FSCTL_EXTEND_VOLUME). Not for CDs (dsk_size may be a rounded geometry value).
+ * Completion routine (up to DISPATCH_LEVEL): plain reads, one snapshot.
+ */
+static u64 dc_reported_len(dev_hook *hook, u64 lower)
+{
+	u32 flags = hook->flags;
+	u64 dsk   = hook->dsk_size;
+	u64 use   = hook->use_size;
+	u64 fixed = (flags & F_PROTECT_DCSYS) ? 0 : hook->stor_len;
+
+	if ((flags & F_CDROM) || dsk < use || dsk - use < fixed || lower <= fixed || lower - fixed <= use) {
+		return use;
+	}
+	DbgMsg("dc_ioctl_complete: length during a resize: lower %I64u, dsk_size %I64u, use_size %I64u, reported %I64u\n",
+		lower, dsk, use, lower - fixed);
+	return lower - fixed;
 }
 
 static NTSTATUS dc_ioctl_complete(PDEVICE_OBJECT dev_obj, PIRP irp, void *param)
@@ -635,19 +753,19 @@ static NTSTATUS dc_ioctl_complete(PDEVICE_OBJECT dev_obj, PIRP irp, void *param)
 			case IOCTL_DISK_GET_LENGTH_INFO:
 			  {
 				  PGET_LENGTH_INFORMATION gl = pv(irp->AssociatedIrp.SystemBuffer);
-				  gl->Length.QuadPart = hook->use_size;
+				  gl->Length.QuadPart = dc_reported_len(hook, gl->Length.QuadPart);
 			  }
 		    break;
 			case IOCTL_DISK_GET_PARTITION_INFO:
 			  {
 				  PPARTITION_INFORMATION pi = pv(irp->AssociatedIrp.SystemBuffer);
-				  pi->PartitionLength.QuadPart = hook->use_size;				
+				  pi->PartitionLength.QuadPart = dc_reported_len(hook, pi->PartitionLength.QuadPart);
 			  }
 		    break;
 			case IOCTL_DISK_GET_PARTITION_INFO_EX:
 			  {
-				  PPARTITION_INFORMATION_EX pi = pv(irp->AssociatedIrp.SystemBuffer);				  
-				  pi->PartitionLength.QuadPart = hook->use_size;
+				  PPARTITION_INFORMATION_EX pi = pv(irp->AssociatedIrp.SystemBuffer);
+				  pi->PartitionLength.QuadPart = dc_reported_len(hook, pi->PartitionLength.QuadPart);
 			  }
 		    break;
 			case IOCTL_CDROM_GET_DRIVE_GEOMETRY_EX:
@@ -661,9 +779,17 @@ static NTSTATUS dc_ioctl_complete(PDEVICE_OBJECT dev_obj, PIRP irp, void *param)
 	if ( (hook->flags & F_REMOVABLE) && (IS_VERIFY_IOCTL(ioctl) != 0) )
 	{
 		chg_c  = pv(irp->AssociatedIrp.SystemBuffer);
-		change = NT_SUCCESS(status) == FALSE;
-		
-		if (irp->IoStatus.Information == sizeof(u32)) {
+		/* only a real media change / removal counts - a malformed request (sendable through
+		 * a 0-access handle) or a transient error on present media must not unmount the
+		 * volume under the file system (MF_NOFSCTL: the FS stays mounted over a keyless volume) */
+		change = IS_MEDIA_CHANGE_STATUS(status);
+
+		/* the media change count is only valid on success, with an output buffer that
+		 * really holds it (some classpnp versions set Information on failure paths) */
+		if ( NT_SUCCESS(status) && (chg_c != NULL) &&
+			 (irp->IoStatus.Information == sizeof(u32)) &&
+			 (irp_sp->Parameters.DeviceIoControl.OutputBufferLength >= sizeof(u32)) )
+		{
 			change |= lock_xchg(&hook->chg_count, *chg_c) != *chg_c;
 			*chg_c += hook->chg_mount;
 		}
@@ -690,11 +816,33 @@ static NTSTATUS dc_trim_irp(dev_hook *hook, PIRP irp)
 	u64                                len1, len2;
 	u32                                i;
 
-	if ( (length < sizeof(DEVICE_MANAGE_DATA_SET_ATTRIBUTES)) ||
-		 (p_set->Action != DeviceDsmAction_Trim) ||
-		 (length < d64(p_set->DataSetRangesOffset) + d64(p_set->DataSetRangesLength)) )
+	/* only TRIM is translated below; every other action would reach the raw device with
+	 * untranslated volume offsets (no head_len shift / redirect, no encryption, no header
+	 * protection). Refuse the ones that change data (no NonDestructive flag), OffloadRead (its
+	 * token hands raw ciphertext to an ODX write; Windows falls back to a normal copy), and the
+	 * "non-destructive" actions that rewrite or expose data at their ranges (Repair / Scrub /
+	 * ..., GetPhysicalAddresses). Informational actions are forwarded. A malformed request
+	 * (too short, or a range length the buffer size would wrap on) is refused, not passed down. */
+	if (length < sizeof(DEVICE_MANAGE_DATA_SET_ATTRIBUTES)) {
+		return dc_release_irp(hook, irp, STATUS_INVALID_PARAMETER);
+	}
+	if ( (p_set->Action != DeviceDsmAction_Trim) &&
+		 ( (p_set->Action & DeviceDsmActionFlag_NonDestructive) == 0 ||
+		   p_set->Action == DeviceDsmAction_OffloadRead || p_set->Action == DeviceDsmAction_Repair ||
+		   p_set->Action == DeviceDsmAction_RegenerateParity || p_set->Action == DeviceDsmAction_Scrub ||
+		   p_set->Action == DeviceDsmAction_GetPhysicalAddresses || p_set->Action == DeviceDsmAction_ScopeRegen ||
+		   p_set->Action == DeviceDsmAction_DrtClear || p_set->Action == DeviceDsmAction_DrtDisable ) )
 	{
+		DbgMsg("dc_trim_irp: DSM action 0x%x refused on an encrypted volume\n", p_set->Action);
+		return dc_release_irp(hook, irp, STATUS_INVALID_DEVICE_REQUEST);
+	}
+	if (p_set->Action != DeviceDsmAction_Trim) {
 		return dc_forward_irp(hook, irp);
+	}
+	if ( (length < d64(p_set->DataSetRangesOffset) + d64(p_set->DataSetRangesLength)) ||
+		 (p_set->DataSetRangesLength > MAXULONG / 4) ) /* TRIM_BUFF_MAX doubles it in 32 bits */
+	{
+		return dc_release_irp(hook, irp, STATUS_INVALID_PARAMETER);
 	}
 	if (dc_conf_flags & CONF_DISABLE_TRIM)
 	{
@@ -725,7 +873,11 @@ static NTSTATUS dc_trim_irp(dev_hook *hook, PIRP irp)
 		for (i = 0, range = addof(p_set, p_set->DataSetRangesOffset);
 			 i < p_set->DataSetRangesLength / sizeof(DEVICE_DATA_SET_RANGE); i++, range++)
 		{
-			if ( (offset = range->StartingOffset) + (rnglen = range->LengthInBytes) > hook->use_size ) {
+			offset = range->StartingOffset;
+			rnglen = range->LengthInBytes;
+			/* overflow-safe range check ('offset + rnglen' wraps for a huge StartingOffset;
+			 * on F_NO_REDIRECT offset + head_len would wrap back into the volume header) */
+			if ( (offset >= hook->use_size) || (rnglen > hook->use_size - offset) ) {
 				continue;
 			}
 			if (hook->flags & F_NO_REDIRECT) {
@@ -747,8 +899,35 @@ static NTSTATUS dc_trim_irp(dev_hook *hook, PIRP irp)
 	return dc_release_irp(hook, irp, STATUS_SUCCESS);
 }
 
+/* control codes that write to the volume's sectors (or may: pass-through commands) */
+static int dc_is_data_ioctl(ULONG iocode)
+{
+	switch (iocode)
+	{
+		case IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES: /* TRIM, offload write, ... */
+		case IOCTL_DISK_COPY_DATA:
+		case IOCTL_DISK_FORMAT_TRACKS:
+		case IOCTL_DISK_FORMAT_TRACKS_EX:
+		case IOCTL_STORAGE_REINITIALIZE_MEDIA:
+		/* not IOCTL_SCSI_MINIPORT: vendor commands that may stay pending would hang a start */
+		case IOCTL_SCSI_PASS_THROUGH:
+		case IOCTL_SCSI_PASS_THROUGH_DIRECT:
+		case IOCTL_ATA_PASS_THROUGH:
+		case IOCTL_ATA_PASS_THROUGH_DIRECT:
+#ifdef IOCTL_SCSI_PASS_THROUGH_EX
+		case IOCTL_SCSI_PASS_THROUGH_EX:
+		case IOCTL_SCSI_PASS_THROUGH_DIRECT_EX:
+#endif
+#ifdef IOCTL_STORAGE_PROTOCOL_COMMAND
+		case IOCTL_STORAGE_PROTOCOL_COMMAND:
+#endif
+			return 1;
+	}
+	return 0;
+}
+
 NTSTATUS dc_io_control_irp(dev_hook *hook, PIRP irp)
-{	
+{
 	PIO_STACK_LOCATION irp_sp = IoGetCurrentIrpStackLocation(irp);
 	ULONG              iocode = irp_sp->Parameters.DeviceIoControl.IoControlCode;
 
@@ -761,9 +940,51 @@ NTSTATUS dc_io_control_irp(dev_hook *hook, PIRP irp)
 		IoSetCompletionRoutine(irp, dc_ioctl_complete, NULL, TRUE, TRUE, TRUE);
 		return IoCallDriver(hook->orig_dev, irp);
 	}
+	/* BypassIO sends file system reads / writes straight to the storage driver, past this
+	 * filter's translation and encryption. Refused on EVERY hooked volume: DC cannot revoke it
+	 * when a plain volume is encrypted later (and the minifilter, which normally vetoes it, may
+	 * not be attached). An error status means "not enabled" to the file system; BPIO_OP_DISABLE
+	 * "should not be failed" and is passed down. BPIO_INPUT: ULONG Version, ULONG Size, then
+	 * the operation. */
+	if (iocode == IOCTL_STORAGE_MANAGE_BYPASS_IO)
+	{
+		PULONG bpio = (PULONG)irp->AssociatedIrp.SystemBuffer;
+
+		if (bpio != NULL && irp_sp->Parameters.DeviceIoControl.InputBufferLength >= 3 * sizeof(ULONG) &&
+			bpio[2] == 2 /* BPIO_OP_DISABLE */)
+		{
+			return dc_forward_irp(hook, irp);
+		}
+		return dc_release_irp(hook, irp, STATUS_NOT_SUPPORTED);
+	}
+	/* a data-changing request on an unmounted volume is counted like a write until it
+	 * completes, so an encryption start waits for it before it copies the partition begin
+	 * (a TRIM / offload write / copy landing after that would corrupt it) */
+	if ( !(hook->flags & F_ENABLED) && dc_is_data_ioctl(iocode) ) {
+		return io_forward_plain_ioctl(hook, irp);
+	}
 	if (hook->flags & F_ENABLED) {
-		if (iocode == IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES) return dc_trim_irp(hook, irp);
-		if (iocode == IOCTL_VOLUME_UPDATE_PROPERTIES) return dc_release_irp(hook, irp, dc_update_volume(hook, 0));
+		/* F_PLAIN_IO: decryption finished, the volume is plaintext at its natural offsets
+		 * and only waits for unmount. TRIM ranges must not be translated and there is no
+		 * DC layout left to relocate on resize, so let the lower stack handle both. */
+		if ((hook->flags & F_PLAIN_IO) == 0) {
+			if (iocode == IOCTL_STORAGE_MANAGE_DATA_SET_ATTRIBUTES) {
+				/* a locked volume fails its I/O like a locked BitLocker volume - no
+				 * data set management either (dc_update_volume below rejects F_DISABLE) */
+				if (hook->flags & F_HIBER_ERASE) return dc_release_irp(hook, irp, STATUS_FVE_LOCKED_VOLUME);
+				/* no TRIM on a volume mounted with a damaged header (MF_IGNORE_CRC) */
+				if (hook->mnt_flags & MF_IGNORE_CRC) return dc_release_irp(hook, irp, STATUS_MEDIA_WRITE_PROTECTED);
+				return dc_trim_irp(hook, irp);
+			}
+			if (iocode == IOCTL_VOLUME_UPDATE_PROPERTIES) return dc_release_irp(hook, irp, dc_update_volume(hook, 0));
+			/* a disk-side data copy moves raw ciphertext to another offset,
+			 * where it decrypts as garbage */
+			if (iocode == IOCTL_DISK_COPY_DATA) {
+				DbgMsg("IOCTL_DISK_COPY_DATA refused on an encrypted volume, dev=%ws\n", hook->dev_name);
+				return dc_release_irp(hook, irp, STATUS_NOT_SUPPORTED);
+			}
+		}
+		/* read-only is mount policy, not layout: honor it as long as the volume is mounted */
 		if (iocode == IOCTL_DISK_IS_WRITABLE) {
 			if ((hook->mnt_flags & MF_READ_ONLY)) {
 				return dc_release_irp(hook, irp, STATUS_MEDIA_WRITE_PROTECTED);

@@ -28,7 +28,7 @@ https://opensource.org/licenses/Apache-2.0
 #define DCS_DIRECTORY L"DCS"
 
 #define DCS_CAPTION "Disk Cryptor" //Disk Cryptography Services
-#define DCS_VERSION 242 // 2.42
+#define DCS_VERSION 250 // 2.50
 
 #define OPT_EXTERN_KEY L"-extern"
 
@@ -40,22 +40,39 @@ https://opensource.org/licenses/Apache-2.0
 // Configuration passed from DcsBoot to DcsInt via LoadOptions,
 // and updated by DcsInt before returning to DcsBoot.
 //
-typedef struct _DCS_BOOT_CONFIG {
-    UINT32      Size;               // Size of this structure for versioning
+// DcsInt accepts a boot config only with this magic, this version and exactly this
+// size - DcsBoot and DcsInt must come from the same build. Bump the version on any layout change.
+#define DCS_BOOT_CONFIG_MAGIC    SIGNATURE_32('D', 'C', 'S', 'B')
+#define DCS_BOOT_CONFIG_VERSION  2
 
-    // Config file (passed from DcsBoot, avoids double-read)
-    CHAR16      *ConfigFileName;    // Path to config file
+typedef struct _DCS_BOOT_CONFIG {
+    UINT32      Size;               // sizeof(DCS_BOOT_CONFIG) (first, where older builds read it)
+    UINT32      Magic;              // DCS_BOOT_CONFIG_MAGIC
+    UINT32      Version;            // DCS_BOOT_CONFIG_VERSION
+
+    // Recovery mode (set by DcsInt to indicate recovery boot)
+    BOOLEAN     ExternMode;
+
+    // Set by DcsInt on a successful unlock: the user entered the password or a TPM /
+    // recovery PIN - only then may DcsBoot open the recovery or boot menu. FALSE by default.
+    BOOLEAN     UnlockInteractive;
+
+    // Config file content (passed from DcsBoot, avoids double-read). The file is always
+    // CONFIG_FILE_PATH; its name is not passed.
     CHAR8       *ConfigBuffer;      // Config file content
     UINTN       ConfigBufferSize;   // Size of config buffer
 
     // Exec parameters (replaces DcsExecPartGuid/DcsExecCmd variables)
     EFI_GUID    ExecPartGuid;       // Partition GUID to boot from
     CHAR16      ExecCmd[512];       // Boot command/path
-
-    // Recovery mode (set by DcsInt to indicate recovery boot)
-    BOOLEAN     ExternMode;
-
 } DCS_BOOT_CONFIG;
+
+// Builds before the magic/version check accept any block of at least their own size,
+// 1080 bytes on X64/AARCH64 - this layout (the flags packed after Version) stays smaller, so such
+// a DcsInt refuses it and loads the config itself instead of misreading it. Keep it that way.
+#if defined(MDE_CPU_X64) || defined(MDE_CPU_AARCH64)
+STATIC_ASSERT(sizeof(DCS_BOOT_CONFIG) < 1080, "DCS_BOOT_CONFIG must stay smaller than the pre-#155 layout");
+#endif
 
 //
 // Global pointer to boot config (set in DcsInt from LoadOptions)
@@ -108,6 +125,16 @@ EFI_STATUS CfgWriteString(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *Conf
 EFI_STATUS CfgWriteInteger(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey, INT32 ConfigValue);
 EFI_STATUS CfgWriteInteger64(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey, INT64 ConfigValue);
 EFI_STATUS CfgWriteStringW(CFG_STRING *S, CHAR8 *ConfigContent, CONST CHAR8 *ConfigKey, CONST CHAR16 *ConfigValue);
+EFI_STATUS CfgCopyUnmarked(CFG_STRING *S, CHAR8 *ConfigContent);
+EFI_STATUS CfgLoadCurrent(CHAR8 **Content);
+EFI_STATUS CfgReloadCurrent(VOID);
+
+// VerboseDebug when the key is absent - one default for every module
+#ifdef DEBUG_BUILD
+#define DCS_VERBOSE_DEBUG_DEFAULT  1
+#else
+#define DCS_VERBOSE_DEBUG_DEFAULT  0
+#endif
 EFI_STATUS ConfigSave(CFG_STRING *NewConfig); 
 
 BOOLEAN InitParams();

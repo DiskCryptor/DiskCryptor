@@ -53,7 +53,7 @@ static HWND __h_statusbar;
 static int  __cached_count = 0;  /* Cached password count from status bar update */
 
 /* Forward declarations */
-static int _count_mounted_volumes(void);
+static int _count_mounted_volumes(int *locked);
 void _update_status_bar(void);
 static ULONG _get_system_volume_flags(void);
 
@@ -126,7 +126,7 @@ void _init_main_dlg(
 
 	/* Set up status bar parts */
 	{
-		int parts[3] = { 150, 300, -1 };
+		int parts[3] = { 190, 340, -1 };
 		SendMessage(__h_statusbar, SB_SETPARTS, 3, (LPARAM)parts);
 	}
 
@@ -142,12 +142,13 @@ void _init_main_dlg(
 }
 
 
-static int _count_mounted_volumes(void)
+static int _count_mounted_volumes(int *locked)
 {
 	list_entry *node;
 	list_entry *sub;
 	int count = 0;
 
+	*locked = 0;
 	for (node = __drives.flink; node != &__drives; node = node->flink)
 	{
 		_dnode *root = contain_record(node, _dnode, list);
@@ -157,6 +158,10 @@ static int _count_mounted_volumes(void)
 			if (mnt->mnt.info.status.flags & F_ENABLED)
 			{
 				count++;
+			}
+			if (DC_IS_LOCKED(mnt->mnt.info.status.flags))
+			{
+				(*locked)++;
 			}
 		}
 	}
@@ -188,11 +193,12 @@ void _update_status_bar(void)
 	DC_FLAGS flags;
 	wchar_t *boot_mode = L"Unknown";
 	int mounted_count;
+	int locked_count;
 
 	if (!__h_statusbar)
 		return;
 
-	mounted_count = _count_mounted_volumes();
+	mounted_count = _count_mounted_volumes(&locked_count);
 	dc_enum_passwords(NULL, 0, &__cached_count);
 
 	if (dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &flags, sizeof(flags)) == NO_ERROR)
@@ -213,7 +219,11 @@ void _update_status_bar(void)
 		}
 	}
 
-	_snwprintf(text, countof(text), L"Mounted Volumes: %d", mounted_count);
+	if (locked_count != 0) {
+		_snwprintf(text, countof(text), L"Mounted Volumes: %d (%d locked)", mounted_count, locked_count);
+	} else {
+		_snwprintf(text, countof(text), L"Mounted Volumes: %d", mounted_count);
+	}
 	SendMessage(__h_statusbar, SB_SETTEXT, 0, (LPARAM)text);
 
 	_snwprintf(text, countof(text), L"Cached Passwords: %d", __cached_count);
@@ -539,6 +549,11 @@ _main_dialog_proc(
 				}
 				if ( ((NMHDR *)lparam)->code == LVN_ITEMACTIVATE )
 				{
+					if ( !sel->is_root && DC_IS_LOCKED(sel->mnt.info.status.flags) )
+					{
+						/* locked volume: its files cannot be read, offer the unlock */
+						_menu_mount( sel );
+					} else
 					if ((sel->mnt.info.status.flags & F_ENABLED) || sel->mnt.fs[0] != '\0')
 					{
 						if (! sel->is_root )
@@ -597,6 +612,18 @@ _main_dialog_proc(
 							 !_is_root_item((LPARAM)sel) && _is_active_item((LPARAM)sel)
 							 )
 						{
+							if ( DC_IS_LOCKED(mnt->info.status.flags) )
+							{
+								/* locked volume (keys erased at hibernation): unlock or (force) unmount */
+								AppendMenu( h_popup, MF_STRING, ID_VOLUMES_MOUNT, IDS_UNLOCK );
+
+								if ( IS_UNMOUNTABLE(&mnt->info.status) )
+								{
+									AppendMenu( h_popup, MF_SEPARATOR, 0, NULL );
+									AppendMenu( h_popup, MF_STRING, ID_VOLUMES_UNMOUNT, IDS_UNMOUNT );
+									AppendMenu( h_popup, MF_STRING, ID_VOLUMES_FORCE_DISMOUNT, IDS_FORCE_UNMOUNT );
+								}
+							} else
 							if ( mnt->info.status.flags & F_ENABLED )
 							{
 								if ( mnt->info.status.flags & F_CDROM )
@@ -689,6 +716,7 @@ _main_dialog_proc(
 							case ID_VOLUMES_REENCRYPT	: _menu_reencrypt(sel);	break;
 
 							case ID_VOLUMES_UNMOUNT		: _menu_unmount(sel);	break;
+							case ID_VOLUMES_FORCE_DISMOUNT : _menu_force_unmount(sel); break;
 							case ID_VOLUMES_MOUNT		: _menu_mount(sel);		break;
 
 							case ID_VOLUMES_CHANGEPASS	: _menu_change_pass(sel); break;
@@ -861,6 +889,7 @@ _main_dialog_proc(
 			case IDC_BTN_UNMOUNTALL_ : _menu_unmountall( ); break;
 
 			case ID_VOLUMES_DISMOUNT : _menu_unmount( node ); break;
+			case ID_VOLUMES_FORCE_DISMOUNT : _menu_force_unmount( node ); break;
 			case ID_VOLUMES_MOUNT :    _menu_mount( node ); break;
 
 			case ID_VOLUMES_FORMAT :    _menu_format(node); break;
@@ -888,8 +917,9 @@ _main_dialog_proc(
 			switch ( id ) {
 			case IDC_BTN_MOUNT_: 
 			{		
-				node->mnt.info.status.flags & F_ENABLED ?
-					_menu_unmount(node) : 
+				/* a locked volume shows "Unlock" here, _menu_mount unlocks it */
+				( (node->mnt.info.status.flags & F_ENABLED) && !DC_IS_LOCKED(node->mnt.info.status.flags) ) ?
+					_menu_unmount(node) :
 					_menu_mount(node);
 			}
 			break;

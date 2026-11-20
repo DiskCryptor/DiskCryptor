@@ -40,6 +40,9 @@
 #define DC_CTL_BENCHMARK_KDF    CTL_CODE(FILE_DEVICE_UNKNOWN, 34, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define DC_CTL_UPDATE_LAYOUT    CTL_CODE(FILE_DEVICE_UNKNOWN, 35, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define DC_CTL_ENUM_PASS        CTL_CODE(FILE_DEVICE_UNKNOWN, 36,  METHOD_BUFFERED, FILE_ANY_ACCESS)
+/* re-check the certificate in the registry (sent by dc_save_certificate); no buffers.
+ * DC_CTL_GET_FLAGS returns the result of the last check (load or this request) */
+#define DC_CTL_CHECK_CERT       CTL_CODE(FILE_DEVICE_UNKNOWN, 37, METHOD_BUFFERED, FILE_ANY_ACCESS)
 
 #define FSCTL_LOCK_VOLUME       CTL_CODE(FILE_DEVICE_FILE_SYSTEM,  6, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #define FSCTL_UNLOCK_VOLUME     CTL_CODE(FILE_DEVICE_FILE_SYSTEM,  7, METHOD_BUFFERED, FILE_ANY_ACCESS)
@@ -180,7 +183,10 @@ typedef struct _dc_pass_enum {
 
 #define DC_MEM_RETRY_TIME    10
 #define DC_MEM_RETRY_TIMEOUT (1000 * 30)
-#define ENC_BLOCK_SIZE (1280 * 1024)
+/* transcryption block: one read + one write request each, journaled as one record by a
+   power-loss protected session (the small fallback journal of dc_slog_create limits the
+   step to its block_max). */
+#define ENC_BLOCK_SIZE (8 * 1024 * 1024)
 
 #ifdef IS_DRIVER
  extern PDEVICE_OBJECT  dc_device;
@@ -190,6 +196,22 @@ typedef struct _dc_pass_enum {
  extern ULONG           dc_boot_flags;
  extern ULONG           dc_boot_kbs;
  extern ULONG           dc_cpu_count;
+#endif
+
+/*
+ * DC_MBR_LEGACY_GUARD: the legacy BIOS (MBR) loader (boot/vc2008_src) is no longer updated.
+ * It mounts headers with v1 geometry, has no backup header support, knows only the PBKDF2
+ * KDF and reads the header's stor_off (stale after a resize without a session, and scrubbed
+ * on an extend). On a BIOS-booted system the driver therefore refuses options it cannot boot
+ * for the volumes it reads: the boot (Windows) and system (bootmgr) volume.
+ * Search for DC_MBR_LEGACY_GUARD and remove this define when the BIOS loader is updated.
+ */
+#define DC_MBR_LEGACY_GUARD
+
+#ifdef DC_MBR_LEGACY_GUARD
+/* a volume the BIOS loader has to read (not booted in UEFI mode; boot, system or active MBR
+ * partition), see dc_mbr_boot_volume. PASSIVE. */
+#define DC_MBR_BOOT_VOLUME(_hook_) dc_mbr_boot_volume(_hook_)
 #endif
 
 

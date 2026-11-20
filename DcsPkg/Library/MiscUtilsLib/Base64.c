@@ -89,10 +89,13 @@ DcsBase64DecodedSize (
     }
 
     Len = StrLen(Input);
+    if (Len % 4 != 0) {
+        return 0;
+    }
     Size = Len / 4 * 3;
 
-    // Account for padding characters
-    for (i = Len; i > 0; i--) {
+    // Account for padding characters (at most 2, only in the last quad)
+    for (i = Len; i > 0 && i > Len - 2; i--) {
         if (Input[i - 1] == L'=') {
             Size--;
         } else {
@@ -152,6 +155,16 @@ DcsBase64Decode (
 
     // Decode 4 characters at a time into 3 bytes
     for (i = 0, j = 0; i < Len; i += 4, j += 3) {
+        // '=' only allowed as the last one or two chars of the final quad
+        if (Input[i] == L'=' || Input[i + 1] == L'=' ||
+            (Input[i + 2] == L'=' && Input[i + 3] != L'=') ||
+            (Input[i + 3] == L'=' && i + 4 != Len)) {
+            return FALSE;
+        }
+        if (j + (Input[i + 2] == L'=' ? 1 : (Input[i + 3] == L'=' ? 2 : 3)) > OutputSize) {
+            return FALSE;
+        }
+
         Value = mBase64InverseTable[Input[i] - 43];
         Value = (Value << 6) | mBase64InverseTable[Input[i + 1] - 43];
         Value = Input[i + 2] == L'=' ? Value << 6 : (Value << 6) | mBase64InverseTable[Input[i + 2] - 43];

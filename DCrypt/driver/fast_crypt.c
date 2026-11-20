@@ -21,21 +21,31 @@
 #include <ntifs.h>
 #include "defines.h"
 #include "misc.h"
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#else
 #include "xts_fast.h"
-//#endif
 #include "fast_crypt.h"
 
 /* function types declaration */
 KSTART_ROUTINE cp_worker_thread;
 
-#ifdef _M_X64
+/* size the arrays by the KAFFINITY width, which bounds dc_cpu_count (it is counted
+ * from KeQueryActiveProcessors); _WIN64 also covers ARM64. */
+#if defined(_WIN64)
  #define MAX_CPU_COUNT 64
 #else
  #define MAX_CPU_COUNT 32
 #endif
+C_ASSERT(MAX_CPU_COUNT >= sizeof(KAFFINITY) * 8);
+
+/* CPU count used for the worker pool and the part split, clamped to the arrays
+ * (never 0, it is a divisor) */
+static ULONG cp_pool_cpu_count()
+{
+	ULONG n = dc_cpu_count;
+
+	if (n == 0) n = 1;
+	if (n > MAX_CPU_COUNT) n = MAX_CPU_COUNT;
+	return n;
+}
 
 typedef struct _req_part {
 	SLIST_ENTRY       entry;
@@ -113,6 +123,7 @@ void cp_parallelized_crypt(
 	req_part *part;
 	u32       part_sz;
 	u32       part_of;
+	ULONG     cpu_n, part_n;
 
 	if ( (len < F_OP_THRESOLD) ||
 		 ((item = ExAllocateFromNPagedLookasideList(&pool_req_mem)) == NULL) )
@@ -133,10 +144,14 @@ void cp_parallelized_crypt(
 	item->param = param;
 	item->key   = key;
 
-	part_sz = _align(len / dc_cpu_count, F_MIN_REQ);
-	part_of = 0; part = &item->parts[0];
+	cpu_n   = cp_pool_cpu_count();
+	part_sz = _align(len / cpu_n, F_MIN_REQ);
+	part_of = 0; part = &item->parts[0]; part_n = 0;
 	do
 	{
+		/* never more than cpu_n (<= MAX_CPU_COUNT) parts - the last one takes the
+		 * remainder (only reachable for a len that is not a multiple of 512) */
+		if (++part_n == cpu_n) part_sz = len;
 		part_sz      = min(part_sz, len);
 		part->item   = item;
 		part->offset = part_of;
@@ -201,7 +216,7 @@ int cp_init_fast_crypt()
 	InitializeSListHead(&pool_head);
 
 	/* start worker threads */
-	for (i = 0; i < dc_cpu_count; i++)
+	for (i = 0; i < cp_pool_cpu_count(); i++)	/* bounded by pool_threads[] */
 	{
 		if (start_system_thread(cp_worker_thread, NULL, &pool_threads[i]) != ST_OK) {
 			cp_free_fast_crypt(); return ST_ERR_THREAD;

@@ -18,6 +18,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include "Library/PasswordLib.h"
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/PrintLib.h>
+#include <Library/BaseLib.h>
 
 VOID
 PrintConsolePwd(
@@ -70,8 +71,8 @@ PrintStatusLine(
 
 	// Move to status line
 	gST->ConOut->SetCursorPosition(gST->ConOut, 0, statusRow);
-	// Print status
-	OUT_PRINT(L"%s", statusStr);
+	// Print status (the caller's own text with colour codes)
+	AttrPrintText(statusStr);
 
 	// Return to original position
 	gST->ConOut->SetCursorPosition(gST->ConOut, curCol, curRow);
@@ -112,6 +113,7 @@ AskConsolePwdEx(
 		OUT_PRINT(L"%a", msg);
 	}
 
+	KbResetState();   // no dead key from before the prompt
 
 	if (*length > 0)
 	{
@@ -137,14 +139,15 @@ AskConsolePwdEx(
 		EFI_EVENT      InputEvents[2];
 		UINTN          EventIndex = 0;
 		InputEvents[0] = gST->ConIn->WaitForKey;
-		gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
-		gBS->SetTimer(InputEvents[1], TimerRelative, 10000000 * gPasswordTimeout);
-		gBS->WaitForEvent(2, InputEvents, &EventIndex);
-		gBS->SetTimer(InputEvents[1], TimerCancel, 0);
-		gBS->CloseEvent(InputEvents[1]);
-		if (EventIndex == 1) {
-			*retCode = AskPwdRetTimeout;
-			return ;
+		if (!EFI_ERROR(gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]))) {
+			gBS->SetTimer(InputEvents[1], TimerRelative, MultU64x32(10000000ULL, (UINT32)gPasswordTimeout));
+			gBS->WaitForEvent(2, InputEvents, &EventIndex);
+			gBS->SetTimer(InputEvents[1], TimerCancel, 0);
+			gBS->CloseEvent(InputEvents[1]);
+			if (EventIndex == 1) {
+				*retCode = AskPwdRetTimeout;
+				return ;
+			}
 		}
 	}
 
@@ -276,12 +279,14 @@ AskConsolePwdEx(
 		}
 
 		if (key.ScanCode == SCAN_INSERT) {
-			if (pos < count && (pos < line_max - 1)) {
-				count++;
-				for (i = count; i >= pos; i--) {
-					SET_VAR_CHAR(asciiLine, wide, i+1, GET_VAR_CHAR(asciiLine, wide, i));
+			if (pos < count && (count < line_max - 1)) {
+				// i > pos: unsigned index must not wrap when pos == 0
+				for (i = count; i > pos; i--) {
+					SET_VAR_CHAR(asciiLine, wide, i, GET_VAR_CHAR(asciiLine, wide, i-1));
 				}
 				SET_VAR_CHAR(asciiLine, wide, pos, ' '); // set inserted char value
+				count++;
+				SET_VAR_CHAR(asciiLine, wide, count, '\0');
 
 				PrintConsolePwd(asciiLine, count, pos, show, wide);
 			}

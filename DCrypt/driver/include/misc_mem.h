@@ -15,6 +15,7 @@ void  mm_secure_free(PVOID ptr);
 NTSTATUS mm_lock_user_memory(HANDLE process_id, PVOID ptr, ULONG length);
 NTSTATUS mm_unlock_user_memory(HANDLE process_id, PVOID ptr);
 void     mm_clean_secure_memory();
+void     mm_clean_usermode_memory();
 
 #pragma warning(disable: 4996) // disable deprecation warning
 

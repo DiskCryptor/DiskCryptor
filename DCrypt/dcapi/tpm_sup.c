@@ -748,8 +748,11 @@ int dc_tpm_nv_entry_exists(u32 nv_index)
     if (g_tpm_version == 1)
         return dc_tpm_12_nv_exists(nv_index);
 
-    if (g_tpm_version == 2)
-        return dc_tpm_20_nv_exists(0x01000000 | nv_index); // TPM 2.0 owner-defined range
+    if (g_tpm_version == 2) {
+        if (dc_tpm_20_nv_exists(0x01000000 | nv_index)) return 1; // TPM 2.0 owner-defined range
+        /* while the primary is missing, the copy of an interrupted DCS reseal is the entry */
+        return (nv_index == DC_TPM_NV_INDEX_PRIMARY) ? dc_tpm_20_nv_exists(0x01000000 | DC_TPM_NV_INDEX_MIGRATE) : 0;
+    }
 
     return 0;
 }
@@ -778,8 +781,14 @@ int dc_tpm_nv_get_info(u32 nv_index, u32 *pcr_mask, u32 *flags, void *info_buffe
     if (g_tpm_version == 1)
         return dc_tpm_12_nv_get_info(nv_index, pcr_mask, flags, info_buffer, info_size);
 
-    if (g_tpm_version == 2)
-        return dc_tpm_20_nv_get_info(0x01000000 | nv_index, pcr_mask, flags, info_buffer, info_size); // TPM 2.0 owner-defined range
+    if (g_tpm_version == 2) {
+        resl = dc_tpm_20_nv_get_info(0x01000000 | nv_index, pcr_mask, flags, info_buffer, info_size); // TPM 2.0 owner-defined range
+        /* the copy of an interrupted DCS reseal stands in for a missing primary */
+        if (resl != ST_OK && nv_index == DC_TPM_NV_INDEX_PRIMARY && dc_tpm_20_nv_exists(0x01000000 | DC_TPM_NV_INDEX_MIGRATE)) {
+            resl = dc_tpm_20_nv_get_info(0x01000000 | DC_TPM_NV_INDEX_MIGRATE, pcr_mask, flags, info_buffer, info_size);
+        }
+        return resl;
+    }
 
 	return ST_NOT_SUPPORTED;
 }
@@ -862,8 +871,17 @@ int dc_tpm_delete_nv_entry(u32 nv_index, const wchar_t* owner_pwd)
     if (g_tpm_version == 1)
         return dc_tpm_12_delete_nv_entry(nv_index, owner_pwd);
 
-    if (g_tpm_version == 2)
-        return dc_tpm_20_delete_nv_entry(0x01000000 | nv_index); // TPM 2.0 owner-defined range
+    if (g_tpm_version == 2) {
+        resl = dc_tpm_20_delete_nv_entry(0x01000000 | nv_index); // TPM 2.0 owner-defined range
+        /* also the copy DCS keeps while it reseals the primary, so a deleted secret cannot come
+           back from it; even without a primary (an interrupted reseal can leave the copy alone) */
+        if (nv_index == DC_TPM_NV_INDEX_PRIMARY &&
+            dc_tpm_20_nv_exists(0x01000000 | DC_TPM_NV_INDEX_MIGRATE) != 0) {
+            int mresl = dc_tpm_20_delete_nv_entry(0x01000000 | DC_TPM_NV_INDEX_MIGRATE);
+            if (resl != ST_OK) resl = mresl; /* only the copy was there */
+        }
+        return resl;
+    }
 
 	return ST_NOT_SUPPORTED;
 }

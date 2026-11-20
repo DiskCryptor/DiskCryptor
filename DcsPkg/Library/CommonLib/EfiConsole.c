@@ -18,6 +18,7 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/PrintLib.h>
 #include <Protocol/SimpleTextOut.h>
 #include <Protocol/SimpleTextIn.h>
+#include <Protocol/SimpleTextInEx.h>
 #include <Protocol/ConsoleControl.h>
 #include <Protocol/Speaker.h>
 
@@ -106,6 +107,7 @@ FlushInputDelay(
 VOID
 FlushInput() {
 	FlushInputDelay(1000000);
+	KbResetState();
 }
 
 EFI_INPUT_KEY
@@ -147,20 +149,124 @@ KeyWait(
    return key;
 }
 
-EFI_INPUT_KEY 
-GetKey(void) 
+// Keyboard input mapped to the configured layout. A dead key's character waits for the
+// next key; a key that does not combine with it is kept here and returned next.
+STATIC EFI_INPUT_KEY  mKbPendingKey;
+STATIC BOOLEAN        mKbHasPending = FALSE;
+STATIC CHAR16         mKbDeadChar = 0;
+
+// One raw key if there is one. On AZERTY through the extended text input protocol (it reports the
+// shift and toggle state, for AltGr and Caps Lock); if that has no key, or for the other layouts,
+// through ConIn - the console splitter signals WaitForKey also for keyboards without the extended
+// protocol, and only ConIn reads those.
+STATIC
+EFI_STATUS
+KbReadRaw(
+	OUT EFI_INPUT_KEY  *Key,
+	OUT UINT32         *ShiftState,
+	OUT UINT8          *ToggleState
+	)
 {
-   EFI_INPUT_KEY key;
-   UINTN EventIndex;
-	EFI_STATUS res1;
-	EFI_STATUS res2;
-	do {
-		res1 = gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &EventIndex);
-		res2 = gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
-	} while (EFI_ERROR(res1) || EFI_ERROR(res2));
-   return MapKeyboardKey(key);
+	STATIC EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL *TextInEx = NULL;
+	STATIC BOOLEAN                            TextInExChecked = FALSE;
+	EFI_KEY_DATA   keyData;
+
+	*ShiftState = 0;
+	*ToggleState = 0;
+	if (gKeyboardLayout == KB_MAP_AZERTY) {
+		if (!TextInExChecked) {
+			TextInExChecked = TRUE;
+			if (EFI_ERROR(gBS->HandleProtocol(gST->ConsoleInHandle, &gEfiSimpleTextInputExProtocolGuid, (VOID**)&TextInEx))) {
+				TextInEx = NULL;
+			}
+		}
+		if (TextInEx != NULL) {
+			while (!EFI_ERROR(TextInEx->ReadKeyStrokeEx(TextInEx, &keyData))) {
+				if (keyData.Key.ScanCode == SCAN_NULL && keyData.Key.UnicodeChar == CHAR_NULL) {
+					continue;   // a shift/toggle-only report
+				}
+				*Key = keyData.Key;
+				*ShiftState = keyData.KeyState.KeyShiftState;
+				*ToggleState = keyData.KeyState.KeyToggleState;
+				return EFI_SUCCESS;
+			}
+		}
+	}
+	return gST->ConIn->ReadKeyStroke(gST->ConIn, Key);
 }
 
+// Forget a dead key waiting for its next key and the key held after one - at a new
+// prompt, on a flush, and when the touch keyboard is used in between
+VOID
+KbResetState(VOID)
+{
+	mKbDeadChar = 0;
+	mKbHasPending = FALSE;
+	ZeroMem(&mKbPendingKey, sizeof(mKbPendingKey));
+}
+
+EFI_STATUS
+KbReadKey(
+	OUT EFI_INPUT_KEY  *Key
+	)
+{
+	EFI_INPUT_KEY  raw;
+	EFI_INPUT_KEY  key;
+	UINT32         shift;
+	UINT8          toggle;
+	BOOLEAN        dead;
+	CHAR16         composed;
+	CHAR16         d;
+
+	if (mKbHasPending) {
+		mKbHasPending = FALSE;
+		*Key = mKbPendingKey;
+		return EFI_SUCCESS;
+	}
+	for (;;) {
+		if (EFI_ERROR(KbReadRaw(&raw, &shift, &toggle))) {
+			return EFI_NOT_READY;   // nothing (yet) - a dead key stays pending
+		}
+		key = MapKeyboardKeyEx(raw, shift, toggle, &dead);
+		if (mKbDeadChar != 0) {
+			// the key after a dead key: a letter that takes the accent combines with it, Space types
+			// the accent; anything else types the accent, then itself (a second dead key too)
+			d = mKbDeadChar;
+			mKbDeadChar = 0;
+			composed = (key.ScanCode == SCAN_NULL && !dead) ? KbComposeDeadKey(d, key.UnicodeChar) : 0;
+			if (composed != 0) {
+				key.UnicodeChar = composed;
+				*Key = key;
+				return EFI_SUCCESS;
+			}
+			mKbPendingKey = key;
+			mKbHasPending = TRUE;
+			Key->ScanCode = SCAN_NULL;
+			Key->UnicodeChar = d;
+			return EFI_SUCCESS;
+		}
+		if (dead) {
+			mKbDeadChar = key.UnicodeChar;   // wait for the next key
+			continue;
+		}
+		*Key = key;
+		return EFI_SUCCESS;
+	}
+}
+
+EFI_INPUT_KEY
+GetKey(void)
+{
+	EFI_INPUT_KEY key;
+	UINTN         EventIndex;
+
+	for (;;) {
+		if (!EFI_ERROR(KbReadKey(&key))) {
+			return key;
+		}
+		gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &EventIndex);
+	}
+}
 VOID
 ConsoleShowTip(
 	IN CHAR16* tip,
@@ -170,15 +276,17 @@ ConsoleShowTip(
 	UINTN          EventIndex = 0;
 	UINTN          i = 0;
 	EFI_INPUT_KEY  key;
-	OUT_PRINT(L"%s", tip);
+	AttrPrintText(tip);   // the status line with its colour codes
 
 	// delay
 	InputEvents[0] = gST->ConIn->WaitForKey;
-	gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
-	gBS->SetTimer(InputEvents[1], TimerPeriodic, delay);
-	gBS->WaitForEvent(2, InputEvents, &EventIndex);
-	if (EventIndex == 0) {
-		gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
+	if (!EFI_ERROR(gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]))) {
+		gBS->SetTimer(InputEvents[1], TimerPeriodic, delay);
+		gBS->WaitForEvent(2, InputEvents, &EventIndex);
+		if (EventIndex == 0) {
+			gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
+		}
+		gBS->CloseEvent(InputEvents[1]);
 	}
 
 	// remove tip

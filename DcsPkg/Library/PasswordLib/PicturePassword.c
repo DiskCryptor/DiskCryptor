@@ -24,14 +24,14 @@ https://opensource.org/licenses/LGPL-3.0
 CHAR16*	gPasswordPictureFileName = NULL;
 
 CHAR8*	gPasswordPictureChars = NULL;
-//CHAR8*	gPasswordPictureCharsDefault = "MN/[aQ-eyPr}GT: |V^UqiI_gbdA9YwZ%f8t6S@D\"7uXl\\30R#+zH*,W4J?=&BLFv]hx~E;$<.o'sp1`(>C)O{!5j2nmkcK";
+//CHAR8*gPasswordPictureCharsDefault = "MN/[aQ-eyPr}GT: |V^UqiI_gbdA9YwZ%f8t6S@D\"7uXl\\30R#+zH*,W4J?=&BLFv]hx~E;$<.o'sp1`(>C)O{!5j2nmkcK";
 CHAR8*	gPasswordPictureCharsDefault = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~\b";
-UINTN		gPasswordPictureCharsLen = 96;
+UINTN	gPasswordPictureCharsLen = 96;
 
-UINT8		gPasswordVisible = 0;
+UINT8	gPasswordVisible = 0;
 int		gPasswordHideLetters = 1;
 int		gPasswordShowMark = 0;
-UINT8		gPasswordProgress = 1;
+UINT8	gPasswordProgress = 1;
 int		gPasswordTimeout = 0;
 
 int		gPlatformLocked = 0;
@@ -297,7 +297,7 @@ AskPictPwdInt(
 			InputEvents[2] = gTouchPointer->WaitForInput;
 		}
 		gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
-		gBS->SetTimer(InputEvents[1], TimerPeriodic, 10000000 * gPasswordTimeout);
+		gBS->SetTimer(InputEvents[1], TimerPeriodic, MultU64x32(10000000ULL, (UINT32)gPasswordTimeout));
 		gBS->WaitForEvent(eventsCount, InputEvents, &EventIndex);
 		gPasswordTimeout = 0;
 		gBS->CloseEvent(InputEvents[1]);
@@ -329,7 +329,11 @@ AskPictPwdInt(
 
 	// Init screen
 	if (bltScrn != NULL) MEM_FREE(bltScrn);
-	ScreenSaveBlt(&bltScrn);
+	if (EFI_ERROR(ScreenSaveBlt(&bltScrn)) || bltScrn == NULL) {
+		ERR_PRINT(L"Cannot save screen\n");
+		*retCode = AskPwdRetCancel;
+		return;
+	}
 	sWidth = bltScrn->Width;
 	sHeight = bltScrn->Height;
 	step = sWidth >> 4;

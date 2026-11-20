@@ -248,6 +248,7 @@ TextConsoleFlushInput(
     )
 {
     FlushInputDelay(DelayUs);
+    KbResetState();   // also a key held after a dead key
 }
 
 /**

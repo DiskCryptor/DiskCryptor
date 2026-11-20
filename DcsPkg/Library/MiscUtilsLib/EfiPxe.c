@@ -131,7 +131,11 @@ PxeDownloadFile(
 		return res;
 	}
 
-	// Allocate buffer
+	// Allocate buffer; reject server-reported sizes that do not fit UINTN (IA32)
+	if (size64 > MAX_UINTN) {
+		MEM_FREE(asciiPath);
+		return EFI_BAD_BUFFER_SIZE;
+	}
 	*BufferSize = (UINTN)size64;
 	*Buffer = MEM_ALLOC(*BufferSize);
 	if (!*Buffer) {
@@ -161,6 +165,8 @@ PxeDownloadFile(
 		MEM_FREE(*Buffer);
 		*Buffer = NULL;
 		*BufferSize = 0;
+	} else if (size64 < *BufferSize) {
+		*BufferSize = (UINTN)size64; // actual transferred size
 	}
 
 	MEM_FREE(asciiPath);
@@ -332,6 +338,10 @@ PxeExecEx(
 
 	if (EFI_ERROR(res)) {
 		ERR_PRINT(L"Failed to load image: %r\n", res);
+		// LoadImage can return a handle with EFI_SECURITY_VIOLATION; unload it
+		if (imageHandle != NULL) {
+			gBS->UnloadImage(imageHandle);
+		}
 		MEM_FREE(fileBuffer);
 		return res;
 	}
@@ -396,12 +406,19 @@ InitPxe2(VOID)
 #ifdef DEBUG_BUILD
 	OUT_PRINT(L"InitPxe2: GetEfiVar(DcsPxeServerIp) returned %r, len=%d\n", res, len);
 #endif
+	if (!EFI_ERROR(res) && (len != sizeof(DCS_PXE_STATE) || attr != EFI_VARIABLE_BOOTSERVICE_ACCESS)) {
+		// Not our volatile handoff variable (e.g. planted NV copy): drop it so InitPxe can set its own
+		MEM_FREE(tmp);
+		SetEfiVar(L"DcsPxeServerIp", &gEfiDcsLdrProtocolGuid, NULL, 0, 0);
+		return EFI_UNSUPPORTED;
+	}
 	if (!EFI_ERROR(res)) {
 		// Retrieve both IP and IPv6 flag from the structure
 		DCS_PXE_STATE *pxeState = (DCS_PXE_STATE*)tmp;
 
 		CopyMem(&gPxeServerIp, &pxeState->ServerIp, sizeof(EFI_IP_ADDRESS));
 		gPxeUseIPv6 = pxeState->UseIPv6;
+		MEM_FREE(tmp);
 
 		// Parent was in PXE mode, inherit the state, search for PXE protocol on available handles
 		EFI_HANDLE* handles = NULL;

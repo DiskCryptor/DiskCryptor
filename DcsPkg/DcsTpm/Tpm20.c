@@ -75,7 +75,12 @@ TpmPrepareAuth(
 		return EFI_SUCCESS;
 	}
 
-	pwdLen = StrLen(Password);
+	// TPM auth values are at most sizeof(TPMU_HA); every destination buffer holds that much
+	pwdLen = StrnLenS(Password, sizeof(TPMU_HA) / sizeof(CHAR16) + 1);
+	if (pwdLen > sizeof(TPMU_HA) / sizeof(CHAR16)) {
+		*AuthSize = 0;
+		return EFI_BAD_BUFFER_SIZE;
+	}
 	*AuthSize = (UINT16)(pwdLen * sizeof(CHAR16));
 	CopyMem(AuthData, Password, *AuthSize);
 
@@ -417,10 +422,15 @@ Tpm2GetRandom(
 			return EFI_DEVICE_ERROR;
 		}
 		gotBytes = SwapBytes16(RecvBuffer.Data.size);
+		if (gotBytes == 0 || gotBytes > request ||
+		    RecvBufferSize < sizeof(TPM2_RESPONSE_HEADER) + sizeof(UINT16) + gotBytes) {
+			return EFI_DEVICE_ERROR;
+		}
 		CopyMem(rnd, &RecvBuffer.Data.buffer[0], gotBytes);
 		remains -= gotBytes;
 		rnd += gotBytes;
 	}
+	SetMem(&RecvBuffer, sizeof(RecvBuffer), 0);
 	return res;
 }
 
@@ -599,13 +609,19 @@ Tpm2ReadPcr(
 	TPML_DIGEST  Value;
 	EFI_STATUS   Status;
 
-	if (PcrValue == NULL || PcrSize == NULL) {
+	if (PcrValue == NULL || PcrSize == NULL || PcrIndex >= 24) {
 		return EFI_INVALID_PARAMETER;
 	}
 
+	SetMem(&Value, sizeof(Value), 0);
 	Status = Tpm2LibPcrRead(PcrIndex, &Value);
 	if (EFI_ERROR(Status)) {
 		return Status;
+	}
+
+	// count is 0 when the TPM has no SHA-256 bank
+	if (Value.count < 1 || Value.digests[0].size > sizeof(Value.digests[0].buffer)) {
+		return EFI_DEVICE_ERROR;
 	}
 
 	CopyMem(PcrValue, Value.digests[0].buffer, Value.digests[0].size);
@@ -638,12 +654,20 @@ Tpm2LibMeasure(
 	return Tpm2Measure((UINT32)index, dataSz, data);
 }
 
+// Default NV index used when NvIndex 0 is passed (DC_TPM_NV_INDEX_PRIMARY)
+#ifndef DC_TPM2_NV_INDEX_DEFAULT
+#define DC_TPM2_NV_INDEX_DEFAULT  0x0DC5C
+#endif
+
 STATIC
 UINT32
 Tpm2ResolveNvIndex(
 	IN UINT32 NvIndex
 	)
 {
+	if (NvIndex == 0) {
+		NvIndex = DC_TPM2_NV_INDEX_DEFAULT;
+	}
 	return 0x01000000 | NvIndex; // TPM 2.0 owner-defined range
 }
 
@@ -835,6 +859,27 @@ Tpm2IsConfigured(
 	}
 
 	return TRUE;
+}
+
+// An entry of an older build (and dcapi) has TPMA_NV_OWNERREAD, which bypasses authPolicy;
+// the caller reseals it (DcsTpmSupport.c DcTpmFixOwnerRead)
+BOOLEAN
+Tpm2IsOwnerReadable(
+	IN UINT32 NvIndex
+	)
+{
+	TPM2B_NV_PUBLIC           NvPublic;
+	TPM2B_NAME                NvName;
+
+	if (EFI_ERROR(InitTpm20())) {
+		return FALSE;
+	}
+	SetMem(&NvPublic, sizeof(NvPublic), 0);
+	SetMem(&NvName, sizeof(NvName), 0);
+	if (EFI_ERROR(Tpm2NvReadPublic(Tpm2ResolveNvIndex(NvIndex), &NvPublic, &NvName))) {
+		return FALSE;
+	}
+	return NvPublic.nvPublic.attributes.TPMA_NV_OWNERREAD != 0;
 }
 
 BOOLEAN
@@ -1045,7 +1090,7 @@ Tpm2SealPassword(
 	} else if (usePin) {
 		// PCR + PIN: Combined policy using PolicyPCR + PolicyPassword
 		// Both PCRs and PIN are TPM-enforced via policy
-		NvPublic.nvPublic.attributes.TPMA_NV_OWNERREAD = 1;  // Owner can read (but needs policy)
+		NvPublic.nvPublic.attributes.TPMA_NV_OWNERREAD = 0;  // an owner read bypasses authPolicy (PCRs and PIN)
 		NvPublic.nvPublic.attributes.TPMA_NV_AUTHREAD = 0;   // Not using direct auth
 		NvPublic.nvPublic.attributes.TPMA_NV_POLICYREAD = 1; // Read requires policy
 		NvPublic.nvPublic.attributes.TPMA_NV_NO_DA = 0;      // ENABLE dictionary attack protection!
@@ -1055,7 +1100,7 @@ Tpm2SealPassword(
 		NvPublic.size = 4 + 2 + 4 + 2 + SHA256_DIGEST_SIZE + 2;
 	} else {
 		// PCR only: Use policy for read - no PIN to brute force
-		NvPublic.nvPublic.attributes.TPMA_NV_OWNERREAD = 1;  // Owner can read (but needs policy)
+		NvPublic.nvPublic.attributes.TPMA_NV_OWNERREAD = 0;  // an owner read bypasses authPolicy (PCRs)
 		NvPublic.nvPublic.attributes.TPMA_NV_AUTHREAD = 0;
 		NvPublic.nvPublic.attributes.TPMA_NV_POLICYREAD = 1; // Read requires policy
 		NvPublic.nvPublic.attributes.TPMA_NV_NO_DA = 1;      // No PIN, DA protection not needed
@@ -1157,6 +1202,10 @@ err:
 	// Clear sensitive data
 	SetMem(SealedBuffer, sizeof(SealedBuffer), 0);
 	SetMem(PinAuthData, sizeof(PinAuthData), 0);
+	SetMem(&InData, sizeof(InData), 0);
+	SetMem(&Auth, sizeof(Auth), 0);
+	SetMem(&AuthSession, sizeof(AuthSession), 0);
+	SetMem(OwnerAuthData, sizeof(OwnerAuthData), 0);
 	return res;
 }
 
@@ -1222,7 +1271,8 @@ Tpm2UnsealPassword(
 			}
 		}
 		if (NvSize < DC_TPM_SEALED_MIN_SIZE) {
-			return EFI_COMPROMISED_DATA;
+			res = EFI_COMPROMISED_DATA;
+			goto err;
 		}
 
 		// Use password auth if:
@@ -1248,13 +1298,19 @@ Tpm2UnsealPassword(
 				0,
 				&OutData
 				);
+			SetMem(&AuthSession, sizeof(AuthSession), 0);
 
+			if (!EFI_ERROR(res) && OutData.size > sizeof(SealedBuffer)) {
+				res = EFI_COMPROMISED_DATA;
+			}
 			if (EFI_ERROR(res)) {
 				//Tpm2PrintAuthError(res, TRUE);
+				SetMem(&OutData, sizeof(OutData), 0);
 				goto err;
 			}
 
 			CopyMem(SealedBuffer, &OutData.buffer[0], OutData.size);
+			SetMem(&OutData, sizeof(OutData), 0);
 		} else {
 			// Policy-based read: PCR only or PCR + PIN (combined policy)
 			// Start policy session and execute required policy commands
@@ -1362,14 +1418,20 @@ Tpm2UnsealPassword(
 				0,
 				&OutData
 				);
+			SetMem(&AuthSession, sizeof(AuthSession), 0);
+			if (!EFI_ERROR(res) && OutData.size > sizeof(SealedBuffer)) {
+				res = EFI_COMPROMISED_DATA;
+			}
 			if (EFI_ERROR(res)) {
 				//OUT_PRINT(L"DEBUG: NvRead failed: %r\n", res);
 				//Tpm2PrintAuthError(res, pinRequired);
+				SetMem(&OutData, sizeof(OutData), 0);
 				goto err;
 			}
 			//OUT_PRINT(L"DEBUG: NvRead OK, size=%d\n", OutData.size);
 
 			CopyMem(SealedBuffer, &OutData.buffer[0], OutData.size);
+			SetMem(&OutData, sizeof(OutData), 0);
 		}
 	}
 	}  // End of NV public check block
@@ -1930,6 +1992,11 @@ Tpm2LoadSealed(
 	*(UINT16*)Buffer = 0;
 	Buffer += 2;
 
+	// Sizes come from the sealed blob file - make sure both blobs fit
+	if ((UINTN)(Buffer - SendBuffer) + 2 + PrivateSize + 2 + PublicSize > sizeof(SendBuffer)) {
+		return EFI_COMPROMISED_DATA;
+	}
+
 	// inPrivate (TPM2B_PRIVATE)
 	*(UINT16*)Buffer = SwapBytes16(PrivateSize);
 	Buffer += 2;
@@ -1996,6 +2063,8 @@ Tpm2Unseal(
 	TPM2_COMMAND_HEADER *CmdHdr;
 	TPM2_RESPONSE_HEADER *RspHdr;
 	UINT32             AuthAreaSize;
+	UINT16             Capacity = *DataSize;
+	UINT16             OutSize;
 
 	SetMem(SendBuffer, sizeof(SendBuffer), 0);
 	Buffer = SendBuffer;
@@ -2031,8 +2100,12 @@ Tpm2Unseal(
 
 	RecvBufferSize = sizeof(RecvBuffer);
 	res = Tpm2SubmitCommand(SendBufferSize, SendBuffer, &RecvBufferSize, RecvBuffer);
+	SetMem(SendBuffer, sizeof(SendBuffer), 0);  // holds the plaintext auth value
 	if (EFI_ERROR(res)) {
 		return res;
+	}
+	if (RecvBufferSize < sizeof(TPM2_RESPONSE_HEADER)) {
+		return EFI_DEVICE_ERROR;
 	}
 
 	RspHdr = (TPM2_RESPONSE_HEADER *)RecvBuffer;
@@ -2071,15 +2144,25 @@ Tpm2Unseal(
 	}
 
 	// Parse response: skip header + parameterSize
+	if (RecvBufferSize < sizeof(TPM2_RESPONSE_HEADER) + 4 + 2) {
+		return EFI_DEVICE_ERROR;
+	}
 	Buffer = RecvBuffer + sizeof(TPM2_RESPONSE_HEADER);
 	Buffer += 4;  // parameterSize
 
 	// outData (TPM2B_SENSITIVE_DATA)
-	*DataSize = SwapBytes16(*(UINT16*)Buffer);
+	OutSize = SwapBytes16(*(UINT16*)Buffer);
 	Buffer += 2;
-	CopyMem(OutData, Buffer, *DataSize);
+	if (OutSize > Capacity || (UINT32)(Buffer - RecvBuffer) + OutSize > RecvBufferSize) {
+		res = EFI_DEVICE_ERROR;
+	} else {
+		CopyMem(OutData, Buffer, OutSize);
+		*DataSize = OutSize;
+		res = EFI_SUCCESS;
+	}
 
-	return EFI_SUCCESS;
+	SetMem(RecvBuffer, sizeof(RecvBuffer), 0);  // holds the unsealed data
+	return res;
 }
 
 /**
@@ -2313,7 +2396,7 @@ Tpm2SrkUnsealKek(
 	}
 
 	// Unseal the KEK
-	OutSize = (UINT16)*KekSize;
+	OutSize = (*KekSize > MAX_UINT16) ? MAX_UINT16 : (UINT16)*KekSize;
 	res = Tpm2Unseal(
 		SealedHandle,
 		SessionHandle,  // 0 for PIN-only (password auth), policy session otherwise
@@ -3068,6 +3151,7 @@ InitTpmLib20(
 	// password sealing (NV-based)
 	Tpm->NvIsConfigured = Tpm2IsConfigured;
 	Tpm->NvIsOpen = Tpm2IsOpen;
+	Tpm->NvIsOwnerReadable = Tpm2IsOwnerReadable;
 	Tpm->NvSealPassword = Tpm2SealPassword;
 	Tpm->NvUnsealPassword = Tpm2UnsealPassword;
 	Tpm->NvClearSecret = Tpm2ClearSecret;

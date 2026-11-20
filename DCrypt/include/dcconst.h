@@ -22,17 +22,36 @@
 #define F_PENDING	    0x00010000 // this device has a pending header
 #define F_FS_RAW        0x00020000 // raw volume - no valid filesystem detected in sector 0
 #define F_HEAD_BACKUP   0x00040000 // backup header exists at partition end
-					//  0x00080000 // reserved
+#define F_PROTECT_DCLOG 0x00080000 // protect the $dclog$ journal of a power-loss protected session like $dcsys$
 #define F_NO_HIBER      0x00100000 // critical volume - erase keys on hibernation (VF_NO_HIBER)
-#define F_HIBER_ERASE   0x00200000 // keys erased for hibernation, complete unmount on resume
+#define F_HIBER_ERASE   0x00200000 // volume LOCKED: keys erased at hibernation, see F_LOCKED below
+#define F_PLAIN_IO      0x00400000 // decryption finished: volume is plaintext at its natural offsets, forward I/O untouched until unmount
+
+/*
+ * Locked volume ("lock on hibernate").
+ * At hibernation (also hybrid sleep and Fast Startup) the driver erases the keys of every
+ * mounted volume that must not leak into the hibernation image (VF_NO_HIBER / MF_NO_HIBER
+ * volumes, and every other lockable volume when the image could not be protected). The
+ * volume and its file system stay mounted, but every read/write fails with
+ * STATUS_FVE_LOCKED_VOLUME until it is unlocked.
+ * A locked volume reports F_ENABLED | F_LOCKED in dc_status.flags (F_DISABLE and
+ * F_PREVENT_ENC are set as well while it is locked). Unlock in place: DC_CTL_MOUNT with the
+ * password (the driver also tries the cached passwords / boot keys on resume). A paused or
+ * running transcryption continues after the unlock; its steps return ST_CANCEL while locked.
+ * DC_CTL_UNMOUNT dismounts a locked volume (MF_FORCE when the FS refuses the volume lock).
+ */
+#define F_LOCKED        F_HIBER_ERASE
+#define DC_IS_LOCKED(_flags) ( ((_flags) & (F_ENABLED | F_LOCKED)) == (F_ENABLED | F_LOCKED) )
 
 #define F_CLEAR_ON_UNMOUNT ( \
-	F_ENABLED | F_SYNC | F_REENCRYPT | F_FORMATTING | F_PROTECT_DCSYS | F_NO_REDIRECT | F_HEAD_BACKUP | F_NO_HIBER | F_HIBER_ERASE )
+	F_ENABLED | F_SYNC | F_REENCRYPT | F_FORMATTING | F_PROTECT_DCSYS | F_NO_REDIRECT | F_HEAD_BACKUP | F_NO_HIBER | F_HIBER_ERASE | F_PLAIN_IO | F_PROTECT_DCLOG )
 
 /* encrypt flags */
 #define EF_NONE           0x0000
 #define EF_USE_SLACK      0x0010 // try to use slack space after the filesystem for redirection area
 #define EF_TRY_SHRINK     0x0020 // try to shrink filesystem to create slack space
+#define EF_SAFE_TRANSCRYPT 0x0040 // power-loss protection - journal every block in $dclog$ (v2 headers; encryption, decryption, re-encryption start)
+#define EF_SAFE_TRANSCRYPT_FAST 0x0080 // power-loss protection with a checksum per 512-byte unit instead of a copy of each block (faster; a torn unit is detected, not repaired - it reads as zeros). Instead of EF_SAFE_TRANSCRYPT; with wipe passes the full journal is used
 
 /* unmount flags */
 #define MF_FORCE          0x0001 // unmount volume if FSCTL_LOCK_VOLUME fail
@@ -45,7 +64,10 @@
 #define MF_DELMP          0x0008 // delete volume mount point when unmount
 #define MF_READ_ONLY      0x0020 // mount volume as read only
 #define MF_NO_HIBER       0x0100 // critical volume - erase keys on hibernation (F_NO_HIBER)
-#define MF_USE_BACKUP     0x0200 // try to mount from backup header
+#define MF_USE_BACKUP     0x0200 // try to mount from backup header (also honored by an unlock of a locked volume)
+#define MF_IGNORE_CRC     0x0400 // a primary header whose checksum does not match (signature and the other checks right)
+                                 // that neither the backup header nor a tmp_size repair restores is mounted as it is -
+                                 // read-only, no header write, no transcryption step. Kept in the volume's mnt_flags only then
 
 /* header operation flags */
 #define HF_DEFAULT        0x0000 // default operation - write entire header
@@ -152,6 +174,11 @@
 #define ST_NO_FREE_SPACE    79 /* No unallocated space on disk */
 #define ST_PART_TOO_SMALL   80 /* Partition too small to shrink */
 #define ST_NOT_PRO          81 /* DC is not Pro */
+#define ST_LEGACY_BOOT      82 /* option not supported on a volume booted by the legacy (MBR) bootloader */
+#define ST_LOG_CREATE       83 /* the power-loss protection journal ($dclog$) could not be created */
+#define ST_LOG_CONFLICT     84 /* the power-loss protection journal contradicts the volume header */
+#define ST_LOG_PENDING      85 /* a journaled block could not be completed (disk refuses writes); the rest of the volume works */
+#define ST_HDR_DAMAGED      86 /* the password is right but the volume header is damaged (checksum mismatch) and could not be repaired */
 
 /* data wipe modes */
 #define WP_NONE				0 // no data wipe
@@ -183,6 +210,17 @@
 #define CONF_BLOCK_UNENC_CDROM     0x2000
 #define CONF_PROTECT_RAW_VOLUMES   0x4000
 #define CONF_SECURE_DESKTOP        0x8000
+/* hibernation with an image that cannot protect the keys (e.g. the system volume is not
+   encrypted): allowed - every lockable encrypted volume is locked at S4 (keys erased, unlocked
+   with its password after the resume) instead of the hibernation being refused. Volumes that
+   cannot be locked (paging file, being formatted, ...) still refuse it. */
+#define CONF_HIBER_LOCK            0x10000
+
+/* GUI / dccon step loops: save the transcryption state every N steps (DC_CTL_SYNC_STATE).
+   About 32 MiB with the driver's 8 MiB steps - how far the on-disk boundary of a session
+   without power-loss protection may lag. With a journal the mount takes the boundary from the
+   newest record, so the interval only sets how often the header is rewritten in place. */
+#define DC_SYNC_EVERY_STEPS        4
 
 #define IS_BLOCK_UNENC_HDDS_DISABLED(_sysdev_flags) \
 	(/*(_sysdev_flags & (F_SYNC | F_FORMATTING)) ||*/ (_sysdev_flags & F_ENABLED) == 0)

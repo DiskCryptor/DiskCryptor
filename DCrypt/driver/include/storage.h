@@ -3,6 +3,8 @@
 
 int  dc_create_storage(dev_hook *hook, u64 *storage, u32 *stor_len, u32 margin);
 void dc_delete_storage(dev_hook *hook);
+int  dc_create_log_file(dev_hook *hook, u64 *offset, u32 *log_len, u32 margin, int max_try); /* $dclog$ */
+void dc_delete_log_file(dev_hook *hook);
 int  dc_get_storage_size(dev_hook *hook, u32 *stor_len);
 int  dc_get_volume_slack(dev_hook *hook, u64 *slack_size);
 int  dc_try_shrink_fs(dev_hook *hook, u64 shrink_bytes);

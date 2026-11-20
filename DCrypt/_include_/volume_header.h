@@ -26,6 +26,8 @@
 #define DC_HDR_VERSION_2  3					// 2.0 + header version
 
 #define FF_KEY_SLOTS      0x01              // header supports key slots V1
+#define FF_SAFE_TRANSCRYPT 0x02             // power-loss protected (journaled) transcryption session, log at log_offset (valid with VF_TMP_MODE)
+#define FF_SAFE_FAST      0x04              // with FF_SAFE_TRANSCRYPT: the journal records a checksum per 512-byte unit of each block (LR_SUM), not its post-image
 
 #define VF_NONE           0x00
 #define VF_TMP_MODE       0x01              // temporary encryption mode
@@ -102,7 +104,11 @@ typedef struct _dc_header {
 	         //    slot_info_len    == key_slot_count * slot_info_size	
 	// 640
 
-	unsigned char  reserved[384];           // reserved, zeros for future use
+	// feature_flags & FF_SAFE_TRANSCRYPT, valid while VF_TMP_MODE
+	unsigned __int64 log_offset;            // byte offset of the $dclog$ journal from the partition start, 0 = none
+	// 648
+
+	unsigned char  reserved[376];           // reserved, zeros for future use
 	// 1024
 
 	unsigned char  space[1024];             // reserved for key slots
@@ -173,6 +179,66 @@ typedef struct _dc_ext_header {
 //static_assert(sizeof(dc_ext_header) == 64, "Invalid dc_ext_header size");
 
 
+/*
+ * Journal of a power-loss protected transcryption session ($dclog$, a contiguous file in
+ * the volume, written raw at dc_header.log_offset). Layout (sec = max(bps, 4096)):
+ *   [log header: DC_LOG_HEAD_SIZE][commit A][record A][data: block_max][record B][commit B]
+ * A record holds the post-image of the block it describes (the block exactly as it is written
+ * in place); the commit says the in-place write is durable. Records alternate between pair A
+ * (seq odd) and pair B (seq even); a record is only written after the previous one is committed,
+ * so one data area is enough.
+ */
+#define DC_LOG_HEAD_SIZE  4096
+#define DC_LOG_VERSION    1
+
+#define DC_LOG_HEAD_MAGIC "DCLOGHD"         // 8 bytes with the terminating zero
+#define DC_LOG_REC_MAGIC  "DCLOG1\0"
+#define DC_LOG_COM_MAGIC  "DCCOMIT"
+
+#define LR_STEP           1                 // a transcribed block, data area holds its post-image
+#define LR_SKIP           2                 // unallocated blocks / the log itself passed without a write (committed with the record)
+#define LR_SUM            3                 // a transcribed block (FF_SAFE_FAST): data area holds a 64-bit checksum of each 512-byte unit of its post-image
+
+#define LR_ENC            1                 // encryption: the boundary moves up (offs + size)
+#define LR_DEC            2                 // decryption: the boundary moves down (offs)
+#define LR_REENC          3                 // re-encryption: up, like LR_ENC
+
+typedef struct _dc_log_head {
+	unsigned char    magic[8];              // DC_LOG_HEAD_MAGIC
+	unsigned long    version;               // DC_LOG_VERSION
+	unsigned long    sec;                   // record / commit sector size
+	unsigned __int64 log_id;                // random per session; every record and commit carries it
+	unsigned long    disk_id;               // == dc_header.disk_id
+	unsigned long    log_len;               // bytes of $dclog$ used: DC_LOG_HEAD_SIZE + 4 * sec + block_max
+	unsigned long    block_max;             // size of the data area
+	unsigned long    crc;                   // crc32 of this structure with crc = 0
+} dc_log_head;
+
+typedef struct _dc_log_rec {
+	unsigned char    magic[8];              // DC_LOG_REC_MAGIC
+	unsigned __int64 log_id;
+	unsigned __int64 seq;                   // 1, 2, ... within the session; pair A for odd, B for even
+	unsigned long    type;                  // LR_STEP, LR_SKIP, LR_SUM
+	unsigned long    dir;                   // LR_ENC, LR_DEC, LR_REENC
+	unsigned __int64 offs;                  // block start, partition offset (as tmp_size)
+	unsigned long    size;                  // block / run length, a multiple of the sector size
+	unsigned long    data_crc;              // crc32 of the data area used: the post-image (LR_STEP), the checksum table padded to sec (LR_SUM)
+	unsigned __int64 tmp_before;            // boundary before this record
+	// tmp_size of the last primary / backup DC header write that succeeded (ok) and that was
+	// attempted (try; a failed write may still have reached the disk). The recovery accepts a
+	// record only when the header it mounts from carries one of the two values of its kind.
+	unsigned __int64 hdr_ok, hdr_try;
+	unsigned __int64 bak_ok, bak_try;
+	unsigned long    rec_crc;               // crc32 of this structure with rec_crc = 0
+} dc_log_rec;
+
+typedef struct _dc_log_commit {
+	unsigned char    magic[8];              // DC_LOG_COM_MAGIC
+	unsigned __int64 log_id;
+	unsigned __int64 seq;                   // == the record's
+	unsigned long    crc;                   // crc32 of this structure with crc = 0
+} dc_log_commit;
+
 #pragma pack (pop)
 
 /* Header V1
@@ -195,6 +261,8 @@ typedef struct _dc_ext_header {
 
 static_assert(sizeof(dc_header) == DC_AREA_SIZE, "Invalid dc_header size");
 static_assert(FIELD_OFFSET(dc_header, space) == DC_BASE_SIZE, "Invalid dc_header base layout");
+static_assert(FIELD_OFFSET(dc_header, log_offset) == 640, "Invalid dc_header log_offset position");
+static_assert(sizeof(dc_log_head) <= DC_LOG_HEAD_SIZE && sizeof(dc_log_rec) <= 512 && sizeof(dc_log_commit) <= 512, "Invalid journal structure size");
 
 // The default header layout with 4 key slots and extended header must fit into DC_AREA_SIZE (2 KiB).
 // This maintains compatibility with existing v1 headers and avoids the need for redirection area expansion.

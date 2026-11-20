@@ -60,6 +60,14 @@ InitDcsTpm() {
 
 #define DC_TPM_NV_INDEX_PRIMARY		0x0DC5C
 #define DC_TPM_NV_INDEX_RECOVERY	0x0DC5E
+// The checked copy of the primary entry while it is resealed (DcTpmFixOwnerRead)
+#define DC_TPM_NV_INDEX_MIGRATE		0x0DC5A
+
+// At the end of this file: the entry to unseal the NV secret from (the primary, or the
+// checked copy an interrupted reseal left), and the reseal of an owner-readable primary
+STATIC UINT32 DcTpmPickNvIndex(OUT UINT32 *Status);
+STATIC VOID   DcTpmFixOwnerRead(IN UINT32 FromIndex, IN UINT8 *Data, IN UINT32 DataSize, IN UINT32 DataType, IN CHAR16 *Pin OPTIONAL);
+STATIC BOOLEAN DcTpmCopyThere(VOID);
 
 #define DC_TPM_SRK_FILE_PRIMARY      L"\\EFI\\"  DCS_DIRECTORY  "\\tpm_sealed.dat"
 #define DC_TPM_SRK_FILE_RECOVERY     L"\\EFI\\"  DCS_DIRECTORY  "\\tpm_recovery.dat"
@@ -221,6 +229,20 @@ PcrMenuDrawItem(
 	g_Con->Print(L"          ");
 }
 
+// The PCR 8 extend after the unlock ("TPM lock") only stops a later unseal when
+// PCR 8 is part of the seal. The user's choice - so a warning, not a rule.
+STATIC
+VOID
+DcTpmWarnNoPcr8(
+	IN UINT32 PcrMask
+)
+{
+	if (PcrMask != 0 && !(PcrMask & (1 << 8))) {
+		g_Con->Print(L"%OWarning:%N PCR 8 is not selected: the TPM lock after unlocking has no effect,\n"
+		             L"the secret can be unsealed again after boot.\n");
+	}
+}
+
 /**
 Ask user for PCR mask with interactive selection.
 
@@ -321,6 +343,7 @@ DcTpmAskPcrMask(
 
 			*PcrMask = mask;
 			g_Con->Print(L"\nPCR mask: 0x%03x\n", mask);
+			DcTpmWarnNoPcr8(mask);
 			return EFI_SUCCESS;
 		}
 
@@ -379,8 +402,9 @@ DcTpmAskTpmPin(
 	*PinSet = FALSE;
 
 retry:
-	// Get PIN
+	// Get PIN (reset length too, the prompt treats a non-zero length as pre-filled input)
 	ZeroMem(TpmPin, MaxLen * sizeof(CHAR16));
+	pinLen = 0;
 	DcsAskPassword("Enter TPM PIN: ", &pinLen, TpmPin, &pwdCode, (MaxLen - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 	if (pwdCode == AskPwdRetCancel)
 		return EFI_ABORTED;
@@ -388,11 +412,14 @@ retry:
 	if (pinLen > 0) {
 		// Confirm PIN
 		ZeroMem(confirmPin, sizeof(confirmPin));
+		confirmLen = 0;
 		DcsAskPassword("Confirm TPM PIN: ", &confirmLen, confirmPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
-		if (pwdCode == AskPwdRetCancel)
+		if (pwdCode == AskPwdRetCancel) {
+			MEM_BURN(confirmPin, sizeof(confirmPin));
 			return EFI_ABORTED;
+		}
 
-		if (StrCmp(TpmPin, confirmPin) != 0) {
+		if (pinLen != confirmLen || StrCmp(TpmPin, confirmPin) != 0) {
 			g_Con->PrintError(L"PINs do not match. retry.\n");
 			ZeroMem(TpmPin, MaxLen * sizeof(CHAR16));
 			ZeroMem(confirmPin, sizeof(confirmPin));
@@ -402,7 +429,7 @@ retry:
 		ZeroMem(confirmPin, sizeof(confirmPin));
 	}
 
-	*PinSet = TRUE;
+	*PinSet = (pinLen > 0);
 
 	return EFI_SUCCESS;
 }
@@ -453,6 +480,7 @@ GetSealOptions (
 	//	return res;
 	//}
 	Options->PcrMask = gDCryptTpmPcrMask;
+	DcTpmWarnNoPcr8(Options->PcrMask);
 
 	if (!(gDCryptTpmMode & DCryptTpmPin)) {
 		goto check_sb;
@@ -669,7 +697,11 @@ DcApplyBackup(
 	{
 		tpm_backup *backup = (tpm_backup *)BackupBuffer;
 
-		if (DataBufferSize < backup->SecretSize) {
+		if (BackupSize < sizeof(tpm_backup) ||
+			BackupSize - sizeof(tpm_backup) < (UINT32)backup->SecretSize + backup->PinSize) {
+			ret = EFI_COMPROMISED_DATA;
+		}
+		else if (DataBufferSize < backup->SecretSize) {
 			ret = EFI_BUFFER_TOO_SMALL;
 		} 
 		else  {
@@ -680,6 +712,9 @@ DcApplyBackup(
 
 			ret = EFI_SUCCESS;
 		}
+	}
+	else if (BackupSize > DataBufferSize) {
+		ret = EFI_BUFFER_TOO_SMALL;
 	}
 	else { // raw backup without metadata
 		*DataSize = BackupSize;
@@ -723,16 +758,22 @@ DcApplyBackup(
 		else {
 			tpm_backup* backup = (tpm_backup*)BackupBuffer;
 
+			// the mask the secret was provisioned with, not the editable config one (the
+			// config change that alters PCR 8 is what brings the user here); another one only on request
+			UINT32 pcrMask = backup->PcrMask;
+
 			if (gDCryptTpmPcrMask != (int)backup->PcrMask) {
-				g_Con->Print(L"Using Current PCR mask: 0x%x (Original PCR mask: 0x%x)\n", gDCryptTpmPcrMask, backup->PcrMask);
-			} else {
-				g_Con->Print(L"Using PCR mask: 0x%x\n", gDCryptTpmPcrMask);
+				g_Con->Print(L"Original PCR mask: 0x%x, current config PCR mask: 0x%x\n", backup->PcrMask, gDCryptTpmPcrMask);
+				if (!DcsAskYesNo(L"%HRe-seal with the original PCR mask?%N [Y/n]: ", TRUE)) {
+					pcrMask = (UINT32)gDCryptTpmPcrMask;
+				}
 			}
+			g_Con->Print(L"Using PCR mask: 0x%x\n", pcrMask);
 
 			// Initialize options with stored values from backup
 			ZeroMem(&options, sizeof(DCS_TPM_SEAL_OPTIONS));
 			options.Size = sizeof(DCS_TPM_SEAL_OPTIONS);
-			options.PcrMask = gDCryptTpmPcrMask;
+			options.PcrMask = pcrMask;
 			options.Flags = DCS_TPM_OPT_FLAG_NONE;
 
 			// Restore original PIN if stored in backup
@@ -746,6 +787,13 @@ DcApplyBackup(
 					g_Con->Print(L"Using stored original PIN.\n");
 				}
 			}
+		}
+
+		// a seal without any PCR binding only when the user confirms it
+		if (options.PcrMask == 0 &&
+			!DcsAskYesNo(L"%OWarning:%N PCR mask 0 seals the secret without any PCR binding. Continue?%N [y/N]: ", FALSE)) {
+			MEM_BURN(&options, sizeof(options));
+			return EFI_SUCCESS;
 		}
 
 		// Save to file or TPM based on storage mode
@@ -829,6 +877,8 @@ DcTpmCreateBackup(
 
 	ret = DcPrepBackup(Data, DataSize, DataType, PrimaryOpts, backupBuffer, &backupSize, &backupType, &backupOptions, RawBackup);
 	if (EFI_ERROR(ret)) {
+		MEM_BURN(backupBuffer, sizeof(backupBuffer));
+		MEM_BURN(&backupOptions, sizeof(backupOptions));
 		g_Con->PrintError(L"Failed to prepare backup data: %r\n", ret);
 		return;
 	}
@@ -903,6 +953,7 @@ DcTpmRestoreFromSrkBackup(
 retry:
 	g_Con->Print(L"\n%HTPM recovery file available.%N\n");
 	ZeroMem(recoveryPin, sizeof(recoveryPin));
+	recoveryPinLen = 0;
 	DcsAskPassword("Enter recovery PIN: ", &recoveryPinLen, recoveryPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 
 	if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
@@ -1086,8 +1137,11 @@ DcTpmLoadSrk(
 retry:
 	// Prompt for PIN if required
 	if (pinRequired && pinToUse == NULL) {
+		ZeroMem(tpmPin, sizeof(tpmPin));
+		pinLen = 0;
 		DcsAskPassword("Enter TPM PIN: ", &pinLen, tpmPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 		if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
+			MEM_BURN(tpmPin, sizeof(tpmPin));
 			MEM_BURN(sealedBuffer, sealedSize);
 			MEM_FREE(sealedBuffer);
 			return EFI_ABORTED;
@@ -1166,6 +1220,7 @@ DcTpmRestoreFromNvBackup(
 retry:
 	g_Con->Print(L"\n%HRecovery entry available.%N\n");
 	ZeroMem(recoveryPin, sizeof(recoveryPin));
+	recoveryPinLen = 0;
 	DcsAskPassword("Enter recovery PIN: ", &recoveryPinLen, recoveryPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 
 	if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
@@ -1287,8 +1342,11 @@ DcTpmLoadNv(
 	CHAR16     *pinToUse = NULL;
 	UINT32      pinLen = 0;
 	INT32       pwdCode;
+	UINT32      nvIndex;
 
-	gDcsTpm->GetStatus(gDcsTpm, DC_TPM_NV_INDEX_PRIMARY, &status, NULL, NULL, NULL, NULL);
+	// the primary entry - or the checked copy an interrupted reseal left while the
+	// primary is missing or still the old entry (DcTpmFixOwnerRead finishes the reseal)
+	nvIndex = DcTpmPickNvIndex(&status);
 
 	// Check if configured
 	if (!(status & DCS_TPM_STATUS_CONFIGURED)) {
@@ -1333,8 +1391,11 @@ DcTpmLoadNv(
 retry:
 	// Prompt for PIN if required
 	if (pinRequired && pinToUse == NULL) {
+		ZeroMem(tpmPin, sizeof(tpmPin));
+		pinLen = 0;
 		DcsAskPassword("Enter TPM PIN: ", &pinLen, tpmPin, &pwdCode, (DCS_TPM_OWNER_PWD_MAX - 1) * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 		if (pwdCode == AskPwdRetCancel || pwdCode == AskPwdRetTimeout) {
+			MEM_BURN(tpmPin, sizeof(tpmPin));
 			return EFI_ABORTED;
 		}
 		if (pinLen > 0) {
@@ -1349,10 +1410,12 @@ retry:
 	// Load password from NV
 	g_Con->Print(L"Loading secret from TPM... ");
 	*DataSize = DataBufferSize;
-	ret = gDcsTpm->UnsealSecret(gDcsTpm, DC_TPM_NV_INDEX_PRIMARY, Data, DataSize, DataType, pinToUse);
+	ret = gDcsTpm->UnsealSecret(gDcsTpm, nvIndex, Data, DataSize, DataType, pinToUse);
 
 	if (!EFI_ERROR(ret)) {
 		g_Con->Print(L"%VSuccess!%N\n");
+		// reseal an entry of an older build (before PCR8 is extended)
+		DcTpmFixOwnerRead(nvIndex, Data, *DataSize, *DataType, pinToUse);
 		goto cleanup;
 	}
 
@@ -1449,6 +1512,7 @@ DcTpmCreateFileBackup(
 retry:
 	// Ask for backup password
 	ZeroMem(backupPwd, sizeof(backupPwd));
+	bpLen = 0;
 	DcsAskPassword("Enter backup password: ", &bpLen, backupPwd, &pwdCode, MAX_PASSWORD * 2, FALSE, TRUE, HandleFuncKeys, FormatStatus, &Params);
 
 	if (pwdCode == AskPwdRetCancel) {
@@ -1465,6 +1529,7 @@ retry:
 
 	// Confirm backup password
 	ZeroMem(confirmPwd, sizeof(confirmPwd));
+	cpLen = 0;
 	DcsAskPassword("Confirm backup password: ", &cpLen, confirmPwd, &pwdCode, MAX_PASSWORD * 2, FALSE, TRUE, HandleFuncKeysSimple, NULL, NULL);
 
 	if (pwdCode == AskPwdRetCancel) {
@@ -1500,11 +1565,9 @@ retry:
 		ret = EFI_UNSUPPORTED;
 	}
 	if (EFI_ERROR(ret)) {
-		// Fallback: use system RNG if available
-		g_Con->PrintError(L"Warning: Could not get TPM random (%r), using fallback.\n", ret);
-		for (UINTN i = 0; i < HEADER_SALT_SIZE; i++) {
-			backupFile.Salt[i] = (UINT8)(i ^ 0xAA);  // Weak fallback
-		}
+		// No constant-salt fallback: refuse to create a weakly protected backup
+		g_Con->PrintError(L"Could not get TPM random (%r).\n", ret);
+		goto finish;
 	}
 
 	// Save salt before encryption (will be restored after XTS encryption)
@@ -1541,7 +1604,7 @@ retry:
 	MEM_BURN(savedSalt, sizeof(savedSalt));
 
 	// Write backup file
-	UefiFileWritePath(DC_TPM_BACKUP_FILE_PATH, (UINT8*)&backupFile, DC_TPM_BACKUP_FILE_SIZE);
+	ret = UefiFileWritePath(DC_TPM_BACKUP_FILE_PATH, (UINT8*)&backupFile, DC_TPM_BACKUP_FILE_SIZE);
 	
 finish:
 	MEM_BURN(&pass, sizeof(pass));
@@ -1602,8 +1665,9 @@ DcTpmRestoreFromFileBackup(
 	}
 
 	g_Con->Print(L"\n%HEncrypted file backup available.%N\n");
-	ZeroMem(backupPwd, sizeof(backupPwd));
 retry:
+	ZeroMem(backupPwd, sizeof(backupPwd));
+	bpLen = 0;
 	DcsAskPassword("Backup password: ", &bpLen, backupPwd, &bpCode, MAX_PASSWORD  *2, FALSE, TRUE, HandleFuncKeys, FormatStatus, &Params);
 
 	if (bpCode == AskPwdRetCancel || bpLen == 0) {
@@ -1626,6 +1690,7 @@ retry:
 	}
 	if (fileSize < DC_TPM_BACKUP_FILE_SIZE || fileData == NULL) {
 		if (fileData) MEM_FREE(fileData);
+		fileData = NULL;
 		g_Con->PrintError(L"Invalid backup file size: expected %d, got %d\n", DC_TPM_BACKUP_FILE_SIZE, fileSize);
 		ret = EFI_COMPROMISED_DATA;
 		goto finish;
@@ -1671,6 +1736,8 @@ retry:
 	if (EFI_ERROR(ret)) {
 		g_Con->PrintError(L"Wrong Wassword.\n");
 		g_Con->Print(L"Check that backup password is correct.\n");
+		MEM_FREE(fileData);
+		fileData = NULL;
 		goto retry;
 	}
 	
@@ -1691,6 +1758,7 @@ finish:
 	MEM_BURN(&xtsk, sizeof(xtsk));
 
 	MEM_BURN(&backupFile, sizeof(backupFile));
+	MEM_FREE(fileData);
 	return ret;
 }
 
@@ -1867,6 +1935,11 @@ DcTpmStore(VOID)
 
 	if (EFI_ERROR(ret)) {
 		MEM_BURN(data, sizeof(data));
+		if (dataType == DC_TPM_SECRET_TYPE_1) {
+			// global was overwritten above only for this secret type
+			gDCryptTpmSecretValid = FALSE;
+			MEM_BURN(gDCryptTpmSecret, sizeof(gDCryptTpmSecret));
+		}
 		return ret;
 	}
 
@@ -1875,6 +1948,10 @@ DcTpmStore(VOID)
 		ret = DcTpmStoreSrk(data, dataSize, dataType, &options);
 	} else {
 		ret = DcTpmStoreNv(data, dataSize, dataType, &options);
+	}
+	if (EFI_ERROR(ret) && dataType == DC_TPM_SECRET_TYPE_1) {
+		gDCryptTpmSecretValid = FALSE;
+		MEM_BURN(gDCryptTpmSecret, sizeof(gDCryptTpmSecret));
 	}
 
 	// Offer to create TPM recovery entry/file only if PCRs are bound
@@ -1953,7 +2030,7 @@ DcTpmLoad(CHAR16 *password, UINT32 *password_size)
 		gDCryptPassword.slot = -KEY_SLOT_COUNT;
 	}
 	else if (dataType == DC_TPM_SECRET_TYPE_1) {
-		if (secret->SecretSize > DC_KF_HASH_SIZE) {
+		if (dataSize < sizeof(tpm_secret) + DC_KF_HASH_SIZE || secret->SecretSize != DC_KF_HASH_SIZE) {
 			g_Con->PrintError(L"Loaded secret size is invalid  %d\n", secret->SecretSize);
 			MEM_BURN(data, sizeof(data));
 			return EFI_INVALID_PARAMETER;
@@ -2252,8 +2329,9 @@ DcTpmMenuDoDelete(VOID)
 		}
 	} else {
 		// NV-based mode: check TPM status
+		// the copy of an interrupted reseal is the secret too while the primary is gone
 		ret = gDcsTpm->GetStatus(gDcsTpm, DC_TPM_NV_INDEX_PRIMARY, &status, NULL, NULL, NULL, NULL);
-		if (EFI_ERROR(ret) || !(status & DCS_TPM_STATUS_CONFIGURED)) {
+		if ((EFI_ERROR(ret) || !(status & DCS_TPM_STATUS_CONFIGURED)) && !DcTpmCopyThere()) {
 			g_Con->Print(L"No sealed secret found.\n");
 			return;
 		}
@@ -2312,6 +2390,15 @@ DcTpmMenuDoDelete(VOID)
 			}
 			g_Con->Print(L"Deleting secret from TPM... ");
 			ret = gDcsTpm->ClearSecret(gDcsTpm, DC_TPM_NV_INDEX_PRIMARY, ownerPwd);
+		}
+
+		// the copy of an interrupted reseal goes too, whether the primary was there or
+		// not - it must not bring the secret back on the next boot
+		if (DcTpmCopyThere()) {
+			EFI_STATUS mret = gDcsTpm->ClearSecret(gDcsTpm, DC_TPM_NV_INDEX_MIGRATE, ownerPwd);
+			if (!(status & DCS_TPM_STATUS_CONFIGURED)) {
+				ret = mret; // only the copy was there
+			}
 		}
 
 		if (!EFI_ERROR(ret)) {
@@ -2400,16 +2487,19 @@ DcTpmMenuDoLoadBackup(
 		} 
 		else if (dataType == DC_TPM_SECRET_TYPE_1) {
 			tpm_secret *secret = (tpm_secret *)data;
-			if (secret->SecretSize <= DC_KF_HASH_SIZE) {
+			if (dataSize >= sizeof(tpm_secret) + DC_KF_HASH_SIZE && secret->SecretSize == DC_KF_HASH_SIZE) {
 				memcpy(gDCryptTpmSecret, secret->SecretData, DC_KF_HASH_SIZE);
 				gDCryptTpmSecretValid = TRUE;
 				gDCryptPassword.kdf = secret->Kdf;
 				gDCryptPassword.slot = secret->Slot;
 				g_Con->Print(L"TPM secret recovered and activated.\n");
 			}
+			else {
+				g_Con->PrintError(L"Recovered secret size is invalid  %d\n", secret->SecretSize);
+			}
 		}
 	} else if (ret != EFI_ABORTED) {
-		g_Con->PrintError(L"%s failed %r\n", ret);
+		g_Con->PrintError(L"%s failed %r\n", IsBackup ? L"Load from Backup File" : L"Load from Recovery Entry", ret);
 	}
 
 	MEM_BURN(data, sizeof(data));
@@ -2843,3 +2933,144 @@ DcTpmMenu()
 		}
 	}
 }
+
+//////////////////////////////////////////////////////////////////////////
+// Resealing owner-readable TPM 2.0 entries of older builds
+//////////////////////////////////////////////////////////////////////////
+
+// >>> owner-read reseal (tests/run_mount_io_test.bat extracts this section for tpm_fix_test.c)
+// the copy's index holds something: a configured copy, or one only half there (its data index
+// exists - a power loss while it was defined or deleted). Raw TPM 2.0 index: only TPM 2.0 gets one.
+STATIC
+BOOLEAN
+DcTpmCopyThere(VOID)
+{
+	UINT32 st = 0, attr = 0, size = 0;
+
+	gDcsTpm->GetStatus(gDcsTpm, DC_TPM_NV_INDEX_MIGRATE, &st, NULL, NULL, NULL, NULL);
+	return (st & DCS_TPM_STATUS_CONFIGURED) ||
+	       !EFI_ERROR(gDcsTpm->GetNvIndexInfo(gDcsTpm, 0x01000000 | DC_TPM_NV_INDEX_MIGRATE, &attr, &size, NULL, NULL));
+}
+
+STATIC
+UINT32
+DcTpmPickNvIndex(
+	OUT UINT32 *Status
+)
+{
+	UINT32 status = 0, migStatus = 0;
+
+	gDcsTpm->GetStatus(gDcsTpm, DC_TPM_NV_INDEX_PRIMARY, &status, NULL, NULL, NULL, NULL);
+	gDcsTpm->GetStatus(gDcsTpm, DC_TPM_NV_INDEX_MIGRATE, &migStatus, NULL, NULL, NULL, NULL);
+	if ((migStatus & DCS_TPM_STATUS_CONFIGURED) &&
+		(!(status & DCS_TPM_STATUS_CONFIGURED) || (status & DCS_TPM_STATUS_OWNER_READ))) {
+		*Status = migStatus;
+		return DC_TPM_NV_INDEX_MIGRATE;
+	}
+	*Status = status;
+	return DC_TPM_NV_INDEX_PRIMARY;
+}
+
+/*
+ * A TPM 2.0 entry of an older build (TPMA_NV_OWNERREAD) is resealed right after it
+ * unsealed - same secret and presets, before PCR8 is extended; needs the empty owner auth.
+ * Crash safe: a checked copy at DC_TPM_NV_INDEX_MIGRATE first, then the primary, then the copy
+ * goes; a boot that finds the copy finishes the reseal from it (DcTpmLoadNv).
+ */
+STATIC
+BOOLEAN
+DcTpmSealedMatches(
+	IN UINT32  NvIndex,
+	IN UINT8   *Data,
+	IN UINT32  DataSize,
+	IN UINT32  DataType,
+	IN CHAR16  *Pin OPTIONAL
+)
+{
+	UINT8   buf[DCS_SECRET_DATA_MAX];
+	UINT32  size = sizeof(buf);
+	UINT32  type = 0;
+	BOOLEAN ok;
+
+	ok = !EFI_ERROR(gDcsTpm->UnsealSecret(gDcsTpm, NvIndex, buf, &size, &type, Pin)) &&
+	     size == DataSize && type == DataType && CompareMem(buf, Data, DataSize) == 0;
+	MEM_BURN(buf, sizeof(buf));
+	return ok;
+}
+
+STATIC
+VOID
+DcTpmFixOwnerRead(
+	IN UINT32  FromIndex,      // the entry Data was just unsealed from (primary, or the copy)
+	IN UINT8   *Data,
+	IN UINT32  DataSize,
+	IN UINT32  DataType,
+	IN CHAR16  *Pin OPTIONAL   // the PIN it unsealed with
+)
+{
+	UINT32               status = 0, pcrMask = 0, flags = 0;
+	UINT32               infoSize = DCS_TPM_INFO_MAX_SIZE;
+	UINT8                info[DCS_TPM_INFO_MAX_SIZE];
+	CHAR16               noOwnerPwd[1] = { 0 };
+	CHAR16               *pin;
+	DCS_TPM_SEAL_OPTIONS opt;
+
+	if (EFI_ERROR(gDcsTpm->GetStatus(gDcsTpm, FromIndex, &status, &pcrMask, &flags, info, &infoSize))) {
+		return;
+	}
+	if (infoSize > sizeof(info)) {
+		infoSize = 0;
+	}
+	if (FromIndex == DC_TPM_NV_INDEX_PRIMARY && !(status & DCS_TPM_STATUS_OWNER_READ)) {
+		// a current entry: what an interrupted fix left at the copy's index goes (DcTpmCopyThere)
+		if (DcTpmCopyThere()) {
+			gDcsTpm->ClearSecret(gDcsTpm, DC_TPM_NV_INDEX_MIGRATE, noOwnerPwd);
+		}
+		return;
+	}
+	if (pcrMask == 0) {
+		return; // a PIN-only entry never had the owner read path
+	}
+	pin = (flags & DC_TPM_FLAG_PIN_REQUIRED) ? Pin : NULL;
+	if ((flags & DC_TPM_FLAG_PIN_REQUIRED) && (pin == NULL || pin[0] == L'\0')) {
+		return;
+	}
+
+	ZeroMem(&opt, sizeof(opt));
+	opt.Size    = sizeof(opt);
+	opt.PcrMask = pcrMask;
+	if (pin != NULL) {
+		StrCpyS(opt.TpmPin, DCS_TPM_OWNER_PWD_MAX, pin);
+		opt.Flags = DCS_TPM_OPT_FLAG_USE_PIN;
+	}
+
+	if (FromIndex == DC_TPM_NV_INDEX_PRIMARY) {
+		// 1. the checked copy: a power loss while the primary is redefined must not lose the secret
+		if (EFI_ERROR(gDcsTpm->SealSecret(gDcsTpm, DC_TPM_NV_INDEX_MIGRATE, Data, DataSize, DataType, &opt,
+		                                  infoSize ? info : NULL, infoSize)) ||
+			!DcTpmSealedMatches(DC_TPM_NV_INDEX_MIGRATE, Data, DataSize, DataType, pin))
+		{
+			gDcsTpm->ClearSecret(gDcsTpm, DC_TPM_NV_INDEX_MIGRATE, noOwnerPwd);
+			goto done;
+		}
+	}
+
+	g_Con->Print(L"fixing tpm configuration issue\n");
+
+	// 2. the primary, resealed with the presets it had; the copy goes once the new one unseals
+	if (!EFI_ERROR(gDcsTpm->SealSecret(gDcsTpm, DC_TPM_NV_INDEX_PRIMARY, Data, DataSize, DataType, &opt,
+	                                   infoSize ? info : NULL, infoSize)) &&
+		DcTpmSealedMatches(DC_TPM_NV_INDEX_PRIMARY, Data, DataSize, DataType, pin))
+	{
+		gDcsTpm->ClearSecret(gDcsTpm, DC_TPM_NV_INDEX_MIGRATE, noOwnerPwd);
+	} else {
+		// a primary that does not give the secret back goes, so the checked copy takes over
+		// (DcTpmPickNvIndex) and the next boot tries again
+		gDcsTpm->ClearSecret(gDcsTpm, DC_TPM_NV_INDEX_PRIMARY, noOwnerPwd);
+	}
+
+done:
+	MEM_BURN(&opt, sizeof(opt));
+	MEM_BURN(info, sizeof(info));
+}
+// <<< owner-read reseal

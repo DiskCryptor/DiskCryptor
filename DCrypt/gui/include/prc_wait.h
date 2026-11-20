@@ -15,6 +15,17 @@ int _wait_dc_mount_volume(
 	const wchar_t *description
 );
 
+/* as _wait_dc_mount_volume; *aborted: the user cancelled the wait dialog (the driver then
+   returns ST_CANCEL, which otherwise means "hibernation in progress") */
+int _wait_dc_mount_volume_ex(
+	HWND parent,
+	wchar_t *device,
+	dc_pass *password,
+	int flags,
+	const wchar_t *description,
+	int *aborted
+);
+
 int _wait_dc_mount_all(
 	HWND parent,
 	dc_pass *password,
@@ -52,6 +63,14 @@ int _wait_dc_start_decrypt(
 	wchar_t *device,
 	dc_pass *password,
 	crypt_info *crypt,
+	const wchar_t *description
+);
+
+/* dc_delete_shadows with a wait dialog */
+int _wait_dc_delete_shadows(
+	HWND parent,
+	const wchar_t *w32_device,
+	int *remaining,
 	const wchar_t *description
 );
 

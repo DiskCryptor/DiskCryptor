@@ -270,6 +270,115 @@ AttrPrintTo (
 	return gST->ConOut->OutputString(gST->ConOut, (CHAR16*)String);
 }
 
+// An attribute token of the format (%N %E %H %B %V %O) is formatted as mark + letter,
+// twice with two different marks: argument data comes out the same in both, so only a position
+// where the two differ is a token from the format
+#define ATTR_MARK_1  ((CHAR16)0xF8F0)
+#define ATTR_MARK_2  ((CHAR16)0xF8F1)
+
+/**
+  Copy Format to Out (OutChars characters), replacing each attribute token "%X" (X one of
+  N E H B V O) by Mark followed by X. "%%" stays a literal percent; any other "%..." is left for
+  UnicodeVSPrint. A pair is never split at the end of Out.
+**/
+STATIC
+VOID
+AttrMarkFormat(
+  IN  CONST CHAR16  *Format,
+  OUT CHAR16        *Out,
+  IN  UINTN         OutChars,
+  IN  CHAR16        Mark
+  )
+{
+  UINTN   o = 0;
+  CHAR16  c;
+
+  if (OutChars == 0) {
+    return;
+  }
+  while (*Format != CHAR_NULL) {
+    if (*Format == L'%' && Format[1] != CHAR_NULL) {
+      if (o + 2 >= OutChars) {
+        break;
+      }
+      c = Format[1];
+      if (c == L'N' || c == L'E' || c == L'H' || c == L'B' || c == L'V' || c == L'O') {
+        Out[o++] = Mark;
+      } else {
+        Out[o++] = L'%';    // "%%" or a format specifier
+      }
+      Out[o++] = c;
+      Format += 2;
+      continue;
+    }
+    if (o + 1 >= OutChars) {
+      break;
+    }
+    if (*Format == L'%') {
+      break;                // a lone '%' at the end of the format: dropped
+    }
+    Out[o++] = *Format++;
+  }
+  Out[o] = CHAR_NULL;
+}
+
+/**
+  Print Text, formatted with ATTR_MARK_1, applying the attribute tokens: the positions where Other
+  (the same text formatted with ATTR_MARK_2) differs. Text is modified (cut at the tokens).
+**/
+STATIC
+EFI_STATUS
+AttrPrintMarked(
+  IN OUT CHAR16        *Text,
+  IN     CONST CHAR16  *Other,
+  IN     UINTN         OriginalAttribute
+  )
+{
+  EFI_STATUS  Status = EFI_SUCCESS;
+  UINTN       i = 0;
+  UINTN       Start = 0;
+  CHAR16      Letter;
+  UINTN       Back;
+
+  Back = (OriginalAttribute & (BIT4 | BIT5 | BIT6)) >> 4;
+  for (;;) {
+    if (Text[i] != CHAR_NULL && Text[i] == Other[i]) {
+      i++;                  // text: from the format or from argument data
+      continue;
+    }
+    if (Text[i] == CHAR_NULL) {
+      if (i > Start) {
+        Status = AttrPrintTo(&Text[Start]);
+      }
+      break;
+    }
+    // an attribute token from the format: mark at i, letter at i + 1
+    Letter = Text[i + 1];
+    Text[i] = CHAR_NULL;
+    if (i > Start) {
+      Status = AttrPrintTo(&Text[Start]);
+      if (EFI_ERROR(Status)) {
+        break;
+      }
+    }
+    if (Letter == CHAR_NULL) {
+      break;                // cut off at the end of the buffer
+    }
+    switch (Letter) {
+      case L'N': gST->ConOut->SetAttribute(gST->ConOut, OriginalAttribute); break;
+      case L'E': gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_YELLOW, Back)); break;
+      case L'H': gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_WHITE, Back)); break;
+      case L'B': gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_BLUE, Back)); break;
+      case L'V': gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_GREEN, Back)); break;
+      case L'O': gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_RED, Back)); break;
+      default: break;
+    }
+    i += 2;
+    Start = i;
+  }
+  return Status;
+}
+
 /**
   Print at a specific location on the screen.
 
@@ -310,128 +419,122 @@ InternalAttrPrintWorker(
   )
 {
   EFI_STATUS        Status;
-  CHAR16            *ResumeLocation;
-  CHAR16            *FormatWalker;
   UINTN             OriginalAttribute;
-  CHAR16            *mPostReplaceFormat;
-  CHAR16            *mPostReplaceFormat2;
+  CHAR16            *Format1;
+  CHAR16            *Format2;
+  CHAR16            *Text1;
+  CHAR16            *Text2;
+  VA_LIST           Marker2;
 
-  mPostReplaceFormat = (CHAR16*)MEM_ALLOC (ATTRPRINT_BUFSIZE);
-  mPostReplaceFormat2 = (CHAR16*)MEM_ALLOC (ATTRPRINT_BUFSIZE);
+  Format1 = (CHAR16*)MEM_ALLOC (ATTRPRINT_BUFSIZE);
+  Format2 = (CHAR16*)MEM_ALLOC (ATTRPRINT_BUFSIZE);
+  Text1   = (CHAR16*)MEM_ALLOC (ATTRPRINT_BUFSIZE);
+  Text2   = (CHAR16*)MEM_ALLOC (ATTRPRINT_BUFSIZE);
 
-  if (mPostReplaceFormat == NULL || mPostReplaceFormat2 == NULL) {
-    MEM_FREE(mPostReplaceFormat);
-    MEM_FREE(mPostReplaceFormat2);
+  if (Format1 == NULL || Format2 == NULL || Text1 == NULL || Text2 == NULL) {
+    MEM_FREE(Format1);
+    MEM_FREE(Format2);
+    MEM_FREE(Text1);
+    MEM_FREE(Text2);
     return (EFI_OUT_OF_RESOURCES);
   }
 
   Status            = EFI_SUCCESS;
   OriginalAttribute = gST->ConOut->Mode->Attribute;
 
-  //
-  // Back and forth each time fixing up 1 of our flags...
-  //
-  Status = StrCopySearchAndReplace(Format,              mPostReplaceFormat,  ATTRPRINT_BUFSIZE, L"%N", L"%%N", FALSE, FALSE);
-  Status = StrCopySearchAndReplace(mPostReplaceFormat,  mPostReplaceFormat2, ATTRPRINT_BUFSIZE, L"%E", L"%%E", FALSE, FALSE);
-  Status = StrCopySearchAndReplace(mPostReplaceFormat2, mPostReplaceFormat,  ATTRPRINT_BUFSIZE, L"%H", L"%%H", FALSE, FALSE);
-  Status = StrCopySearchAndReplace(mPostReplaceFormat,  mPostReplaceFormat2, ATTRPRINT_BUFSIZE, L"%B", L"%%B", FALSE, FALSE);
-  Status = StrCopySearchAndReplace(mPostReplaceFormat2, mPostReplaceFormat,  ATTRPRINT_BUFSIZE, L"%V", L"%%V", FALSE, FALSE);
-  Status = StrCopySearchAndReplace(mPostReplaceFormat,  mPostReplaceFormat2, ATTRPRINT_BUFSIZE, L"%O", L"%%O", FALSE, FALSE);
-  CopyMem(mPostReplaceFormat, mPostReplaceFormat2, ATTRPRINT_BUFSIZE);
-
-  //
-  // Use the last buffer from replacing to print from...
-  //
-  UnicodeVSPrint (mPostReplaceFormat2, ATTRPRINT_BUFSIZE, mPostReplaceFormat, Marker);
+  // Format twice with different marks for the attribute tokens (see ATTR_MARK_1)
+  AttrMarkFormat(Format, Format1, ATTRPRINT_BUFSIZE / sizeof(CHAR16), ATTR_MARK_1);
+  AttrMarkFormat(Format, Format2, ATTRPRINT_BUFSIZE / sizeof(CHAR16), ATTR_MARK_2);
+  VA_COPY(Marker2, Marker);
+  UnicodeVSPrint (Text1, ATTRPRINT_BUFSIZE, Format1, Marker);
+  UnicodeVSPrint (Text2, ATTRPRINT_BUFSIZE, Format2, Marker2);
+  VA_END(Marker2);
 
   if (Col != -1 && Row != -1) {
     Status = gST->ConOut->SetCursorPosition(gST->ConOut, Col, Row);
   }
 
-  FormatWalker = mPostReplaceFormat2;
-  while (*FormatWalker != CHAR_NULL) {
-    //
-    // Find the next attribute change request
-    //
-    ResumeLocation = StrStr(FormatWalker, L"%");
-    if (ResumeLocation != NULL) {
-      *ResumeLocation = CHAR_NULL;
-    }
-    //
-    // print the current FormatWalker string
-    //
-    if (StrLen(FormatWalker)>0) {
-      Status = AttrPrintTo(FormatWalker);
-      if (EFI_ERROR(Status)) {
-        break;
-      }
-    }
-
-    //
-    // update the attribute
-    //
-    if (ResumeLocation != NULL) {
-      if (*(ResumeLocation-1) == L'^') {
-        //
-        // Move cursor back 1 position to overwrite the ^
-        //
-        gST->ConOut->SetCursorPosition(gST->ConOut, gST->ConOut->Mode->CursorColumn - 1, gST->ConOut->Mode->CursorRow);
-
-        //
-        // Print a simple '%' symbol
-        //
-        Status = AttrPrintTo(L"%");
-        ResumeLocation = ResumeLocation - 1;
-      } else {
-        switch (*(ResumeLocation+1)) {
-          case (L'N'):
-            gST->ConOut->SetAttribute(gST->ConOut, OriginalAttribute);
-            break;
-          case (L'E'):
-            gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_YELLOW, ((OriginalAttribute&(BIT4|BIT5|BIT6))>>4)));
-            break;
-          case (L'H'):
-            gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_WHITE, ((OriginalAttribute&(BIT4|BIT5|BIT6))>>4)));
-            break;
-          case (L'B'):
-            gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_BLUE, ((OriginalAttribute&(BIT4|BIT5|BIT6))>>4)));
-            break;
-          case (L'V'):
-            gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_GREEN, ((OriginalAttribute&(BIT4|BIT5|BIT6))>>4)));
-            break;
-          case (L'O'):
-            gST->ConOut->SetAttribute(gST->ConOut, EFI_TEXT_ATTR(EFI_RED, ((OriginalAttribute&(BIT4|BIT5|BIT6))>>4)));
-            break;
-          default:
-            //
-            // Print a simple '%' symbol
-            //
-            Status = AttrPrintTo(L"%");
-            if (EFI_ERROR(Status)) {
-              break;
-            }
-            ResumeLocation = ResumeLocation - 1;
-            break;
-        }
-      }
-    } else {
-      //
-      // reset to normal now...
-      //
-      break;
-    }
-
-    //
-    // update FormatWalker to Resume + 2 (skip the % and the indicator)
-    //
-    FormatWalker = ResumeLocation + 2;
-  }
+  Status = AttrPrintMarked(Text1, Text2, OriginalAttribute);
 
   gST->ConOut->SetAttribute(gST->ConOut, OriginalAttribute);
 
-  MEM_FREE(mPostReplaceFormat);
-  MEM_FREE(mPostReplaceFormat2);
+  // formatted output may contain password characters
+  MEM_BURN(Format1, ATTRPRINT_BUFSIZE);
+  MEM_BURN(Format2, ATTRPRINT_BUFSIZE);
+  MEM_BURN(Text1, ATTRPRINT_BUFSIZE);
+  MEM_BURN(Text2, ATTRPRINT_BUFSIZE);
+  MEM_FREE(Format1);
+  MEM_FREE(Format2);
+  MEM_FREE(Text1);
+  MEM_FREE(Text2);
   return (Status);
+}
+
+/**
+  Turn Text - DCS's own constant text, never user data - into a format that prints it
+  as it is with its colour codes (%N %E %H %B %V %O) applied: every other '%' becomes "%%", so no
+  format argument is ever consumed. Out holds OutChars characters; the result is cut, never split
+  inside a pair.
+**/
+VOID
+EFIAPI
+AttrEscapeText(
+  IN  CONST CHAR16  *Text,
+  OUT CHAR16        *Out,
+  IN  UINTN         OutChars
+  )
+{
+  UINTN   o = 0;
+  CHAR16  c;
+
+  if (OutChars == 0) {
+    return;
+  }
+  while (*Text != CHAR_NULL) {
+    if (*Text == L'%') {
+      c = Text[1];
+      if (o + 2 >= OutChars) {
+        break;
+      }
+      Out[o++] = L'%';
+      if (c == L'N' || c == L'E' || c == L'H' || c == L'B' || c == L'V' || c == L'O') {
+        Out[o++] = c;     // a colour code
+        Text += 2;
+      } else {
+        Out[o++] = L'%';  // a literal percent
+        Text += 1;
+      }
+      continue;
+    }
+    if (o + 1 >= OutChars) {
+      break;
+    }
+    Out[o++] = *Text++;
+  }
+  Out[o] = CHAR_NULL;
+}
+
+/**
+  Print Text (DCS's own constant text, never user data) with its colour codes applied
+  and nothing else interpreted - see AttrEscapeText.
+**/
+EFI_STATUS
+EFIAPI
+AttrPrintText(
+  IN CONST CHAR16  *Text
+  )
+{
+  EFI_STATUS  Status;
+  CHAR16      *Escaped;
+
+  Escaped = (CHAR16*)MEM_ALLOC(ATTRPRINT_BUFSIZE);
+  if (Escaped == NULL) {
+    return EFI_OUT_OF_RESOURCES;
+  }
+  AttrEscapeText(Text, Escaped, ATTRPRINT_BUFSIZE / sizeof(CHAR16));
+  Status = AttrPrintEx(-1, -1, Escaped);
+  MEM_FREE(Escaped);
+  return Status;
 }
 
 /**

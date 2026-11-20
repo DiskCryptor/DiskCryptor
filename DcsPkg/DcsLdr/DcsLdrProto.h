@@ -67,10 +67,15 @@ EFI_STATUS
   @param[in]  MokSBState    The new MokSBState value to set.
                             Use DCS_MOK_SB_STATE_ENABLED or DCS_MOK_SB_STATE_DISABLED.
 
+  Turning verification off (DCS_MOK_SB_STATE_DISABLED) needs the user to have
+  entered credentials in this boot (EFI_DCS_LDR_AUTH_PROTOCOL ConfirmUser, called by DCS after
+  an interactive unlock), and is measured into PCR 7 first, so a TPM seal to PCR 7 does not
+  unseal in a boot where it happened. Turning it back on is always allowed.
+
   @retval EFI_SUCCESS           MokSBState set successfully.
   @retval EFI_INVALID_PARAMETER This is NULL or MokSBState is invalid.
-  @retval EFI_WRITE_PROTECTED   Variable could not be written.
-  @retval Other                 Error setting the variable.
+  @retval EFI_ACCESS_DENIED     Off requested without an interactive unlock in this boot.
+  @retval EFI_SECURITY_VIOLATION Off requested, but a TPM is present and the measurement failed.
 
 **/
 typedef
@@ -93,9 +98,35 @@ EFI_STATUS
 struct _EFI_DCS_LDR_PROTOCOL {
   EFI_DCS_SECURITY_GET_MOK_SB_STATE  GetMokSBState;
   EFI_DCS_SECURITY_SET_MOK_SB_STATE  SetMokSBState;
+
   EFI_DCS_SECURITY_GET_CERT_STATE    GetCertState;
 };
 
 extern EFI_GUID gEfiDcsLdrProtocolGuid;
+
+//
+// DCS tells DcsLdr that the user entered credentials in this boot (DCS_BOOT_CONFIG.UnlockInteractive);
+// until then SetMokSBState refuses to turn verification off. A separate protocol, so DCS can tell
+// whether its DcsLdr has it (with an older one the toggle stays off).
+// {9B2F4C71-3D85-4E6A-B19C-5A7E20D4C836}
+//
+#define EFI_DCS_LDR_AUTH_PROTOCOL_GUID \
+  { \
+    0x9b2f4c71, 0x3d85, 0x4e6a, { 0xb1, 0x9c, 0x5a, 0x7e, 0x20, 0xd4, 0xc8, 0x36 } \
+  }
+
+typedef struct _EFI_DCS_LDR_AUTH_PROTOCOL EFI_DCS_LDR_AUTH_PROTOCOL;
+
+typedef
+EFI_STATUS
+(EFIAPI *EFI_DCS_LDR_CONFIRM_USER) (
+  IN  EFI_DCS_LDR_AUTH_PROTOCOL  *This
+  );
+
+struct _EFI_DCS_LDR_AUTH_PROTOCOL {
+  EFI_DCS_LDR_CONFIRM_USER           ConfirmUser;
+};
+
+extern EFI_GUID gEfiDcsLdrAuthProtocolGuid;
 
 #endif // _EFI_DCSSECURITYPROTO_H

@@ -86,6 +86,13 @@ typedef struct _DCSOWNER_VAR_MAP {
 #define DCSOWNER_CFG_TPMKILL     "TpmKill"          // DcsProp key (config file present)
 #define DCSOWNER_CFG_DEBUG       "VerboseDebug"
 
+//
+// Boot menu lock, the same way: the DcsProp key when the file loaded, else the EFI variable
+// (one byte, absent = on). DcsBoot, which applies it, reads the same source.
+//
+#define DCSOWNER_VAR_BML         L"DcsBootMenuLock"
+#define DCSOWNER_CFG_BML         "BootMenuLock"
+
 extern BOOLEAN gUseConfigFile;
 
 //
@@ -158,6 +165,11 @@ DcsOwnerGetVerboseDebug (
 
 UINT8
 DcsOwnerGetTpmKillMode (
+    VOID
+    );
+
+BOOLEAN
+DcsOwnerGetBootMenuLock (
     VOID
     );
 

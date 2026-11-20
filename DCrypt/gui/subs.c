@@ -168,7 +168,11 @@ void _get_status_text(
 	if (st &&st->dsk_size)
 	{
 		_dact *act = _create_act_thread(node, -1, -1);
-		if (st->flags & F_ENABLED) 
+		if (DC_IS_LOCKED(st->flags))
+		{
+			/* keys erased at hibernation, I/O fails until unlocked or unmounted */
+			wcscat_s(text, len, L"locked");
+		} else if (st->flags & F_ENABLED)
 		{
 			if (st->mnt_flags & MF_USE_BACKUP) 
 				wcscat_s(text, len, L"backup ");
@@ -187,7 +191,11 @@ void _get_status_text(
 				case ACT_DECRYPT:   act_name = L"decrypt";   break;
 				case ACT_FORMAT:    act_name = L"format";    break;
 			}
-			_snwprintf(text, len, L"%s %.02d%%", act_name, prc);
+			if (DC_IS_LOCKED(st->flags)) {
+				_snwprintf(text, len, L"locked (%s %.02d%%)", act_name, prc);
+			} else {
+				_snwprintf(text, len, L"%s %.02d%%", act_name, prc);
+			}
 
 		}
 	}

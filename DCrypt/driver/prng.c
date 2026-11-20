@@ -22,17 +22,9 @@
 #include "defines.h"
 #include "prng.h"
 #include "misc.h"
-//#ifdef _M_ARM64
-//#include "sha512_small.h"
-//#include "aes_small.h"
-//#define aes256_asm_set_key   aes256_set_key
-//#define aes256_asm_encrypt   aes256_encrypt
-//#define aes256_asm_decrypt   aes256_decrypt
-//#else
 #include "sha512.h"
 #include "aes_key.h"
 #include "aes_asm.h"
-//#endif
 #include "debug.h"
 #include "misc_mem.h"
 
@@ -83,6 +75,14 @@ static u64         reseed_cnt;  /* reseed counter  */
 static u64         getrnd_cnt;  /* getrand counter */
 static KMUTEX      rnd_mutex;
 static aes256_key *rnd_key;
+/*
+ * rnd_pool_lock (a leaf lock) protects rnd_pool, rnd_pos, key_pool and reseed_cnt. The seed
+ * writers cannot take rnd_mutex (io_read_write_irp reseeds at up to DISPATCH_LEVEL);
+ * rnd_mutex still serializes the extraction in cp_rand_bytes. Seed hashing and AES key setup
+ * run outside the spin lock. A zeroed KSPIN_LOCK is a released one, so a reseed before
+ * cp_rand_init is safe.
+ */
+static KSPIN_LOCK  rnd_pool_lock;
 
 static void cp_rand_pool_mix()
 {
@@ -111,10 +111,13 @@ void cp_rand_add_seed(void *data, int size)
 	ext_seed   seed;
 	u8         hval[SHA512_DIGEST_SIZE];
 	int        pos, i;
+	KIRQL      irql;
 
 	/* add counter and timestamp to seed data to prevent hash recurrence */
 	seed.seed1 = __rdtsc();
+	KeAcquireSpinLock(&rnd_pool_lock, &irql);
 	seed.seed2 = reseed_cnt++;
+	KeReleaseSpinLock(&rnd_pool_lock, irql);
 
 	/* hash input data */
 	sha512_init(&sha_ctx);
@@ -122,6 +125,7 @@ void cp_rand_add_seed(void *data, int size)
 	sha512_hash(&sha_ctx, pv(&seed), sizeof(seed));
 	sha512_done(&sha_ctx, hval);
 
+	KeAcquireSpinLock(&rnd_pool_lock, &irql);
 	/* add hash value to seed buffer */
 	for (i = 0; i < SHA512_DIGEST_SIZE; i++)
 	{
@@ -135,7 +139,8 @@ void cp_rand_add_seed(void *data, int size)
 	/* add hash value to key buffer */
 	for (i = 0; i < SHA512_DIGEST_SIZE; i++) {
 		key_pool[i % AES_KEY_SIZE] += hval[i];
-	}	
+	}
+	KeReleaseSpinLock(&rnd_pool_lock, irql);
 	/* prevent leaks */
 	burn(&sha_ctx, sizeof(sha_ctx));
 	burn(&hval, sizeof(hval));
@@ -193,6 +198,9 @@ int cp_rand_bytes(u8 *buf, int len)
 	int        c_len, idx, i;
 	ext_seed   seed;
 	int        fail;
+	u8         key_copy[AES_KEY_SIZE];     /* key_pool snapshot */
+	u8         blk[SHA512_DIGEST_SIZE];    /* pool block snapshot */
+	KIRQL      irql;
 
 	if (reseed_cnt < 256) {
 		DbgMsg("RNG does not have sufficient entropy (%d reseeds), collect it now\n", reseed_cnt);
@@ -205,11 +213,16 @@ int cp_rand_bytes(u8 *buf, int len)
 
 	KeWaitForSingleObject(&rnd_mutex, Executive, KernelMode, FALSE, NULL);
 
-	/* derive AES key from key pool */
-	aes256_asm_set_key(key_pool, rnd_key);
-
+	/* snapshot key_pool and mix the pool under rnd_pool_lock; cp_rand_reseed below
+	   takes the lock itself, so it is never held across a reseed */
+	KeAcquireSpinLock(&rnd_pool_lock, &irql);
+	memcpy(key_copy, key_pool, sizeof(key_copy));
 	/* mix pool state before get data from it */
 	cp_rand_pool_mix();
+	KeReleaseSpinLock(&rnd_pool_lock, irql);
+
+	/* derive AES key from key pool */
+	aes256_asm_set_key(key_copy, rnd_key);
 
 	/* idx - position for extraction pool data */
 	idx = 0; fail = 0;
@@ -222,8 +235,12 @@ int cp_rand_bytes(u8 *buf, int len)
 		/* collect additional entropy before extract data block */
 		cp_rand_reseed();
 
+		KeAcquireSpinLock(&rnd_pool_lock, &irql);
+		memcpy(blk, rnd_pool + idx, SHA512_DIGEST_SIZE);
+		KeReleaseSpinLock(&rnd_pool_lock, irql);
+
 		sha512_init(&sha_ctx);
-		sha512_hash(&sha_ctx, rnd_pool + idx, SHA512_DIGEST_SIZE);
+		sha512_hash(&sha_ctx, blk, SHA512_DIGEST_SIZE);
 		sha512_hash(&sha_ctx, pv(&seed), sizeof(seed));
 		sha512_done(&sha_ctx, hval);
 
@@ -244,7 +261,10 @@ int cp_rand_bytes(u8 *buf, int len)
 		if ( (idx += SHA512_DIGEST_SIZE) == RNG_POOL_SIZE ) {
 			/* if all data from pool extracted then 
 			  mix pool for use new entropy added with reseeds */
-			cp_rand_pool_mix(); idx = 0; 
+			KeAcquireSpinLock(&rnd_pool_lock, &irql);
+			cp_rand_pool_mix();
+			KeReleaseSpinLock(&rnd_pool_lock, irql);
+			idx = 0;
 		}
 
 		/* collect additional entropy after extract data block */		
@@ -255,9 +275,13 @@ int cp_rand_bytes(u8 *buf, int len)
 	} while ( (len != 0) && (fail == 0) );
 
 	/* mix pool after getting data to prevent "cold boot" attacks to generated keys */
+	KeAcquireSpinLock(&rnd_pool_lock, &irql);
 	cp_rand_pool_mix();
+	KeReleaseSpinLock(&rnd_pool_lock, irql);
 
 	/* Prevent leaks */
+	burn(key_copy, sizeof(key_copy));
+	burn(blk, sizeof(blk));
 	burn(rnd_key, sizeof(aes256_key));
 	burn(&sha_ctx, sizeof(sha_ctx));
 	burn(hval, sizeof(hval));
@@ -274,6 +298,7 @@ int cp_rand_init()
 		return ST_NOMEM;
 	}
 	KeInitializeMutex(&rnd_mutex, 0);
+	KeInitializeSpinLock(&rnd_pool_lock);
 	cp_rand_reseed();
 
 	return ST_OK;

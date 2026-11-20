@@ -98,6 +98,12 @@ extern _colinfo _benchmark_headers[ ];
 extern _colinfo _kdf_benchmark_headers[ ];
 
 const extern _init_list wipe_modes[ ];
+/* power-loss protection of a transcryption start (the IDC_COMBO_SAFE lists) */
+#define SAFE_MODE_NONE  0
+#define SAFE_MODE_SUMS  1 /* checksum journal, EF_SAFE_TRANSCRYPT_FAST (default) */
+#define SAFE_MODE_FULL  2 /* a copy of every block, EF_SAFE_TRANSCRYPT */
+#define SAFE_MODE_FLAGS(_m_) ( (_m_) == SAFE_MODE_SUMS ? EF_SAFE_TRANSCRYPT_FAST : (_m_) == SAFE_MODE_FULL ? EF_SAFE_TRANSCRYPT : 0 )
+const extern _init_list safe_modes[ ];
 const extern _init_list kb_layouts[ ];
 
 const extern _init_list boot_type_ext[ ];
@@ -109,6 +115,7 @@ const extern _init_list auth_tmount[ ];
 
 const extern _init_list bad_pass_act_efi[ ];
 const extern _init_list bad_pass_act[ ];
+const extern _init_list tmo_act_efi[ ];
 const extern _init_list auth_type[ ];
 
 const extern _init_list cipher_names[ ];

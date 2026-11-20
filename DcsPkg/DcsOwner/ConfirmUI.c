@@ -27,7 +27,8 @@ https://opensource.org/licenses/LGPL-3.0
 #define DESC_BUF_CHARS       80
 
 //////////////////////////////////////////////////////////////////////////
-// Certificate fingerprint (SHA-256 of first X.509 cert in signature list)
+// Signature database summary of the whole value (size, lists, signatures); the dialog shows
+// the SHA-256 of the whole value below the list.
 //////////////////////////////////////////////////////////////////////////
 
 VOID
@@ -39,47 +40,39 @@ DescribeCertFingerprint (
     )
 {
     EFI_SIGNATURE_LIST  *SigList;
-    UINT8               *CertData;
-    UINTN               CertSize;
-    UINT8               Hash[32];
-    UINTN               i, Off;
+    UINTN               Off = 0;
+    UINTN               Lists = 0;
+    UINTN               Sigs = 0;
+    UINTN               Payload;
 
-    if (Data == NULL || Size < sizeof(EFI_SIGNATURE_LIST)) {
-        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%d bytes", (int)Size);
+    if (Data == NULL || Size == 0) {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"(removed)");
         return;
     }
 
-    SigList = (EFI_SIGNATURE_LIST *)Data;
-    if (SigList->SignatureSize <= sizeof(EFI_GUID) ||
-        SigList->SignatureListSize > Size) {
-        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%d bytes", (int)Size);
+    while (Off < Size) {
+        if (Size - Off < sizeof(EFI_SIGNATURE_LIST))
+            break;
+        SigList = (EFI_SIGNATURE_LIST *)((UINT8 *)Data + Off);
+        if (SigList->SignatureListSize < sizeof(EFI_SIGNATURE_LIST) ||
+            SigList->SignatureListSize > Size - Off ||
+            SigList->SignatureSize <= sizeof(EFI_GUID) ||
+            SigList->SignatureHeaderSize > SigList->SignatureListSize - sizeof(EFI_SIGNATURE_LIST))
+            break;
+        Payload = SigList->SignatureListSize - sizeof(EFI_SIGNATURE_LIST) - SigList->SignatureHeaderSize;
+        if (Payload % SigList->SignatureSize != 0)
+            break;
+        Sigs  += Payload / SigList->SignatureSize;
+        Lists += 1;
+        Off   += SigList->SignatureListSize;
+    }
+
+    if (Off != Size) {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%d bytes, NOT a valid signature list", (int)Size);
         return;
     }
-
-    CertData = (UINT8 *)SigList
-             + sizeof(EFI_SIGNATURE_LIST)
-             + SigList->SignatureHeaderSize
-             + sizeof(EFI_GUID);
-    CertSize = SigList->SignatureSize - sizeof(EFI_GUID);
-
-    if (!Sha256HashAll(CertData, CertSize, Hash)) {
-        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%d bytes (hash failed)", (int)Size);
-        return;
-    }
-
-    Off = 0;
-    for (i = 0; i < 10 && Off + 3 < BufChars; i++) {
-        if (i > 0 && Off + 1 < BufChars)
-            Buf[Off++] = L':';
-        UnicodeSPrint(&Buf[Off], (BufChars - Off) * sizeof(CHAR16), L"%02X", Hash[i]);
-        Off += 2;
-    }
-    if (Off + 4 < BufChars) {
-        Buf[Off++] = L'.';
-        Buf[Off++] = L'.';
-        Buf[Off++] = L'.';
-    }
-    Buf[Off] = L'\0';
+    UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%d bytes, %d list(s), %d signature(s)",
+                  (int)Size, (int)Lists, (int)Sigs);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -268,7 +261,79 @@ typedef struct {
     UINTN          NewSize;
     BOOLEAN        Accepted;
     INT32          MapIndex;    // -1 = SecureBootOverride, >=0 = gVarMap index
+    UINT8          Hash[32];    // SHA-256 of the whole new value
+    BOOLEAN        HashOk;
 } CONFIRM_ITEM;
+
+/**
+  The detail line under the list - the SHA-256 of the whole new value of the
+  selected item, so a value can be checked against the one that was staged.
+**/
+STATIC
+VOID
+ConfirmDrawDetail (
+    IN CONFIRM_ITEM  *Item,
+    IN INT32          Row
+    )
+{
+    UINTN i;
+
+    gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row);
+    if (Item->MapIndex < 0) {
+        // SecureBootOverride: the line above says it all
+    } else if (Item->NewData == NULL || Item->NewSize == 0) {
+        OUT_PRINT(L"  New value: (removed)");
+    } else if (!Item->HashOk) {
+        OUT_PRINT(L"  SHA-256: (failed)");
+    } else {
+        // "  SHA-256: " (11) + 64 hex = 75 fits an 80-column line
+        OUT_PRINT(L"  SHA-256: ");
+        for (i = 0; i < 32; i++) OUT_PRINT(L"%02x", Item->Hash[i]);
+    }
+    {
+        UINTN col = (UINTN)gST->ConOut->Mode->CursorColumn;
+        while (col < 79) { OUT_PRINT(L" "); col++; }
+    }
+}
+
+/**
+  A value without a describer - a one-byte flag is shown decoded, anything longer by
+  its size (its SHA-256 is on the detail line).
+**/
+STATIC
+VOID
+DescribeFlagOrSize (
+    IN  CONST CHAR16  *Name,
+    IN  VOID          *Data,
+    IN  UINTN          Size,
+    OUT CHAR16        *Buf,
+    IN  UINTN          BufChars
+    )
+{
+    UINT8         v;
+    CONST CHAR16  *m = NULL;
+
+    if (Data == NULL || Size == 0) {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"(removed)");
+        return;
+    }
+    if (Size != 1) {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%d bytes", (int)Size);
+        return;
+    }
+    v = *(UINT8 *)Data;
+    if (StrCmp(Name, L"PrivacyDeveloper") == 0) {
+        m = (v == 0x00) ? L"No" : (v == 0x01) ? L"Allow User Signing" :
+            (v == 0x03) ? L"Allow Signing & Debugging" : L"unknown value";
+    } else if (StrCmp(Name, L"SuspendIsolator") == 0) {
+        m = (v == 0) ? L"False" : (v == 1) ? L"True" : L"unknown value";
+    }
+    if (m != NULL) {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"0x%02X = %s", (int)v, m);
+    } else {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"1 byte: 0x%02X", (int)v);
+    }
+}
 
 STATIC
 VOID
@@ -301,21 +366,23 @@ ConfirmDrawItem (
         OUT_PRINT(L"%N");
 }
 
+// Into the caller's buffer (old and new value are formatted together); a non-canonical value
+// is shown by what DcsOwner makes of it (DCSOWNER_SB_ACTIVE/VALUE) plus its hex
 STATIC
-CONST CHAR16*
+VOID
 GetOverrideDesc (
-    IN UINT8  Value
+    IN  UINT8    Value,
+    OUT CHAR16  *Buf,
+    IN  UINTN    BufChars
     )
 {
-    static CHAR16 Hex[12] = {0};
-    switch (Value)
-    {
-	case DCSOWNER_SB_DISABLED:    return L"Disabled";
-	case DCSOWNER_SB_REPORT_OFF:  return L"Report Off";
-	case DCSOWNER_SB_REPORT_ON:   return L"Report On";
-    default:
-		UnicodeSPrint(Hex, sizeof(Hex), L"0x%2X", (int)Value);
-        return Hex;
+    CONST CHAR16 *Name = !DCSOWNER_SB_ACTIVE(Value) ? L"Disabled" :
+                         DCSOWNER_SB_VALUE(Value)   ? L"Report On" : L"Report Off";
+
+    if (Value == DCSOWNER_SB_DISABLED || Value == DCSOWNER_SB_REPORT_OFF || Value == DCSOWNER_SB_REPORT_ON) {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%s", Name);
+    } else {
+        UnicodeSPrint(Buf, BufChars * sizeof(CHAR16), L"%s (0x%02X)", Name, (int)Value);
     }
 }
 
@@ -342,8 +409,12 @@ DcsOwnerConfirmChanges (
         items[count].Label    = L"SecureBootOverride";
         items[count].MapIndex = -1;
         items[count].Accepted = FALSE;
+        CHAR16 OldDesc[24];
+        CHAR16 NewDesc[24];
+        GetOverrideDesc(OldSb, OldDesc, sizeof(OldDesc) / sizeof(OldDesc[0]));
+        GetOverrideDesc(NewSb, NewDesc, sizeof(NewDesc) / sizeof(NewDesc[0]));
         UnicodeSPrint(items[count].Desc, sizeof(items[count].Desc),
-			L"%s -> %s", GetOverrideDesc(OldSb), GetOverrideDesc(NewSb));
+			L"%s -> %s", OldDesc, NewDesc);
         items[count].NewData = NULL;
         items[count].NewSize = 0;
         count++;
@@ -365,13 +436,16 @@ DcsOwnerConfirmChanges (
             items[count].NewSize  = RtSize;
             RtData = NULL;  // ownership transferred
 
+            if (items[count].NewData != NULL && items[count].NewSize > 0) {
+                items[count].HashOk = Sha256HashAll(items[count].NewData, items[count].NewSize, items[count].Hash);
+            }
             if (gVarMap[i].Describe != NULL) {
                 gVarMap[i].Describe(
                     items[count].NewData, items[count].NewSize,
                     items[count].Desc, DESC_BUF_CHARS);
             } else {
-                UnicodeSPrint(items[count].Desc, sizeof(items[count].Desc),
-                    L"%d bytes", (int)items[count].NewSize);
+                DescribeFlagOrSize(gVarMap[i].Name, items[count].NewData, items[count].NewSize,
+                    items[count].Desc, DESC_BUF_CHARS);
             }
             count++;
         }
@@ -387,6 +461,9 @@ DcsOwnerConfirmChanges (
     for (i = 0; i < (INT32)gVarMapCount; i++)
         VarAccepted[i] = FALSE;
 
+    // Dialog waits indefinitely for the operator; stop the 5-min boot watchdog
+    gBS->SetWatchdogTimer(0, 0, 0, NULL);
+
     // Draw
     gST->ConOut->ClearScreen(gST->ConOut);
     OUT_PRINT(L"--- DcsOwner: Pending Changes ---\r\n");
@@ -401,6 +478,7 @@ DcsOwnerConfirmChanges (
     for (i = 0; i < count; i++) {
         ConfirmDrawItem(&items[i], baseRow + i, (i == selected));
     }
+    ConfirmDrawDetail(&items[selected], baseRow + count + 1);
 
     gST->ConOut->EnableCursor(gST->ConOut, FALSE);
 
@@ -435,6 +513,7 @@ DcsOwnerConfirmChanges (
             selected--;
             ConfirmDrawItem(&items[prev], baseRow + prev, FALSE);
             ConfirmDrawItem(&items[selected], baseRow + selected, TRUE);
+            ConfirmDrawDetail(&items[selected], baseRow + count + 1);
             continue;
         }
 
@@ -444,6 +523,7 @@ DcsOwnerConfirmChanges (
             selected++;
             ConfirmDrawItem(&items[prev], baseRow + prev, FALSE);
             ConfirmDrawItem(&items[selected], baseRow + selected, TRUE);
+            ConfirmDrawDetail(&items[selected], baseRow + count + 1);
             continue;
         }
 
@@ -462,6 +542,7 @@ DcsOwnerConfirmChanges (
                 for (i = 0; i < count; i++) {
                     ConfirmDrawItem(&items[i], baseRow + i, (i == selected));
                 }
+                ConfirmDrawDetail(&items[selected], baseRow + count + 1);
                 gST->ConOut->EnableCursor(gST->ConOut, FALSE);
             }
             continue;

@@ -38,6 +38,16 @@
 #define FSCTL_GET_NTFS_VOLUME_DATA CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 25, METHOD_BUFFERED, FILE_ANY_ACCESS)
 #endif
 
+#ifndef FSCTL_GET_RETRIEVAL_POINTER_BASE
+#define FSCTL_GET_RETRIEVAL_POINTER_BASE CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 141, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#endif
+
+/* Output of FSCTL_GET_RETRIEVAL_POINTER_BASE: volume-relative sector offset of the
+ * first allocatable unit (LCN 0). 0 on NTFS/ReFS, the data area start on FAT/exFAT. */
+typedef struct _DC_RETRIEVAL_POINTER_BASE {
+    LARGE_INTEGER FileAreaOffset;
+} DC_RETRIEVAL_POINTER_BASE;
+
 #ifndef FSCTL_GET_VOLUME_BITMAP
 #define FSCTL_GET_VOLUME_BITMAP CTL_CODE(FILE_DEVICE_FILE_SYSTEM, 27, METHOD_NEITHER, FILE_ANY_ACCESS)
 #endif
@@ -103,106 +113,6 @@ typedef struct _DC_REFS_VOLUME_DATA {
     LARGE_INTEGER Reserved[9];
 } DC_REFS_VOLUME_DATA;
 
-#pragma pack(push, 1)
-
-/* FAT16 Boot Parameter Block */
-typedef struct _DC_FAT16_BOOT_SECTOR {
-    u8  jmp_boot[3];
-    u8  oem_name[8];
-    u16 bytes_per_sector;      /* offset 11 */
-    u8  sectors_per_cluster;   /* offset 13 */
-    u16 reserved_sectors;      /* offset 14 */
-    u8  num_fats;              /* offset 16 */
-    u16 root_entries;          /* offset 17 */
-    u16 total_sectors_16;      /* offset 19 */
-    u8  media_type;            /* offset 21 */
-    u16 fat_size_16;           /* offset 22 */
-    u16 sectors_per_track;     /* offset 24 */
-    u16 num_heads;             /* offset 26 */
-    u32 hidden_sectors;        /* offset 28 */
-    u32 total_sectors_32;      /* offset 32 */
-    /* Extended BPB fields at offset 36 */
-    u8  drive_number;
-    u8  reserved1;
-    u8  boot_signature;
-    u32 volume_id;
-    u8  volume_label[11];
-    u8  fs_type[8];            /* "FAT16   " at offset 54 */
-} DC_FAT16_BOOT_SECTOR;
-
-/* FAT32 Boot Parameter Block */
-typedef struct _DC_FAT32_BOOT_SECTOR {
-    u8  jmp_boot[3];
-    u8  oem_name[8];
-    u16 bytes_per_sector;
-    u8  sectors_per_cluster;
-    u16 reserved_sectors;
-    u8  num_fats;
-    u16 root_entries;          /* Always 0 for FAT32 */
-    u16 total_sectors_16;      /* Always 0 for FAT32 */
-    u8  media_type;
-    u16 fat_size_16;           /* Always 0 for FAT32 */
-    u16 sectors_per_track;
-    u16 num_heads;
-    u32 hidden_sectors;
-    u32 total_sectors_32;
-    u32 fat_size_32;           /* FAT size for FAT32 */
-    u16 ext_flags;
-    u16 fs_version;
-    u32 root_cluster;
-    u16 fs_info;
-    u16 backup_boot_sector;
-    u8  reserved[12];
-    u8  drive_number;
-    u8  reserved1;
-    u8  boot_signature;
-    u32 volume_id;
-    u8  volume_label[11];
-    u8  fs_type[8];            /* "FAT32   " at offset 82 */
-} DC_FAT32_BOOT_SECTOR;
-
-/* exFAT Boot Parameter Block */
-typedef struct _DC_EXFAT_BOOT_SECTOR {
-    u8  jmp_boot[3];
-    u8  oem_name[8];           /* "EXFAT   " */
-    u8  zeros[53];             /* Must be zero */
-    u64 partition_offset;
-    u64 volume_length;         /* Total sectors */
-    u32 fat_offset;            /* FAT offset in sectors */
-    u32 fat_length;            /* FAT size in sectors */
-    u32 cluster_heap_offset;   /* Data area offset in sectors */
-    u32 cluster_count;         /* Total clusters */
-    u32 first_cluster_of_root; /* Root directory cluster */
-    u32 volume_serial;
-    u16 fs_revision;
-    u16 volume_flags;
-    u8  bytes_per_sector_shift;   /* log2(bytes_per_sector) */
-    u8  sectors_per_cluster_shift;/* log2(sectors_per_cluster) */
-    u8  num_fats;
-    u8  drive_select;
-    u8  percent_in_use;
-    u8  reserved[7];
-    u8  boot_code[390];
-    u16 boot_signature;        /* 0xAA55 */
-} DC_EXFAT_BOOT_SECTOR;
-
-/* exFAT Directory Entry (generic header) */
-typedef struct _DC_EXFAT_DIR_ENTRY {
-    u8  entry_type;
-    u8  data[31];
-} DC_EXFAT_DIR_ENTRY;
-
-/* exFAT Allocation Bitmap Entry (entry_type = 0x81) */
-typedef struct _DC_EXFAT_BITMAP_ENTRY {
-    u8  entry_type;            /* 0x81 */
-    u8  bitmap_flags;          /* Bit 0: second bitmap */
-    u8  reserved[18];
-    u32 first_cluster;         /* Cluster where bitmap starts */
-    u64 data_length;           /* Bitmap size in bytes */
-} DC_EXFAT_BITMAP_ENTRY;
-
-#pragma pack(pop)
-
 /* Starting LCN input buffer for FSCTL_GET_VOLUME_BITMAP */
 typedef struct _DC_STARTING_LCN_INPUT {
     LARGE_INTEGER StartingLcn;
@@ -218,7 +128,20 @@ typedef struct _DC_VOLUME_BITMAP_BUFFER {
 /* Header size = StartingLcn + BitmapSize = 16 bytes (don't use sizeof due to padding) */
 #define VOLUME_BITMAP_HEADER_SIZE (sizeof(LARGE_INTEGER) + sizeof(LARGE_INTEGER))
 
-/* Forward declaration for dc_bitmap_mark_cluster (used by FAT loaders) */
+/*
+ * The loaders hold bmp->lock while merging a chunk. Write admission takes
+ * bmp->lock nested inside range_lock, so every tracked I/O on the volume waits
+ * while the loader holds it. Release and re-take the lock every
+ * LOADER_LOCK_BURST iterations to keep those stalls short.
+ */
+#define LOADER_LOCK_BURST 4096
+#define LOADER_LOCK_YIELD(_bmp_, _irql_, _n_) \
+    do { if ((((_n_) + 1) % LOADER_LOCK_BURST) == 0) { \
+        KeReleaseSpinLock(&(_bmp_)->lock, (_irql_)); \
+        YieldProcessor(); YieldProcessor(); /* give a spinning waiter a chance (unfair lock) */ \
+        KeAcquireSpinLock(&(_bmp_)->lock, &(_irql_)); } } while (0)
+
+/* Forward declaration for dc_bitmap_mark_cluster (used by the FSCTL loader) */
 static void dc_bitmap_mark_cluster(dc_alloc_bitmap *bmp, u64 cluster, KIRQL *irql_ptr, BOOLEAN holding_lock);
 
 /*
@@ -281,304 +204,78 @@ static DC_FS_TYPE dc_detect_fs_type(HANDLE h_dev)
             return DC_FS_REFS;
         }
     }
+    /* FAT family: exact names as reported by fastfat ("FAT" = FAT12/16, "FAT32") and
+     * exfat ("exFAT"). */
+    if (fs_info.FileSystemNameLength == 5 * sizeof(WCHAR)) {
+        if (_wcsnicmp(fs_info.FileSystemName, L"FAT32", 5) == 0) {
+            return DC_FS_FAT32;
+        }
+        if (_wcsnicmp(fs_info.FileSystemName, L"exFAT", 5) == 0) {
+            return DC_FS_EXFAT;
+        }
+    }
+    if (fs_info.FileSystemNameLength == 3 * sizeof(WCHAR) &&
+        _wcsnicmp(fs_info.FileSystemName, L"FAT", 3) == 0) {
+        return DC_FS_FAT16;
+    }
 
     DbgMsg("dc_detect_fs_type: unsupported filesystem '%.16ws'\n", fs_info.FileSystemName);
     return DC_FS_UNKNOWN;
 }
 
 /*
- * Helper: detect FAT filesystem type from raw boot sector
+ * Publishing and unpublishing hook->alloc_bitmap.
+ *
+ * In the concurrent build every non-loader access to the bitmap runs under
+ * hook->trans.range_lock, so swapping the pointer under the same lock guarantees:
+ *  - publish: a reader that sees the new pointer also sees the fully
+ *    initialised structure (release/acquire through the lock, also on ARM64);
+ *  - unpublish: once the lock is released no reader still holds the old pointer,
+ *    so the caller may free it.
  */
-static DC_FS_TYPE dc_detect_fs_type_raw(dev_hook *hook, void **boot_sector_out)
+static void dc_bitmap_publish(dev_hook *hook, dc_alloc_bitmap *bmp)
 {
-    u8 *sector;
-    int resl;
-    DC_FS_TYPE type = DC_FS_UNKNOWN;
+#ifdef DC_CONCURRENT_TRANSCRYPT
+    KIRQL irql;
 
-    /* Allocate sector buffer */
-    sector = mm_pool_alloc(ROUND_TO_FULL_SECTORS(512, hook->bps));
-    if (sector == NULL) return DC_FS_UNKNOWN;
-
-    /* Read boot sector */
-    resl = io_hook_rw(hook, sector, ROUND_TO_FULL_SECTORS(512, hook->bps), 0, 1);
-    if (resl != ST_OK) {
-        mm_pool_free(sector);
-        return DC_FS_UNKNOWN;
-    }
-
-    /* Check boot signature */
-    if (sector[510] != 0x55 || sector[511] != 0xAA) {
-        mm_pool_free(sector);
-        return DC_FS_UNKNOWN;
-    }
-
-    /* Detect filesystem type */
-    if (memcmp(sector + 3, "EXFAT   ", 8) == 0) {
-        type = DC_FS_EXFAT;
-    } else if (memcmp(sector + 82, "FAT32   ", 8) == 0) {
-        type = DC_FS_FAT32;
-    } else if (memcmp(sector + 54, "FAT16   ", 8) == 0) {
-        type = DC_FS_FAT16;
-    } else if (memcmp(sector + 54, "FAT12   ", 8) == 0) {
-        type = DC_FS_UNKNOWN; /* FAT12 not supported (too small to matter) */
-    }
-
-    if (boot_sector_out && type != DC_FS_UNKNOWN) {
-        *boot_sector_out = sector;
-    } else {
-        mm_pool_free(sector);
-    }
-
-    return type;
+    KeAcquireSpinLock(&hook->trans.range_lock, &irql);
+    InterlockedExchangePointer((PVOID volatile*)&hook->alloc_bitmap, bmp);
+    KeReleaseSpinLock(&hook->trans.range_lock, irql);
+#else
+    InterlockedExchangePointer((PVOID volatile*)&hook->alloc_bitmap, bmp);
+#endif
 }
 
 /*
- * Helper: load FAT16/FAT32 allocation bitmap from FAT table
+ * Replace bmp by DC_BITMAP_INIT_FAILED if it is still the published bitmap.
+ * Returns TRUE if the caller won and now owns bmp (it may free it).
+ * Returns FALSE if dc_bitmap_free already took it; then dc_bitmap_free frees it
+ * once bmp->loading drops to 0.
  */
-static int dc_bitmap_load_fat(dev_hook *hook, dc_alloc_bitmap *bmp, void *boot_sector, DC_FS_TYPE fs_type)
+static BOOLEAN dc_bitmap_unpublish(dev_hook *hook, dc_alloc_bitmap *bmp)
 {
-    DC_FAT16_BOOT_SECTOR *fat16 = (DC_FAT16_BOOT_SECTOR*)boot_sector;
-    DC_FAT32_BOOT_SECTOR *fat32 = (DC_FAT32_BOOT_SECTOR*)boot_sector;
-
-    u32 bytes_per_sector;
-    u32 sectors_per_cluster;
-    u32 reserved_sectors;
-    u32 num_fats;
-    u32 root_dir_sectors;
-    u32 fat_size;
-    u64 total_sectors;
-    u64 data_sectors;
-    u64 total_clusters;
-    u64 fat_offset;
-    u8 *fat_buffer = NULL;
-    u32 fat_bytes;
-    u64 entries_read;
+    PVOID prev;
+#ifdef DC_CONCURRENT_TRANSCRYPT
     KIRQL irql;
-    int resl = ST_OK;
 
-    /* Parse BPB based on filesystem type */
-    bytes_per_sector = fat16->bytes_per_sector;
-    sectors_per_cluster = fat16->sectors_per_cluster;
-    reserved_sectors = fat16->reserved_sectors;
-    num_fats = fat16->num_fats;
-
-    if (fs_type == DC_FS_FAT32) {
-        fat_size = fat32->fat_size_32;
-        root_dir_sectors = 0; /* FAT32 has root in data area */
-        total_sectors = fat32->total_sectors_32;
-    } else {
-        fat_size = fat16->fat_size_16;
-        root_dir_sectors = ((fat16->root_entries * 32) + (bytes_per_sector - 1)) / bytes_per_sector;
-        total_sectors = fat16->total_sectors_16 ? fat16->total_sectors_16 : fat16->total_sectors_32;
-    }
-
-    data_sectors = total_sectors - reserved_sectors - (num_fats * fat_size) - root_dir_sectors;
-    total_clusters = data_sectors / sectors_per_cluster;
-    fat_offset = (u64)reserved_sectors * bytes_per_sector;
-
-    /* Calculate FAT size in bytes */
-    if (fs_type == DC_FS_FAT32) {
-        fat_bytes = (u32)((total_clusters + 2) * 4);  /* 4 bytes per entry */
-    } else {
-        fat_bytes = (u32)((total_clusters + 2) * 2);  /* 2 bytes per entry */
-    }
-
-    DbgMsg("dc_bitmap_load_fat: fs_type=%d, total_clusters=%I64u, fat_offset=%I64u, fat_bytes=%u\n",
-           fs_type, total_clusters, fat_offset, fat_bytes);
-
-    /* Read FAT in chunks */
-    fat_buffer = mm_pool_alloc(BITMAP_READ_CHUNK);
-    if (fat_buffer == NULL) return ST_NOMEM;
-
-    entries_read = 0;
-
-    while (entries_read < total_clusters + 2) {
-        u64 fat_read_offset;
-        u32 chunk_size;
-        u32 entries_in_chunk;
-        u32 i;
-
-        /* Check if bitmap was freed while we were loading */
-        if (hook->alloc_bitmap != bmp) {
-            DbgMsg("dc_bitmap_load_fat: bitmap changed, aborting\n");
-            resl = ST_ERROR;
-            break;
-        }
-
-        if (fs_type == DC_FS_FAT32) {
-            fat_read_offset = fat_offset + (entries_read * 4);
-            chunk_size = (u32)min(BITMAP_READ_CHUNK, fat_bytes - (u32)(entries_read * 4));
-            entries_in_chunk = chunk_size / 4;
-        } else {
-            fat_read_offset = fat_offset + (entries_read * 2);
-            chunk_size = (u32)min(BITMAP_READ_CHUNK, fat_bytes - (u32)(entries_read * 2));
-            entries_in_chunk = chunk_size / 2;
-        }
-
-        if (chunk_size == 0) break;
-
-        resl = io_hook_rw(hook, fat_buffer, ROUND_TO_FULL_SECTORS(chunk_size, hook->bps), fat_read_offset, 1);
-        if (resl != ST_OK) {
-            DbgMsg("dc_bitmap_load_fat: read failed at offset=%I64u, status=%d\n", fat_read_offset, resl);
-            break;
-        }
-
-        KeAcquireSpinLock(&bmp->lock, &irql);
-
-        if (fs_type == DC_FS_FAT32) {
-            u32 *fat32_entries = (u32*)fat_buffer;
-            for (i = 0; i < entries_in_chunk && entries_read + i < total_clusters + 2; i++) {
-                u32 entry = fat32_entries[i] & 0x0FFFFFFF;  /* Lower 28 bits */
-                if (entry != 0) {  /* Non-zero = allocated */
-                    u64 cluster_idx = entries_read + i;
-                    if (cluster_idx >= 2) {  /* Clusters 0,1 are reserved */
-                        dc_bitmap_mark_cluster(bmp, cluster_idx - 2, &irql, TRUE);
-                    }
-                }
-            }
-        } else {
-            u16 *fat16_entries = (u16*)fat_buffer;
-            for (i = 0; i < entries_in_chunk && entries_read + i < total_clusters + 2; i++) {
-                u16 entry = fat16_entries[i];
-                if (entry != 0) {  /* Non-zero = allocated */
-                    u64 cluster_idx = entries_read + i;
-                    if (cluster_idx >= 2) {
-                        dc_bitmap_mark_cluster(bmp, cluster_idx - 2, &irql, TRUE);
-                    }
-                }
-            }
-        }
-
-        KeReleaseSpinLock(&bmp->lock, irql);
-        entries_read += entries_in_chunk;
-
-        /* Yield periodically to avoid hogging CPU */
-        if ((entries_read % (256 * 1024)) == 0) {
-            dc_delay(1);
-        }
-    }
-
-    mm_pool_free(fat_buffer);
-    return resl;
+    KeAcquireSpinLock(&hook->trans.range_lock, &irql);
+    prev = InterlockedCompareExchangePointer((PVOID volatile*)&hook->alloc_bitmap, DC_BITMAP_INIT_FAILED, bmp);
+    KeReleaseSpinLock(&hook->trans.range_lock, irql);
+#else
+    prev = InterlockedCompareExchangePointer((PVOID volatile*)&hook->alloc_bitmap, DC_BITMAP_INIT_FAILED, bmp);
+#endif
+    return prev == bmp;
 }
 
-/*
- * Helper: load exFAT allocation bitmap from Allocation Bitmap metadata file
- */
-static int dc_bitmap_load_exfat(dev_hook *hook, dc_alloc_bitmap *bmp, void *boot_sector)
+/* Loader failure: drop the bitmap and disable the optimisation. */
+static void dc_bitmap_abort_load(dev_hook *hook, dc_alloc_bitmap *bmp)
 {
-    DC_EXFAT_BOOT_SECTOR *exfat = (DC_EXFAT_BOOT_SECTOR*)boot_sector;
-
-    u32 bytes_per_sector;
-    u32 sectors_per_cluster;
-    u32 cluster_size;
-    u64 cluster_heap_offset;
-    u32 root_cluster;
-    u8 *dir_buffer = NULL;
-    u8 *bitmap_buffer = NULL;
-    DC_EXFAT_BITMAP_ENTRY *bitmap_entry = NULL;
-    u32 bitmap_cluster;
-    u64 bitmap_size;
-    u64 bitmap_offset;
-    u64 bytes_read;
-    u32 i;
-    KIRQL irql;
-    int resl;
-
-    bytes_per_sector = 1 << exfat->bytes_per_sector_shift;
-    sectors_per_cluster = 1 << exfat->sectors_per_cluster_shift;
-    cluster_size = bytes_per_sector * sectors_per_cluster;
-    cluster_heap_offset = (u64)exfat->cluster_heap_offset * bytes_per_sector;
-    root_cluster = exfat->first_cluster_of_root;
-
-    DbgMsg("dc_bitmap_load_exfat: bytes_per_sector=%u, cluster_size=%u, root_cluster=%u\n",
-           bytes_per_sector, cluster_size, root_cluster);
-
-    /* Read root directory to find Allocation Bitmap entry */
-    dir_buffer = mm_pool_alloc(cluster_size);
-    if (dir_buffer == NULL) return ST_NOMEM;
-
-    {
-        u64 root_offset = cluster_heap_offset + (u64)(root_cluster - 2) * cluster_size;
-        resl = io_hook_rw(hook, dir_buffer, cluster_size, root_offset, 1);
-        if (resl != ST_OK) {
-            DbgMsg("dc_bitmap_load_exfat: failed to read root directory\n");
-            mm_pool_free(dir_buffer);
-            return resl;
-        }
+    if (dc_bitmap_unpublish(hook, bmp)) {
+        ExFreePoolWithTag(bmp, 'pmtB');
+    } else {
+        /* dc_bitmap_free owns it and waits for loading == 0 */
+        InterlockedExchange(&bmp->loading, 0);
     }
-
-    /* Find Allocation Bitmap entry (type 0x81) */
-    for (i = 0; i < cluster_size / 32; i++) {
-        DC_EXFAT_DIR_ENTRY *entry = (DC_EXFAT_DIR_ENTRY*)(dir_buffer + i * 32);
-        if (entry->entry_type == 0x81) {
-            bitmap_entry = (DC_EXFAT_BITMAP_ENTRY*)entry;
-            break;
-        }
-        if (entry->entry_type == 0x00) break;  /* End of directory */
-    }
-
-    if (bitmap_entry == NULL) {
-        DbgMsg("dc_bitmap_load_exfat: Allocation Bitmap entry not found\n");
-        mm_pool_free(dir_buffer);
-        return ST_ERROR;
-    }
-
-    bitmap_cluster = bitmap_entry->first_cluster;
-    bitmap_size = bitmap_entry->data_length;
-    mm_pool_free(dir_buffer);
-
-    DbgMsg("dc_bitmap_load_exfat: bitmap_cluster=%u, bitmap_size=%I64u\n", bitmap_cluster, bitmap_size);
-
-    /* Read allocation bitmap */
-    bitmap_offset = cluster_heap_offset + (u64)(bitmap_cluster - 2) * cluster_size;
-    bitmap_buffer = mm_pool_alloc(BITMAP_READ_CHUNK);
-    if (bitmap_buffer == NULL) return ST_NOMEM;
-
-    bytes_read = 0;
-
-    while (bytes_read < bitmap_size) {
-        u32 chunk = (u32)min(BITMAP_READ_CHUNK, bitmap_size - bytes_read);
-
-        /* Check if bitmap was freed while we were loading */
-        if (hook->alloc_bitmap != bmp) {
-            DbgMsg("dc_bitmap_load_exfat: bitmap changed, aborting\n");
-            resl = ST_ERROR;
-            break;
-        }
-
-        resl = io_hook_rw(hook, bitmap_buffer, ROUND_TO_FULL_SECTORS(chunk, hook->bps),
-                          bitmap_offset + bytes_read, 1);
-        if (resl != ST_OK) {
-            DbgMsg("dc_bitmap_load_exfat: read failed at offset=%I64u\n", bitmap_offset + bytes_read);
-            break;
-        }
-
-        /* Copy bitmap data - exFAT bitmap format matches our format */
-        KeAcquireSpinLock(&bmp->lock, &irql);
-        for (i = 0; i < chunk; i++) {
-            u64 cluster_base = (bytes_read + i) * 8;
-            u8 bit;
-            for (bit = 0; bit < 8; bit++) {
-                if (bitmap_buffer[i] & (1 << bit)) {
-                    if (cluster_base + bit < bmp->total_clusters) {
-                        dc_bitmap_mark_cluster(bmp, cluster_base + bit, &irql, TRUE);
-                    }
-                }
-            }
-        }
-        KeReleaseSpinLock(&bmp->lock, irql);
-
-        bytes_read += chunk;
-
-        /* Yield periodically to avoid hogging CPU */
-        if ((bytes_read % (256 * 1024)) == 0) {
-            dc_delay(1);
-        }
-    }
-
-    mm_pool_free(bitmap_buffer);
-    return resl;
 }
 
 /*
@@ -605,7 +302,7 @@ static void dc_bitmap_mark_cluster(dc_alloc_bitmap *bmp, u64 cluster, KIRQL *irq
     }
 }
 
-int dc_bitmap_create(dev_hook *hook)
+int dc_bitmap_create(dev_hook *hook, dc_alloc_bitmap **out_bmp)
 {
     DC_NTFS_VOLUME_DATA ntfs_data;
     DC_REFS_VOLUME_DATA refs_data;
@@ -627,15 +324,13 @@ int dc_bitmap_create(dev_hook *hook)
     IO_STATUS_BLOCK     iosb;
     NTSTATUS            status;
     DC_FS_TYPE          fs_type;
-    void               *fat_boot_sector = NULL;
+    u64                 data_start = 0;   /* volume offset of LCN 0; 0 for NTFS/ReFS */
+
+    *out_bmp = NULL;
 
     DbgMsg("dc_bitmap_create: dev=%ws\n", hook->dev_name);
 
-    /* Already have a bitmap? */
-    if (DC_BITMAP_IS_VALID(hook->alloc_bitmap)) {
-        DbgMsg("dc_bitmap_create: bitmap already exists\n");
-        return ST_OK;
-    }
+    /* Only called by the loader thread, while hook->alloc_bitmap is DC_BITMAP_LOADING */
 
     /* Open the volume to send file system queries */
     h_dev = io_open_device(hook->dev_name);
@@ -644,18 +339,14 @@ int dc_bitmap_create(dev_hook *hook)
         return ST_ERROR;
     }
 
-    /* Detect filesystem type using Windows API first */
+    /* Detect filesystem type from the mounted file system. No raw boot-sector fallback:
+     * during transcryption raw sector 0 is the DC header and raw metadata may be
+     * ciphertext or stale. Without a recognised file system the optimisation stays off. */
     fs_type = dc_detect_fs_type(h_dev);
-
-    /* If Windows API doesn't recognize it, try raw boot sector detection for FAT */
     if (fs_type == DC_FS_UNKNOWN) {
         ZwClose(h_dev);
-        h_dev = NULL;
-        fs_type = dc_detect_fs_type_raw(hook, &fat_boot_sector);
-        if (fs_type == DC_FS_UNKNOWN) {
-            DbgMsg("dc_bitmap_create: unsupported filesystem\n");
-            return ST_ERROR;
-        }
+        DbgMsg("dc_bitmap_create: unsupported filesystem\n");
+        return ST_ERROR;
     }
 
     /* Get volume data based on filesystem type */
@@ -711,71 +402,94 @@ int dc_bitmap_create(dev_hook *hook)
         DbgMsg("dc_bitmap_create: ReFS volume (v%u.%u)\n",
                refs_data.MajorVersion, refs_data.MinorVersion);
 
-    } else if (fs_type == DC_FS_FAT16 || fs_type == DC_FS_FAT32) {
-        /* FAT16/FAT32: Parse boot sector */
-        DC_FAT16_BOOT_SECTOR *fat16 = (DC_FAT16_BOOT_SECTOR*)fat_boot_sector;
-        DC_FAT32_BOOT_SECTOR *fat32 = (DC_FAT32_BOOT_SECTOR*)fat_boot_sector;
-        u32 fat_size;
-        u32 root_dir_sectors;
-        u64 data_sectors;
+    } else if (fs_type == DC_FS_FAT16 || fs_type == DC_FS_FAT32 || fs_type == DC_FS_EXFAT) {
+        /*
+         * FAT12/16/32 and exFAT. Geometry comes from the file system itself:
+         * - FileFsSizeInformation: cluster size and cluster count;
+         * - FSCTL_GET_RETRIEVAL_POINTER_BASE: volume offset of LCN 0, the first data
+         *   cluster (FAT cluster #2 / start of the exFAT cluster heap).
+         * FSCTL_GET_VOLUME_BITMAP LCNs are relative to that base, so the bitmap is
+         * indexed by (volume offset - data_start) / cluster_size.
+         */
+        FILE_FS_SIZE_INFORMATION   fs_size;
+        DC_RETRIEVAL_POINTER_BASE  ptr_base;
+        u64                        cluster_bytes;
 
-        bytes_per_sector = fat16->bytes_per_sector;
-        bytes_per_cluster = fat16->sectors_per_cluster * bytes_per_sector;
-
-        if (fs_type == DC_FS_FAT32) {
-            fat_size = fat32->fat_size_32;
-            root_dir_sectors = 0;
-            number_sectors = fat32->total_sectors_32;
-        } else {
-            fat_size = fat16->fat_size_16;
-            root_dir_sectors = ((fat16->root_entries * 32) + (bytes_per_sector - 1)) / bytes_per_sector;
-            number_sectors = fat16->total_sectors_16 ? fat16->total_sectors_16 : fat16->total_sectors_32;
+        RtlZeroMemory(&fs_size, sizeof(fs_size));
+        status = ZwQueryVolumeInformationFile(h_dev, &iosb, &fs_size, sizeof(fs_size), FileFsSizeInformation);
+        if (!NT_SUCCESS(status) || iosb.Information < sizeof(fs_size)) {
+            ZwClose(h_dev);
+            DbgMsg("dc_bitmap_create: FileFsSizeInformation failed, status=%08x\n", status);
+            return ST_ERROR;
+        }
+        RtlZeroMemory(&ptr_base, sizeof(ptr_base));
+        status = ZwFsControlFile(
+            h_dev, NULL, NULL, NULL, &iosb,
+            FSCTL_GET_RETRIEVAL_POINTER_BASE,
+            NULL, 0,
+            &ptr_base, sizeof(ptr_base)
+        );
+        if (!NT_SUCCESS(status) || iosb.Information < sizeof(ptr_base)) {
+            ZwClose(h_dev);
+            DbgMsg("dc_bitmap_create: FSCTL_GET_RETRIEVAL_POINTER_BASE failed, status=%08x, info=%Iu\n", status, iosb.Information);
+            return ST_ERROR;
         }
 
-        data_sectors = number_sectors - fat16->reserved_sectors - (fat16->num_fats * fat_size) - root_dir_sectors;
-        total_clusters = data_sectors / fat16->sectors_per_cluster;
+        bytes_per_sector = fs_size.BytesPerSector;
+        cluster_bytes    = (u64)fs_size.SectorsPerAllocationUnit * fs_size.BytesPerSector;
+        total_clusters   = (u64)fs_size.TotalAllocationUnits.QuadPart;
 
-        /* FAT has no MFT */
+        /* Be strict: the loader's bitmap length cross-check cannot confirm data_start,
+         * and a wrong frame would skip live data. FileAreaOffset must be > 0 (every FAT
+         * and exFAT volume has a boot area + FAT before the first data cluster) and is
+         * bounded by the volume before multiplying (no wrap). */
+        if (bytes_per_sector < 512 || bytes_per_sector > 4096 || (bytes_per_sector & (bytes_per_sector - 1)) != 0 ||
+            cluster_bytes == 0 || cluster_bytes > 0x80000000ull ||
+            ptr_base.FileAreaOffset.QuadPart <= 0 ||
+            (u64)ptr_base.FileAreaOffset.QuadPart > hook->use_size / bytes_per_sector)
+        {
+            ZwClose(h_dev);
+            DbgMsg("dc_bitmap_create: implausible FAT geometry, bps=%u, cluster=%I64u, file_area=%I64d\n",
+                   bytes_per_sector, cluster_bytes, ptr_base.FileAreaOffset.QuadPart);
+            return ST_ERROR;
+        }
+        bytes_per_cluster = (u32)cluster_bytes;
+        data_start        = (u64)ptr_base.FileAreaOffset.QuadPart * bytes_per_sector;
+        number_sectors    = (data_start + total_clusters * bytes_per_cluster) / bytes_per_sector;
+
         mft_start_lcn = 0;
         mft2_start_lcn = 0;
         mft_zone_start = 0;
         mft_zone_end = 0;
 
-        /* Protected area: boot sector(s), FAT tables, and root directory (FAT16) */
-        protected_start = (u64)(fat16->reserved_sectors + (fat16->num_fats * fat_size) + root_dir_sectors) * bytes_per_sector;
+        /* Everything before the first data cluster (boot sector(s), FATs, FAT12/16
+         * root directory, exFAT boot region) is never skipped. */
+        protected_start = data_start;
 
-        DbgMsg("dc_bitmap_create: %s volume, fat_size=%u, root_dir_sectors=%u\n",
-               fs_type == DC_FS_FAT32 ? "FAT32" : "FAT16", fat_size, root_dir_sectors);
-
-    } else if (fs_type == DC_FS_EXFAT) {
-        /* exFAT: Parse boot sector */
-        DC_EXFAT_BOOT_SECTOR *exfat = (DC_EXFAT_BOOT_SECTOR*)fat_boot_sector;
-
-        bytes_per_sector = 1 << exfat->bytes_per_sector_shift;
-        bytes_per_cluster = bytes_per_sector * (1 << exfat->sectors_per_cluster_shift);
-        total_clusters = exfat->cluster_count;
-        number_sectors = exfat->volume_length;
-
-        /* exFAT has no MFT */
-        mft_start_lcn = 0;
-        mft2_start_lcn = 0;
-        mft_zone_start = 0;
-        mft_zone_end = 0;
-
-        /* Protected area: everything before cluster heap (boot region, FAT, etc.) */
-        protected_start = (u64)exfat->cluster_heap_offset * bytes_per_sector;
-
-        DbgMsg("dc_bitmap_create: exFAT volume, cluster_heap_offset=%u\n", exfat->cluster_heap_offset);
+        DbgMsg("dc_bitmap_create: %s volume, data_start=%I64u, clusters=%I64u, cluster=%u\n",
+               fs_type == DC_FS_EXFAT ? "exFAT" : (fs_type == DC_FS_FAT32 ? "FAT32" : "FAT"),
+               data_start, total_clusters, bytes_per_cluster);
 
     } else {
         /* Should not reach here */
-        if (h_dev) ZwClose(h_dev);
-        if (fat_boot_sector) mm_pool_free(fat_boot_sector);
+        ZwClose(h_dev);
         DbgMsg("dc_bitmap_create: unsupported filesystem type %d\n", fs_type);
         return ST_ERROR;
     }
 
-    if (h_dev) ZwClose(h_dev);
+    ZwClose(h_dev);
+
+    /* Validate the geometry against use_size before trusting it for skip decisions.
+     * On doubt the optimisation stays off (everything is transcrypted). */
+    if (bytes_per_sector < 512 || bytes_per_sector > 4096 || (bytes_per_sector & (bytes_per_sector - 1)) != 0 ||
+        bytes_per_cluster < bytes_per_sector || (bytes_per_cluster & (bytes_per_cluster - 1)) != 0 ||
+        total_clusters == 0 || data_start > hook->use_size ||
+        total_clusters > (hook->use_size - data_start) / bytes_per_cluster)
+    {
+        DbgMsg("dc_bitmap_create: geometry rejected, bps=%u, cluster=%u, clusters=%I64u, data_start=%I64u, use_size=%I64u\n",
+               bytes_per_sector, bytes_per_cluster, total_clusters, data_start, hook->use_size);
+        return ST_ERROR;
+    }
 
     DbgMsg("dc_bitmap_create: total_clusters=%I64u, bytes_per_cluster=%u, bytes_per_sector=%u\n",
            total_clusters, bytes_per_cluster, bytes_per_sector);
@@ -798,25 +512,28 @@ int dc_bitmap_create(dev_hook *hook)
     DbgMsg("dc_bitmap_create: clusters_per_bit=%u, bitmap_bytes=%u\n",
            clusters_per_bit, bitmap_bytes);
 
-    /* Allocate bitmap (NonPagedPoolNx, zeroed = all unallocated) */
-    bmp = (dc_alloc_bitmap*)ExAllocatePoolZero(
-        NonPagedPoolNx,
+    /* Allocate bitmap (zeroed = all unallocated). NonPagedPoolNx is invalid on Windows 7, so
+     * it is chosen at run time; zeroed here, not via ExAllocatePoolZero (its WDK inline may
+     * call ExAllocatePool2, Windows 10 2004+). */
+    bmp = (dc_alloc_bitmap*)ExAllocatePoolWithTag(
+        RtlIsNtDdiVersionAvailable(NTDDI_WIN8) ? NonPagedPoolNx : NonPagedPool,
         sizeof(dc_alloc_bitmap) + bitmap_bytes,
         'pmtB'
     );
 
     if (bmp == NULL) {
         DbgMsg("dc_bitmap_create: allocation failed\n");
-        if (fat_boot_sector) {
-            mm_pool_free(fat_boot_sector);
-        }
         return ST_NOMEM;
     }
+    RtlZeroMemory(bmp, sizeof(dc_alloc_bitmap) + bitmap_bytes);
 
     bmp->total_clusters = total_clusters;
     bmp->cluster_size = bytes_per_cluster;
     bmp->sector_size = bytes_per_sector;
-    bmp->cluster_area_size = (u64)total_clusters * bytes_per_cluster;
+    bmp->data_start = data_start;
+    bmp->fs_type = (u32)fs_type;
+    /* END offset of the cluster area (volume offset); validated above to fit use_size */
+    bmp->cluster_area_size = data_start + (u64)total_clusters * bytes_per_cluster;
     bmp->volume_size = (u64)number_sectors * bytes_per_sector;
     bmp->clusters_per_bit = clusters_per_bit;
     bmp->bitmap_size = bitmap_bytes;
@@ -832,8 +549,7 @@ int dc_bitmap_create(dev_hook *hook)
     /*
      * Set protected start area (calculated above for each filesystem type):
      * - NTFS/ReFS: First cluster (boot sector)
-     * - FAT16/FAT32: Boot sector + FAT tables + root directory (FAT16)
-     * - exFAT: Everything before cluster heap
+     * - FAT/FAT32/exFAT: everything before the first data cluster (data_start)
      * If bitmap loading fails, the entire optimization is disabled
      */
     bmp->protected_start = protected_start;
@@ -846,14 +562,9 @@ int dc_bitmap_create(dev_hook *hook)
     DbgMsg("dc_bitmap_create: protected_start=%I64u bytes (%I64u clusters)\n",
            bmp->protected_start, bmp->protected_start / bmp->cluster_size);
 
-    /* Bitmap array is already zeroed by ExAllocatePoolZero */
-
-    hook->alloc_bitmap = bmp;
-
-    /* Free boot sector buffer if we have one (FAT filesystems) */
-    if (fat_boot_sector) {
-        mm_pool_free(fat_boot_sector);
-    }
+    /* publish under range_lock: readers must never see the pointer before the fields */
+    dc_bitmap_publish(hook, bmp);
+    *out_bmp = bmp;
 
     DbgMsg("dc_bitmap_create: success, bitmap at %p\n", bmp);
 
@@ -861,9 +572,13 @@ int dc_bitmap_create(dev_hook *hook)
 }
 
 /*
- * Helper: Load NTFS/ReFS bitmap using FSCTL_GET_VOLUME_BITMAP
+ * Helper: load the allocation bitmap of any supported file system with
+ * FSCTL_GET_VOLUME_BITMAP, the file system's in-memory allocation state (an
+ * allocation always precedes the data write it is made for). LCNs are relative to
+ * bmp->data_start. check_total (FAT family): the bitmap length reported for LCN 0
+ * must equal the geometry's cluster count, so LCNs and data_start share one frame.
  */
-static int dc_bitmap_load_ntfs_refs(dev_hook *hook, dc_alloc_bitmap *bmp, HANDLE h_dev)
+static int dc_bitmap_load_fsctl(dev_hook *hook, dc_alloc_bitmap *bmp, HANDLE h_dev, BOOLEAN check_total)
 {
     DC_STARTING_LCN_INPUT   start_lcn;
     DC_VOLUME_BITMAP_BUFFER *disk_bitmap;
@@ -892,7 +607,7 @@ static int dc_bitmap_load_ntfs_refs(dev_hook *hook, dc_alloc_bitmap *bmp, HANDLE
 
         /* Check if bitmap was freed while we were loading */
         if (hook->alloc_bitmap != bmp) {
-            DbgMsg("dc_bitmap_load_ntfs_refs: bitmap changed, aborting\n");
+            DbgMsg("dc_bitmap_load_fsctl: bitmap changed, aborting\n");
             resl = ST_ERROR;
             break;
         }
@@ -907,7 +622,7 @@ static int dc_bitmap_load_ntfs_refs(dev_hook *hook, dc_alloc_bitmap *bmp, HANDLE
         );
 
         if (!NT_SUCCESS(status) && status != STATUS_BUFFER_OVERFLOW) {
-            DbgMsg("dc_bitmap_load_ntfs_refs: FSCTL failed at lcn=%I64u, status=%08x\n",
+            DbgMsg("dc_bitmap_load_fsctl: FSCTL failed at lcn=%I64u, status=%08x\n",
                    lcn, status);
             resl = ST_ERROR;
             break;
@@ -916,12 +631,35 @@ static int dc_bitmap_load_ntfs_refs(dev_hook *hook, dc_alloc_bitmap *bmp, HANDLE
         /* Use the ACTUAL starting LCN returned, not our requested one */
         actual_start_lcn = disk_bitmap->StartingLcn.QuadPart;
 
+        /* File systems may round StartingLcn DOWN (NTFS and fastfat round to a multiple
+         * of 8), never up: a larger value would leave unloaded zero bits = skippable
+         * allocated clusters. Accept only actual in (lcn - 8, lcn]. */
+        if (disk_bitmap->StartingLcn.QuadPart < 0 || actual_start_lcn > lcn || lcn - actual_start_lcn >= 8 ||
+            disk_bitmap->BitmapSize.QuadPart <= 0)
+        {
+            DbgMsg("dc_bitmap_load_fsctl: unexpected reply at lcn=%I64u: StartingLcn=%I64d, BitmapSize=%I64d\n",
+                   lcn, disk_bitmap->StartingLcn.QuadPart, disk_bitmap->BitmapSize.QuadPart);
+            resl = ST_ERROR;
+            break;
+        }
+
+        /* FAT family: the first reply must cover LCN 0 and report exactly the cluster
+         * count the geometry came from (same cluster area, same numbering). */
+        if (check_total && lcn == 0 &&
+            (actual_start_lcn != 0 || (u64)disk_bitmap->BitmapSize.QuadPart != bmp->total_clusters))
+        {
+            DbgMsg("dc_bitmap_load_fsctl: bitmap size %I64u != cluster count %I64u, geometry mismatch\n",
+                   (u64)disk_bitmap->BitmapSize.QuadPart, bmp->total_clusters);
+            resl = ST_ERROR;
+            break;
+        }
+
         /* BitmapSize is total clusters from StartingLcn to end of volume - NOT what's in buffer!
          * We need to calculate actual clusters from bytes returned in iosb.Information */
         if (iosb.Information <= VOLUME_BITMAP_HEADER_SIZE) {
             /* No bitmap data returned */
             if (actual_start_lcn < bmp->total_clusters) {
-                DbgMsg("dc_bitmap_load_ntfs_refs: no data at lcn=%I64u, info=%Iu\n",
+                DbgMsg("dc_bitmap_load_fsctl: no data at lcn=%I64u, info=%Iu\n",
                        actual_start_lcn, iosb.Information);
                 resl = ST_ERROR;
             }
@@ -938,8 +676,14 @@ static int dc_bitmap_load_ntfs_refs(dev_hook *hook, dc_alloc_bitmap *bmp, HANDLE
         if (clusters_in_chunk > (u64)disk_bitmap->BitmapSize.QuadPart) {
             clusters_in_chunk = disk_bitmap->BitmapSize.QuadPart;
         }
+        /* No progress possible (and lcn must advance past the requested value) */
+        if (clusters_in_chunk == 0 || actual_start_lcn + clusters_in_chunk <= lcn) {
+            DbgMsg("dc_bitmap_load_fsctl: no progress at lcn=%I64u\n", lcn);
+            resl = ST_ERROR;
+            break;
+        }
 
-        DbgMsg("dc_bitmap_load_ntfs_refs: lcn=%I64u, actual=%I64u, info=%Iu, bytes=%I64u, clusters=%I64u\n",
+        DbgMsg("dc_bitmap_load_fsctl: lcn=%I64u, actual=%I64u, info=%Iu, bytes=%I64u, clusters=%I64u\n",
                lcn, actual_start_lcn, iosb.Information, bitmap_bytes_returned, clusters_in_chunk);
 
         /* For each set bit in disk bitmap, set our bitmap */
@@ -953,6 +697,7 @@ static int dc_bitmap_load_ntfs_refs(dev_hook *hook, dc_alloc_bitmap *bmp, HANDLE
                 /* Cluster is allocated on disk - mark in our bitmap */
                 dc_bitmap_mark_cluster(bmp, actual_start_lcn + i, &irql, TRUE);
             }
+            LOADER_LOCK_YIELD(bmp, irql, i);
         }
 
         KeReleaseSpinLock(&bmp->lock, irql);
@@ -975,7 +720,6 @@ void dc_bitmap_load_from_disk(dev_hook *hook)
     dc_alloc_bitmap        *bmp;
     HANDLE                  h_dev = NULL;
     DC_FS_TYPE              fs_type;
-    void                   *boot_sector = NULL;
     int                     load_result;
 
     /* Note: Hook is already referenced by dc_bitmap_start_init.
@@ -984,97 +728,42 @@ void dc_bitmap_load_from_disk(dev_hook *hook)
 
     /* Create the bitmap structure.
      * This runs in this worker thread to avoid deadlock with F_SYNC. */
-    if (hook->alloc_bitmap == DC_BITMAP_LOADING) {
-        if (dc_bitmap_create(hook) != ST_OK) {
-            DbgMsg("dc_bitmap_load_from_disk: create failed, no optimization\n");
-            hook->alloc_bitmap = DC_BITMAP_INIT_FAILED;
-            dc_deref_hook(hook);
-            return;
-        }
-    }
-
-    bmp = hook->alloc_bitmap;
-    if (!DC_BITMAP_IS_VALID(bmp)) {
-        /* This shouldn't happen, but handle it gracefully */
-        if (hook->alloc_bitmap == DC_BITMAP_LOADING) {
-            hook->alloc_bitmap = DC_BITMAP_INIT_FAILED;
-        }
+    if (hook->alloc_bitmap != DC_BITMAP_LOADING) {
+        /* only this thread moves the pointer away from LOADING; nothing to do */
         dc_deref_hook(hook);
         return;
     }
+    if (dc_bitmap_create(hook, &bmp) != ST_OK) {
+        DbgMsg("dc_bitmap_load_from_disk: create failed, no optimization\n");
+        InterlockedCompareExchangePointer((PVOID volatile*)&hook->alloc_bitmap, DC_BITMAP_INIT_FAILED, DC_BITMAP_LOADING);
+        dc_deref_hook(hook);
+        return;
+    }
+    /* Use the pointer create handed back, never re-read hook->alloc_bitmap: dc_bitmap_free
+     * may take it right after the publish and then waits for bmp->loading == 0, which
+     * dc_bitmap_abort_load (unpublish lost) provides. */
 
     DbgMsg("dc_bitmap_load_from_disk: starting, dev=%ws\n", hook->dev_name);
 
-    /* First try to open the volume and detect filesystem type via Windows API */
+    /* Open the volume and detect the mounted file system (no raw fallback, see dc_bitmap_create) */
     h_dev = io_open_device(hook->dev_name);
-    if (h_dev != NULL) {
-        fs_type = dc_detect_fs_type(h_dev);
-    } else {
-        fs_type = DC_FS_UNKNOWN;
-    }
+    fs_type = (h_dev != NULL) ? dc_detect_fs_type(h_dev) : DC_FS_UNKNOWN;
 
-    /* If Windows API doesn't recognize it, try raw boot sector detection for FAT */
-    if (fs_type == DC_FS_UNKNOWN) {
-        if (h_dev) {
-            ZwClose(h_dev);
-            h_dev = NULL;
-        }
-        fs_type = dc_detect_fs_type_raw(hook, &boot_sector);
-    }
-
-    if (fs_type == DC_FS_UNKNOWN) {
-        DbgMsg("dc_bitmap_load_from_disk: failed to detect filesystem - DISABLING OPTIMIZATION\n");
-        if (hook->alloc_bitmap == bmp) {
-            ExFreePoolWithTag(bmp, 'pmtB');
-            hook->alloc_bitmap = DC_BITMAP_INIT_FAILED;
-        } else {
-            InterlockedExchange(&bmp->loading, 0);
-        }
+    /* The geometry (data_start frame, cluster count) was taken in dc_bitmap_create from
+     * the file system mounted then; a different one now (dismount + reformat in between)
+     * must not be loaded into that frame. */
+    if (fs_type == DC_FS_UNKNOWN || (u32)fs_type != bmp->fs_type) {
+        DbgMsg("dc_bitmap_load_from_disk: failed to detect filesystem (or it changed) - DISABLING OPTIMIZATION\n");
+        if (h_dev != NULL) ZwClose(h_dev);
+        dc_bitmap_abort_load(hook, bmp); /* unpublish under range_lock BEFORE freeing */
         dc_deref_hook(hook);
         return;
     }
 
-    /* Load bitmap based on filesystem type */
-    if (fs_type == DC_FS_NTFS || fs_type == DC_FS_REFS) {
-        /* Use FSCTL_GET_VOLUME_BITMAP for NTFS/ReFS */
-        if (h_dev == NULL) {
-            h_dev = io_open_device(hook->dev_name);
-        }
-        if (h_dev == NULL) {
-            DbgMsg("dc_bitmap_load_from_disk: failed to open device - DISABLING OPTIMIZATION\n");
-            if (hook->alloc_bitmap == bmp) {
-                ExFreePoolWithTag(bmp, 'pmtB');
-                hook->alloc_bitmap = DC_BITMAP_INIT_FAILED;
-            } else {
-                InterlockedExchange(&bmp->loading, 0);
-            }
-            dc_deref_hook(hook);
-            return;
-        }
-        load_result = dc_bitmap_load_ntfs_refs(hook, bmp, h_dev);
-        ZwClose(h_dev);
-    } else if (fs_type == DC_FS_FAT16 || fs_type == DC_FS_FAT32) {
-        /* Read and parse FAT table directly */
-        if (h_dev) {
-            ZwClose(h_dev);
-            h_dev = NULL;
-        }
-        load_result = dc_bitmap_load_fat(hook, bmp, boot_sector, fs_type);
-    } else if (fs_type == DC_FS_EXFAT) {
-        /* Read exFAT Allocation Bitmap from root directory */
-        if (h_dev) {
-            ZwClose(h_dev);
-            h_dev = NULL;
-        }
-        load_result = dc_bitmap_load_exfat(hook, bmp, boot_sector);
-    } else {
-        load_result = ST_ERROR;
-    }
-
-    /* Free boot sector if we have one */
-    if (boot_sector) {
-        mm_pool_free(boot_sector);
-    }
+    /* The FAT family also cross-checks the bitmap length against the geometry */
+    load_result = dc_bitmap_load_fsctl(hook, bmp, h_dev,
+                                       (BOOLEAN)(fs_type != DC_FS_NTFS && fs_type != DC_FS_REFS));
+    ZwClose(h_dev);
 
     /*
      * CRITICAL: If loading failed at any point, disable the optimization entirely.
@@ -1083,14 +772,9 @@ void dc_bitmap_load_from_disk(dev_hook *hook)
      */
     if (load_result != ST_OK) {
         DbgMsg("dc_bitmap_load_from_disk: FAILED (result=%d) - DISABLING OPTIMIZATION\n", load_result);
-        /* Only free if unmount hasn't started (hook->alloc_bitmap still points to bmp) */
-        if (hook->alloc_bitmap == bmp) {
-            ExFreePoolWithTag(bmp, 'pmtB');
-            hook->alloc_bitmap = DC_BITMAP_INIT_FAILED;
-        } else {
-            /* Unmount is waiting - just signal we're done, let dc_bitmap_free handle it */
-            InterlockedExchange(&bmp->loading, 0);
-        }
+        /* Free only if unmount hasn't taken it (atomic swap under range_lock);
+         * otherwise just signal we're done and let dc_bitmap_free handle it */
+        dc_bitmap_abort_load(hook, bmp);
         dc_deref_hook(hook);
         return;
     }
@@ -1106,16 +790,25 @@ void dc_bitmap_free(dev_hook *hook)
 {
     dc_alloc_bitmap *bmp;
 
-    /* If loading is in progress, wait for it to complete.
-     * The loading thread will set alloc_bitmap to either a valid pointer
-     * or DC_BITMAP_INIT_FAILED when done. */
-    while (hook->alloc_bitmap == DC_BITMAP_LOADING) {
-        dc_delay(10);
+    /* Wait while loading (the loader moves LOADING to a valid pointer or
+     * DC_BITMAP_INIT_FAILED), then take the pointer with a CAS that never takes the
+     * LOADING sentinel. Terminates: start_init only arms while F_SYNC is set (under
+     * range_lock), and cleanup clears F_SYNC under range_lock before calling us. */
+    for (;;) {
+        bmp = hook->alloc_bitmap;
+        if (bmp == DC_BITMAP_LOADING) {
+            dc_delay(10);
+            continue;
+        }
+        if (InterlockedCompareExchangePointer((PVOID volatile*)&hook->alloc_bitmap, NULL, bmp) == bmp) {
+            break;
+        }
     }
 
-    bmp = hook->alloc_bitmap;
-    hook->alloc_bitmap = NULL;
-
+    /* After the CAS exactly one side owns bmp: if we got it, the loader's unpublish
+     * fails and it only clears bmp->loading, which we wait for below. Called from
+     * dc_sync_cleanup after F_SYNC was cleared under range_lock and tracked I/O
+     * drained, so no admission or step can still be using the pointer. */
     /* Handle sentinel value - just clear it, nothing to free */
     if (bmp == DC_BITMAP_INIT_FAILED) {
         DbgMsg("dc_bitmap_free: cleared init-failed sentinel\n");
@@ -1138,14 +831,31 @@ void dc_bitmap_start_init(dev_hook *hook)
 {
     int resl;
     PVOID prev;
+#ifdef DC_CONCURRENT_TRANSCRYPT
+    KIRQL irql;
+#endif
 
-    /* Only start if not already initialized, loading, or failed.
-     * Use atomic compare-exchange to prevent race condition where two threads
-     * both see NULL and try to start initialization simultaneously. */
+    /* Only start from NULL (not initialized, loading, or failed); the CAS lets exactly
+     * one caller start. */
+#ifdef DC_CONCURRENT_TRANSCRYPT
+    /* Arm only while transcryption is live, decided under range_lock:
+     * dc_transcrypt_cleanup clears F_SYNC under this lock before dc_bitmap_free
+     * runs, so no bitmap can be re-armed after the free (stale bits in the next session). */
+    prev = (PVOID)DC_BITMAP_INIT_FAILED; /* "do not start" */
+    KeAcquireSpinLock(&hook->trans.range_lock, &irql);
+    if ((hook->flags & F_SYNC) && !(hook->flags & (F_PLAIN_IO | F_NO_REDIRECT))) {
+        prev = InterlockedCompareExchangePointer(
+            (PVOID volatile*)&hook->alloc_bitmap,
+            DC_BITMAP_LOADING,
+            NULL);
+    }
+    KeReleaseSpinLock(&hook->trans.range_lock, irql);
+#else
     prev = InterlockedCompareExchangePointer(
         (PVOID*)&hook->alloc_bitmap,
         DC_BITMAP_LOADING,
         NULL);
+#endif
 
     if (prev != NULL) {
         return;  /* Already initialized, loading, or failed */
@@ -1166,7 +876,7 @@ void dc_bitmap_start_init(dev_hook *hook)
 
     if (resl != ST_OK) {
         /* Thread failed to start - mark as failed and dereference */
-        hook->alloc_bitmap = DC_BITMAP_INIT_FAILED;
+        InterlockedExchangePointer((PVOID volatile*)&hook->alloc_bitmap, DC_BITMAP_INIT_FAILED);
         dc_deref_hook(hook);
     }
 }
@@ -1194,10 +904,16 @@ BOOLEAN dc_bitmap_is_allocated(dev_hook *hook, u64 offset, u32 size)
         return TRUE;
     }
 
+    /* Degenerate or wrapping range, or a structure that is not usable:
+     * assume allocated (safe default, never skip on doubt) */
+    if (size == 0 || offset + size < offset || bmp->cluster_size == 0 || bmp->clusters_per_bit == 0) {
+        return TRUE;
+    }
+
     /*
-     * CRITICAL AREA PROTECTION (Deterministic):
-     * First cluster contains boot sector - not tracked by $Bitmap
-     * Always treat as allocated
+     * CRITICAL AREA PROTECTION (Deterministic): the protected start area (first cluster /
+     * boot sector, or the whole FAT/exFAT metadata area; protected_start >= data_start)
+     * is not tracked by the bitmap. Always treat as allocated.
      */
     if (offset < bmp->protected_start) {
         return TRUE;
@@ -1214,9 +930,10 @@ BOOLEAN dc_bitmap_is_allocated(dev_hook *hook, u64 offset, u32 size)
 
     /* Everything else is determined by $Bitmap - trust it completely */
 
-    /* Calculate cluster range */
-    start_cluster = offset / bmp->cluster_size;
-    end_cluster = (offset + size - 1) / bmp->cluster_size;
+    /* Calculate cluster range. LCNs count from data_start, the first data cluster:
+     * 0 for NTFS/ReFS, the start of the cluster heap for FAT and exFAT. */
+    start_cluster = (offset - bmp->data_start) / bmp->cluster_size;
+    end_cluster = (offset + size - 1 - bmp->data_start) / bmp->cluster_size;
 
     /* Convert to bitmap bit indices */
     start_bit = start_cluster / bmp->clusters_per_bit;
@@ -1246,6 +963,7 @@ void dc_bitmap_mark_allocated(dev_hook *hook, u64 offset, u32 size)
     u64              end_bit;
     u64              b;
     KIRQL            irql;
+    u64              end;
 
     bmp = hook->alloc_bitmap;
 
@@ -1253,9 +971,29 @@ void dc_bitmap_mark_allocated(dev_hook *hook, u64 offset, u32 size)
         return;
     }
 
-    /* Calculate cluster range */
-    start_cluster = offset / bmp->cluster_size;
-    end_cluster = (offset + size - 1) / bmp->cluster_size;
+    /* Called at write admission with IRP parameters: never trust them (size == 0 would
+     * wrap end_cluster and loop ~2^52 times under two spinlocks). Ranges outside the
+     * cluster area are never skipped, so clamp to it. */
+    if (size == 0 || bmp->cluster_size == 0 || bmp->clusters_per_bit == 0 ||
+        offset >= bmp->cluster_area_size) {
+        return;
+    }
+    end = offset + size;
+    if (end < offset || end > bmp->cluster_area_size) {
+        end = bmp->cluster_area_size;
+    }
+    /* Writes into the metadata area before the first data cluster (FAT/exFAT boot
+     * region, FATs) need no mark: that area is protected and never skipped. */
+    if (end <= bmp->data_start) {
+        return;
+    }
+    if (offset < bmp->data_start) {
+        offset = bmp->data_start;
+    }
+
+    /* Calculate cluster range, relative to the first data cluster (LCN 0) */
+    start_cluster = (offset - bmp->data_start) / bmp->cluster_size;
+    end_cluster = (end - 1 - bmp->data_start) / bmp->cluster_size;
 
     /* Convert to bitmap bit indices */
     start_bit = start_cluster / bmp->clusters_per_bit;
@@ -1314,7 +1052,7 @@ u64 dc_bitmap_get_unallocated(dev_hook *hook, u64 offset)
     /* Everything else is determined by $Bitmap - trust it completely */
 
     /* Calculate starting cluster and bit */
-    start_cluster = offset / bmp->cluster_size;
+    start_cluster = (offset - bmp->data_start) / bmp->cluster_size;  /* LCNs count from data_start */
     start_bit = start_cluster / bmp->clusters_per_bit;
     total_bits = (bmp->total_clusters + bmp->clusters_per_bit - 1) / bmp->clusters_per_bit;
 
@@ -1345,7 +1083,7 @@ u64 dc_bitmap_get_unallocated(dev_hook *hook, u64 offset)
 
     /* Adjust for the starting offset within the first cluster group */
     {
-        u64 bit_start_offset = start_bit * bmp->clusters_per_bit * bmp->cluster_size;
+        u64 bit_start_offset = bmp->data_start + start_bit * bmp->clusters_per_bit * bmp->cluster_size;
         if (offset > bit_start_offset) {
             u64 offset_adjustment = offset - bit_start_offset;
             if (unalloc_bytes > offset_adjustment) {
@@ -1419,11 +1157,11 @@ u64 dc_bitmap_get_unallocated_backward(dev_hook *hook, u64 end_offset)
     /* Everything else is determined by $Bitmap - trust it completely */
 
     /* Calculate ending cluster and bit (for the byte just before end_offset) */
-    end_cluster = (end_offset - 1) / bmp->cluster_size;
+    end_cluster = (end_offset - 1 - bmp->data_start) / bmp->cluster_size;  /* LCNs count from data_start */
     end_bit = end_cluster / bmp->clusters_per_bit;
 
     /* Calculate the first bit that must not be skipped (protects start area) */
-    first_protected_bit = (bmp->protected_start / bmp->cluster_size) / bmp->clusters_per_bit;
+    first_protected_bit = ((bmp->protected_start - bmp->data_start) / bmp->cluster_size) / bmp->clusters_per_bit;
 
     /* Check if ending position is allocated */
     KeAcquireSpinLock(&bmp->lock, &irql);
@@ -1453,7 +1191,7 @@ u64 dc_bitmap_get_unallocated_backward(dev_hook *hook, u64 end_offset)
 
     /* Adjust for the ending offset within the last cluster group */
     {
-        u64 bit_end_offset = (end_bit + 1) * bmp->clusters_per_bit * bmp->cluster_size;
+        u64 bit_end_offset = bmp->data_start + (end_bit + 1) * bmp->clusters_per_bit * bmp->cluster_size;
         if (end_offset < bit_end_offset) {
             u64 offset_adjustment = bit_end_offset - end_offset;
             if (unalloc_bytes > offset_adjustment) {

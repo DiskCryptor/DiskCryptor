@@ -12,5 +12,9 @@ int  dc_format_start(wchar_t *dev_name, dc_pass *password, crypt_info *crypt, u3
 int  dc_format_step(wchar_t *dev_name, int wp_mode);
 int  dc_format_done(wchar_t *dev_name);
 NTSTATUS dc_update_volume(dev_hook *hook, ULONGLONG new_size);
+/* set the current stor_off in a header about to be written (storage in the slack) */
+void     dc_header_sync_stor_off(dev_hook *hook, dc_header *header);
+/* $dcsys$ + backup header: the end area of a new_len-byte partition overlaps the storage file */
+int      dc_dcsys_end_overlap(dev_hook *hook, u64 new_len);
 
 #endif

@@ -159,7 +159,7 @@ static void dc_simple_encryption_test()
 		}
 	}
 	if (resl == ARGON2_OK) {
-		SetFlag(dc_load_flags, DST_ARGON2_OK);
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_ARGON2_OK);
 		DbgMsg("Argon2id selftest passed\n");
 	}
 	else { // note: if this fails, it may be due to insufficient memory
@@ -206,40 +206,40 @@ void dc_init_encryption()
 #if defined(_M_IX86) || defined(_M_X64)
 #ifdef _M_IX86
 	if (aes256_padlock_available() != 0) {
-		SetFlag(dc_load_flags, DST_VIA_PADLOCK);
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_VIA_PADLOCK);
 		DbgMsg("CpuFlags_VIA_PadLock: Yes\n");
 	} else {
-		ClearFlag(dc_load_flags, DST_VIA_PADLOCK);
+		InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_VIA_PADLOCK);
 		DbgMsg("CpuFlags_VIA_PadLock: No\n");
 	}
 #else
 	/* crypto_lib has no PadLock support, so it is never reported */
-	ClearFlag(dc_load_flags, DST_VIA_PADLOCK);
+	InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_VIA_PADLOCK);
 #endif
 	
 	if (xts_aes_ni_available() != 0) {
-		SetFlag(dc_load_flags, DST_INTEL_NI);
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_INTEL_NI);
 		DbgMsg("CpuFlags_AES_NI: Yes\n");
 	} else {
-		ClearFlag(dc_load_flags, DST_INTEL_NI);
+		InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_INTEL_NI);
 		DbgMsg("CpuFlags_AES_NI: No\n");
 	}
 #else
-	ClearFlag(dc_load_flags, DST_VIA_PADLOCK);
-	ClearFlag(dc_load_flags, DST_INTEL_NI);
+	InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_VIA_PADLOCK);
+	InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_INTEL_NI);
 #endif
 
 #ifdef _M_IX86
 	if (xts_serpent_sse2_available() != 0) {
-		SetFlag(dc_load_flags, DST_INSTR_SSE2);
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_INSTR_SSE2);
 		DbgMsg("CpuFlags_SSE2: Yes\n");
 	} else {
-		ClearFlag(dc_load_flags, DST_INSTR_SSE2);
+		InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_INSTR_SSE2);
 		DbgMsg("CpuFlags_SSE2: No\n");
 	}
 #else
 	DbgMsg("CpuFlags_SSE2: Yes\n");
-	SetFlag(dc_load_flags, DST_INSTR_SSE2);
+	InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_INSTR_SSE2);
 #endif
 
 #if defined(_M_IX86) || defined(_M_X64)
@@ -248,35 +248,35 @@ void dc_init_encryption()
 #else
 	if (cl_cpu_has_avx() != 0) {
 #endif
-		SetFlag(dc_load_flags, DST_INSTR_AVX);
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_INSTR_AVX);
 		DbgMsg("CpuFlags_AVX: Yes\n");
 	} else {
-		ClearFlag(dc_load_flags, DST_INSTR_AVX);
+		InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_INSTR_AVX);
 		DbgMsg("CpuFlags_AVX: No\n");
 	}
 #else
-	ClearFlag(dc_load_flags, DST_INSTR_AVX);
+	InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_INSTR_AVX);
 #endif
 
 #ifdef _M_ARM64
 	if (xts_aes_ce_available() != 0) {
-		SetFlag(dc_load_flags, DST_ARM64_CE);
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_ARM64_CE);
 		DbgMsg("CpuFlags_ARM64_CE: Yes\n");
 	} else {
-		ClearFlag(dc_load_flags, DST_ARM64_CE);
+		InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_ARM64_CE);
 		DbgMsg("CpuFlags_ARM64_CE: No\n");
 	}
 
 	if (xts_serpent_neon_available() != 0) {
-		SetFlag(dc_load_flags, DST_ARM64_NEON);
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_ARM64_NEON);
 		DbgMsg("CpuFlags_ARM64_NEON: Yes\n");
 	} else {
-		ClearFlag(dc_load_flags, DST_ARM64_NEON);
+		InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_ARM64_NEON);
 		DbgMsg("CpuFlags_ARM64_NEON: No\n");
 	}
 #else
-	ClearFlag(dc_load_flags, DST_ARM64_CE);
-	ClearFlag(dc_load_flags, DST_ARM64_NEON);
+	InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_ARM64_CE);
+	InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_ARM64_NEON);
 #endif
 
 	// initialize XTS mode engine and run small encryption test

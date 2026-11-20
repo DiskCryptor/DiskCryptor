@@ -59,10 +59,16 @@ DcsGetStatus (
 		if (!gTpm->NvIsOpen(NvIndex)) {
 			*Status |= DCS_TPM_STATUS_LOCKED;
 		}
+		if (gTpm->NvIsOwnerReadable != NULL && gTpm->NvIsOwnerReadable(NvIndex)) {
+			*Status |= DCS_TPM_STATUS_OWNER_READ;
+		}
 
 		// Get info (PcrMask, Flags, InfoData)
 		if (gTpm->NvGetInfo != NULL) {
 			res = gTpm->NvGetInfo(NvIndex, PcrMask, &localFlags, Info, InfoSize);
+			if (EFI_ERROR(res) && InfoSize != NULL) {
+				*InfoSize = 0;
+			}
 			if (!EFI_ERROR(res) && (localFlags & DC_TPM_FLAG_PIN_REQUIRED)) {
 				*Status |= DCS_TPM_STATUS_PIN_REQUIRED;
 			}

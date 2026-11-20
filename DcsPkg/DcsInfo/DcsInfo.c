@@ -18,14 +18,17 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/DevicePathLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/MemoryAllocationLib.h>
 #include <Library/PrintLib.h>
 #include <Guid/GlobalVariable.h>
 #include <Library/PasswordLib.h>
 #include <Library/GraphLib.h>
 #include <DcsConfig.h>
 
-#ifdef _M_X64
+#if defined(_M_X64) || defined(MDE_CPU_X64)
 #define ARCH_NAME "X64"
+#elif defined(_M_ARM64) || defined(MDE_CPU_AARCH64)
+#define ARCH_NAME "AA64"
 #else
 #define ARCH_NAME "IA32"
 #endif
@@ -287,6 +290,7 @@ InfoGraph() {
 						" index=\"%d\" H=\"%d\" V=\"%d\"", j,
 						mode->HorizontalResolution, mode->VerticalResolution,
 						NULL);
+					FreePool(mode);
 				}
 			}
 			XmlEndTag(fInfo, "GraphDevice");

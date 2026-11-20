@@ -393,6 +393,34 @@ static int dc_is_mbr_present(int dsk_num)
 	return resl;
 }
 
+/* a GPT protective (or hybrid) MBR: an entry of type 0xEE */
+static int dc_mbr_has_gpt_entry(const dc_mbr *mbr)
+{
+	int i;
+
+	for (i = 0; i < 4; i++) {
+		if (mbr->pt[i].os == 0xEE) return 1;
+	}
+	return 0;
+}
+
+/* 1 if the MBR of the disk could be read and is a GPT protective MBR */
+static int dc_disk_is_gpt_mbr(int dsk_num)
+{
+	dc_mbr     mbr;
+	dc_disk_p *dp;
+	int        is_gpt = 0;
+
+	if ( (dp = dc_disk_open(dsk_num, 0)) == NULL ) return 0;
+
+	if ( (IS_INVALID_SECTOR_SIZE(dp->bps) == 0) && (dc_disk_read(dp, &mbr, sizeof(mbr), 0) == ST_OK) &&
+		 (mbr.magic == 0xAA55) && dc_mbr_has_gpt_entry(&mbr) ) {
+		is_gpt = 1;
+	}
+	dc_disk_close(dp);
+	return is_gpt;
+}
+
 int dc_set_boot(wchar_t *root, int format, int small_boot)
 {
 	wchar_t               disk[MAX_PATH];
@@ -447,6 +475,10 @@ int dc_set_boot(wchar_t *root, int format, int small_boot)
 			if (dc_is_mbr_present(d_num.DeviceNumber) != ST_OK) {
 				resl = ST_FORMAT_NEEDED; break;
 			}
+			/* a GPT medium needs the MBR layout of a format (dc_set_mbr refuses GPT disks) */
+			if (dc_disk_is_gpt_mbr(d_num.DeviceNumber) != 0) {
+				resl = ST_FORMAT_NEEDED; break;
+			}
 
 			if ( (resl = dc_set_mbr(d_num.DeviceNumber, 1, small_boot)) == ST_NF_SPACE )
 			{
@@ -467,7 +499,9 @@ int dc_set_boot(wchar_t *root, int format, int small_boot)
 	return resl;
 }
 
-static int dc_set_mbr_i(int dsk_num, int begin, int small_boot)
+/* allow_gpt: dc_update_boot only - rewrites an installed loader (possibly on a hybrid MBR),
+   where refusing after dc_unset_mbr would leave the disk without a loader */
+static int dc_set_mbr_i(int dsk_num, int begin, int small_boot, int allow_gpt)
 {
 	dc_mbr      mbr;
 	dc_mbr      old_mbr;
@@ -537,8 +571,15 @@ static int dc_set_mbr_i(int dsk_num, int begin, int small_boot)
 			resl = ST_MBR_ERR; break;
 		}
 
-		if ( (old_mbr.sign == NEW_SIGN) || (old_mbr.sign == OLD_SIGN) ) {			
+		if ( (old_mbr.sign == NEW_SIGN) || (old_mbr.sign == OLD_SIGN) ) {
 			resl = ST_BLDR_INSTALLED; break;
+		}
+
+		/* never a new install on a GPT disk: on a disk over 2 TiB (entry capped at 0xFFFFFFFF
+		   sectors) or with a hybrid MBR the space check below can pass, and the loader would
+		   overwrite the backup GPT and the end of the last partition */
+		if ( (allow_gpt == 0) && dc_mbr_has_gpt_entry(&old_mbr) ) {
+			resl = ST_MBR_ERR; break;
 		}
 
 		/* finds free space before and after partitions */
@@ -599,7 +640,7 @@ static int dc_set_mbr_i(int dsk_num, int begin, int small_boot)
 	return resl;
 }
 
-int dc_set_mbr(int dsk_num, int begin, int small_boot)
+static int dc_set_mbr_ex(int dsk_num, int begin, int small_boot, int allow_gpt)
 {
 	DC_FLAGS flags;
 	int      dsk_1, dsk_2;
@@ -618,18 +659,27 @@ int dc_set_mbr(int dsk_num, int begin, int small_boot)
 	{
 		resl = dc_get_boot_disk(&dsk_1, &dsk_2);
 
+		/* a mirror: refuse before writing either disk, not after the first one is written */
+		if ( (resl == ST_OK) && (allow_gpt == 0) && (dc_disk_is_gpt_mbr(dsk_1) || dc_disk_is_gpt_mbr(dsk_2)) ) {
+			resl = ST_MBR_ERR;
+		}
 		if (resl == ST_OK)
 		{
-			resl = dc_set_mbr_i(dsk_1, begin, small_boot);
+			resl = dc_set_mbr_i(dsk_1, begin, small_boot, allow_gpt);
 
 			if ( (resl == ST_OK) && (dsk_1 != dsk_2) ) {
-				resl = dc_set_mbr_i(dsk_2, begin, small_boot);
+				resl = dc_set_mbr_i(dsk_2, begin, small_boot, allow_gpt);
 			}
 		}
 	} else {
-		resl = dc_set_mbr_i(dsk_num, begin, small_boot);
+		resl = dc_set_mbr_i(dsk_num, begin, small_boot, allow_gpt);
 	}
 	return resl;
+}
+
+int dc_set_mbr(int dsk_num, int begin, int small_boot)
+{
+	return dc_set_mbr_ex(dsk_num, begin, small_boot, 0);
 }
 
 int dc_has_dc_mbr(int dsk_num)
@@ -1091,9 +1141,10 @@ int dc_update_boot(int dsk_num)
 			break;
 		}
 
-		if ( (resl = dc_set_mbr(dsk_num, 0, conf.options & LDR_OP_SMALL_BOOT)) != ST_OK )
+		/* allow_gpt: a loader is installed (dc_get_mbr_config above), only rewritten here */
+		if ( (resl = dc_set_mbr_ex(dsk_num, 0, conf.options & LDR_OP_SMALL_BOOT, 1)) != ST_OK )
 		{
-			if ( (resl = dc_set_mbr(dsk_num, 1, conf.options & LDR_OP_SMALL_BOOT)) != ST_OK ) {
+			if ( (resl = dc_set_mbr_ex(dsk_num, 1, conf.options & LDR_OP_SMALL_BOOT, 1)) != ST_OK ) {
 				break;
 			}
 		}

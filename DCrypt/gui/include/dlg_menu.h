@@ -12,6 +12,13 @@ void _state_menu(
 		UINT state
 	);
 
+/* before a skip-unused start / resume - ST_OK to go on, ST_CANCEL to stop */
+int _check_shadow_copies(
+		HWND     hwnd,
+		vol_inf *vol,
+		int      wp_mode
+	);
+
 void _menu_decrypt( 
 		_dnode *node 
 	);
@@ -32,8 +39,12 @@ void _menu_format(
 		_dnode *node 
 	);
 
-void _menu_unmount( 
-		_dnode *node 
+void _menu_unmount(
+		_dnode *node
+	);
+
+void _menu_force_unmount(
+		_dnode *node
 	);
 
 void _menu_mount( 

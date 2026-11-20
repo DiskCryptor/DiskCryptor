@@ -110,6 +110,9 @@
     <ClCompile Include="storage.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="safe_log.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="crypto_functions.c">
       <Filter>Source Files</Filter>
     </ClCompile>

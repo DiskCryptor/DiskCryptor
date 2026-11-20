@@ -453,6 +453,7 @@
 #define ID_TOOLS_MOK 					40093
 #define ID_BOOT_ADD_SHIM				40094
 #define ID_BOOT_DEL_SHIM				40095
+#define ID_VOLUMES_FORCE_DISMOUNT		40096
 
 // Wizard Keys Dialog (Header Configuration)
 #define IDD_DIALOG_HEADER                 178
@@ -594,6 +595,13 @@
 #define IDC_SUMMARY_HEADER              1329
 #define IDC_SUMMARY_NOTICE              1330
 
+// power-loss protection (journaled transcryption) checkbox
+#define IDC_COMBO_SAFE                  1331
+#define IDC_HIBER_LOCK                  1332
+#define IDC_STATIC_SAFE                 1333
+#define IDC_SUMMARY_SAFE                1334
+#define IDC_COMBO_TMOUT_ACT             1335
+
 // Support Tab Dialog
 #define DLG_CONF_SUPPORT                177
 
@@ -615,7 +623,7 @@
 #ifndef APSTUDIO_READONLY_SYMBOLS
 #define _APS_NEXT_RESOURCE_VALUE        186
 #define _APS_NEXT_COMMAND_VALUE         40087
-#define _APS_NEXT_CONTROL_VALUE         1308
+#define _APS_NEXT_CONTROL_VALUE         1336
 #define _APS_NEXT_SYMED_VALUE           101
 #endif
 #endif

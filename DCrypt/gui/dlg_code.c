@@ -25,11 +25,7 @@
 #include "main.h"
 #include "dlg_code.h"
 
-//#ifdef _M_ARM64
-//#include "xts_small.h"
-//#else
 #include "xts_fast.h"
-//#endif
 #include "pass.h"
 
 _colinfo _main_headers[ ] =
@@ -169,6 +165,15 @@ const _init_list wipe_modes[ ] =
 	{ 0, STR_NULL }
 };
 
+/* power-loss protection (see SAFE_MODE_*) */
+const _init_list safe_modes[ ] =
+{
+	{ SAFE_MODE_NONE,	L"None"									},
+	{ SAFE_MODE_SUMS,	L"Checksums (fast)"					},
+	{ SAFE_MODE_FULL,	L"Full block copies (slower)"			},
+	{ 0, STR_NULL }
+};
+
 const _init_list kb_layouts[ ] =
 {
 	{ LDR_KB_QWERTY, L"QWERTY" },
@@ -244,6 +249,19 @@ const _init_list bad_pass_act_efi[ ] =
 	{ LDR_ET_EXIT_TO_BIOS,	L"Exit to Firmware"				},
 	{ LDR_ET_RETRY,			L"Retry authentication"			},
 	{ LDR_ET_MBR_BOOT,		L"Load Boot Disk"				},
+	{ LDR_ET_CUSTOM,		L"Custom (set in DcsProp)"		}, // shown only for an ActionFailed / AuthorizeRetry set by hand
+	{ 0, STR_NULL }
+};
+
+// authentication timeout action, EFI loader only; the last entry is shown only for an ActionTimeout set by hand
+const _init_list tmo_act_efi[ ] =
+{
+	{ LDR_TA_SHUTDOWN,		L"Shutdown system"				},
+	{ LDR_TA_HALT,			L"Halt system"					},
+	{ LDR_TA_REBOOT,		L"Reboot system"				},
+	{ LDR_TA_EXIT,			L"Exit to Firmware"				},
+	{ LDR_TA_CONTINUE,		L"Load Boot Disk"				},
+	{ LDR_TA_CUSTOM,		L"Custom (set in DcsProp)"		},
 	{ 0, STR_NULL }
 };
 

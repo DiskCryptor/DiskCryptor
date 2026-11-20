@@ -254,6 +254,29 @@ int _init_boot_config(
 		_set_check( wnd->dlg[1], IDC_BT_CANCEL_TMOUT, conf->options & LDR_OP_TMO_STOP );
 
 		EnableWindow( GetDlgItem(wnd->dlg[1], IDC_BT_CANCEL_TMOUT), conf->timeout );
+
+		{
+			/* timeout action: EFI loader only - for the MBR loader the combo stays empty, which also
+			   keeps it disabled (prc_common.c) and its value out of the config (_save_boot_config) */
+			HWND h_tmo_act = GetDlgItem( wnd->dlg[1], IDC_COMBO_TMOUT_ACT );
+
+			if ( isefi == 1 )
+			{
+				_init_combo( h_tmo_act, tmo_act_efi, conf->tmo_action, FALSE, -1 );
+
+				/* "Custom" (the last entry) only for an ActionTimeout set by hand in DcsProp */
+				if ( conf->tmo_action != LDR_TA_CUSTOM ) {
+					SendMessage( h_tmo_act, CB_DELETESTRING, SendMessage(h_tmo_act, CB_GETCOUNT, 0, 0) - 1, 0 );
+				}
+				/* "Load Boot Disk" (continue) boots the loader from the disk DCS started from - for a stick,
+				   ISO or PXE loader that is not the hard disk: only offered for a loader on the hard disk */
+				if ( (type != CTL_LDR_HDD) && (conf->tmo_action != LDR_TA_CONTINUE) ) {
+					LRESULT idx = SendMessage( h_tmo_act, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)_get_text_name(LDR_TA_CONTINUE, tmo_act_efi) );
+					if ( idx != CB_ERR ) SendMessage( h_tmo_act, CB_DELETESTRING, idx, 0 );
+				}
+			}
+			EnableWindow( h_tmo_act, (isefi == 1) && (conf->timeout != 0) );
+		}
 		SendMessage( wnd->dlg[1], WM_COMMAND, MAKELONG(IDC_COMBO_AUTH_TYPE, CBN_SELCHANGE), (LPARAM)h_auth_combo );
 
 	}
@@ -301,7 +324,19 @@ int _init_boot_config(
 		_sub_class( GetDlgItem(wnd->dlg[3], IDC_BT_ACTION_NOPASS), SUB_STATIC_PROC, HWND_NULL );
 		_set_check( wnd->dlg[3], IDC_BT_ACTION_NOPASS, conf->options & LDR_OP_NOPASS_ERROR );
 
-		_init_combo( GetDlgItem(wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT), __is_efi_boot ? bad_pass_act_efi : bad_pass_act, conf->error_type, TRUE, -1 );
+		{
+			/* the list of the loader being configured, not of this system's boot mode */
+			HWND h_bad_act = GetDlgItem( wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT );
+
+			_init_combo( h_bad_act, isefi == 1 ? bad_pass_act_efi : bad_pass_act, conf->error_type, TRUE, -1 );
+
+			/* "Custom" only for an ActionFailed / AuthorizeRetry set by hand in DcsProp */
+			if ( (isefi == 1) && !(conf->error_type & LDR_ET_CUSTOM) )
+			{
+				LRESULT idx = SendMessage( h_bad_act, CB_FINDSTRINGEXACT, (WPARAM)-1, (LPARAM)_get_text_name(LDR_ET_CUSTOM, bad_pass_act_efi) );
+				if ( idx != CB_ERR ) SendMessage( h_bad_act, CB_DELETESTRING, idx, 0 );
+			}
+		}
 
 		SetWindowTextA( err_mes, conf->err_msg );
 		SendMessage( err_mes, EM_EXLIMITTEXT, 0, sizeof(conf->err_msg) - 1 );
@@ -437,6 +472,17 @@ int _save_boot_config(
 		set_flag( conf->options, LDR_OP_EPS_TMO, timeout != 0 );
 		set_flag( conf->options, LDR_OP_TMO_STOP, _get_check(wnd->dlg[1], IDC_BT_CANCEL_TMOUT) );
 
+		{
+			/* timeout action: filled for the EFI loader only (_init_boot_config) */
+			HWND h_tmo_act = GetDlgItem( wnd->dlg[1], IDC_COMBO_TMOUT_ACT );
+
+			if ( SendMessage(h_tmo_act, CB_GETCOUNT, 0, 0) > 0 )
+			{
+				int tmo_act = _get_combo_val( h_tmo_act, tmo_act_efi );
+				if ( tmo_act != -1 ) conf->tmo_action = (unsigned char)tmo_act;
+			}
+		}
+
 		//if ( embed_key )
 		//{
 		//if ( _keyfiles_count(KEYLIST_EMBEDDED) )
@@ -555,7 +601,14 @@ int _save_boot_config(
 		BOOL show_err    = _get_check( wnd->dlg[3], IDC_BT_BAD_PASS_MSG );
 		BOOL act_no_pass = _get_check( wnd->dlg[3], IDC_BT_ACTION_NOPASS );
 
-		conf->error_type = _get_combo_val( GetDlgItem(wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT), __is_efi_boot ? bad_pass_act_efi : bad_pass_act );
+		{
+			/* by text: the entries both lists share have the same values */
+			HWND h_bad_act = GetDlgItem( wnd->dlg[3], IDC_COMBO_BAD_PASS_ACT );
+			int  bad_act   = _get_combo_val( h_bad_act, bad_pass_act_efi );
+
+			if ( bad_act == -1 ) bad_act = _get_combo_val( h_bad_act, bad_pass_act );
+			if ( bad_act != -1 ) conf->error_type = (unsigned char)bad_act;
+		}
 
 		set_flag( conf->error_type, LDR_ET_MESSAGE, show_err );
 		set_flag( conf->options, LDR_OP_NOPASS_ERROR, act_no_pass );

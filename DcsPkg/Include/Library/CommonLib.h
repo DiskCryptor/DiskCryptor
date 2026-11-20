@@ -200,6 +200,11 @@ GptUpdateCRC(
 	IN  EFI_PARTITION_ENTRY         *Entrys
 	);
 
+// Entry i of an array GptReadEntryArray returned - the entries are
+// SizeOfPartitionEntry bytes apart (at least sizeof(EFI_PARTITION_ENTRY), larger is spec-valid)
+#define GPT_ENTRY(_entries, _hdr, _i) \
+	((EFI_PARTITION_ENTRY*)((UINT8*)(_entries) + (UINTN)(_i) * (UINTN)(_hdr)->SizeOfPartitionEntry))
+
 EFI_STATUS
 GptReadEntryArray(
 	IN  EFI_BLOCK_IO_PROTOCOL*      BlockIo,
@@ -488,6 +493,32 @@ MapKeyboardKey(
 	EFI_INPUT_KEY key
 	);
 
+// With the key's shift state (AltGr) and AZERTY dead keys - see KbMapper.c
+EFI_INPUT_KEY
+MapKeyboardKeyEx(
+	IN  EFI_INPUT_KEY  key,
+	IN  UINT32         ShiftState,
+	IN  UINT8          ToggleState,
+	OUT BOOLEAN        *DeadKey OPTIONAL
+	);
+
+// One key from the keyboard if there is one (EFI_NOT_READY otherwise), mapped to the
+// configured layout with AltGr, Caps Lock and dead keys - the text console, the touch console and
+// the touch password screen all read physical keys through it
+EFI_STATUS
+KbReadKey(
+	OUT EFI_INPUT_KEY  *Key
+	);
+
+VOID
+KbResetState(VOID);
+
+CHAR16
+KbComposeDeadKey(
+	IN CHAR16  Dead,
+	IN CHAR16  Next
+	);
+
 //////////////////////////////////////////////////////////////////////////
 // Menu
 //////////////////////////////////////////////////////////////////////////
@@ -576,6 +607,26 @@ VAttrPrintEx(
 	IN INT32                Row OPTIONAL,
 	IN CONST CHAR16         *Format,
 	IN VA_LIST              Marker
+	);
+
+/**
+  Colour codes are applied only from the format string, never from argument data.
+  Text that DCS composes itself with colour codes in it (prompts, the status line) is printed with
+  AttrPrintText, or escaped with AttrEscapeText into a format for another printer (g_Con->Print).
+  Never pass user data (passwords, file names) to either.
+**/
+VOID
+EFIAPI
+AttrEscapeText(
+	IN  CONST CHAR16  *Text,
+	OUT CHAR16        *Out,
+	IN  UINTN         OutChars
+	);
+
+EFI_STATUS
+EFIAPI
+AttrPrintText(
+	IN CONST CHAR16  *Text
 	);
 
 //////////////////////////////////////////////////////////////////////////

@@ -73,6 +73,7 @@
   gEfiGraphicsOutputProtocolGuid
   gEfiSimpleTextOutProtocolGuid
   gEfiSimpleTextInProtocolGuid
+  gEfiSimpleTextInputExProtocolGuid
   gEfiBluetoothIoProtocolGuid
   gEfiBluetoothHcProtocolGuid
   gEfiBluetoothConfigProtocolGuid

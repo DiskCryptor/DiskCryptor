@@ -273,6 +273,13 @@ void _run_wizard_action(
 		crypt.wp_mode = WP_SKIP_UNUSED;
 	}
 
+	/* power-loss protection; the list is greyed where it does not apply */
+	if ( ( node->dlg.act_type == ACT_ENCRYPT || node->dlg.act_type == ACT_REENCRYPT ) &&
+		 IsWindowEnabled( GetDlgItem( sheets[WPAGE_ENC_CONF].hwnd, IDC_COMBO_SAFE ) ) )
+	{
+		crypt.flags |= SAFE_MODE_FLAGS( _get_combo_val( GetDlgItem( sheets[WPAGE_ENC_CONF].hwnd, IDC_COMBO_SAFE ), safe_modes ) );
+	}
+
 	node->dlg.rlt = ST_ERROR;
 
 	int header_kdf = _get_combo_val(GetDlgItem(sheets[WPAGE_ENC_PASS].hwnd, IDC_COMBO_KDF), kdf_names);
@@ -490,7 +497,7 @@ int _get_info_install_boot_page(
 	}
 
 	rlt = dc_get_drive_info( vol->w32_device, &drv );
-	if ( ( rlt && dsk_num ) == ST_OK )
+	if ( ( rlt == ST_OK ) && ( dsk_num != NULL ) )
 	{
 		*dsk_num = drv.disks[0].number;
 	}
@@ -599,6 +606,23 @@ int _init_wizard_encrypt_pages(
 		_sub_class( GetDlgItem(hwnd, IDC_CHECK_SKIP_UNUSED), SUB_STATIC_PROC, HWND_NULL );
 		_set_check( hwnd, IDC_CHECK_SKIP_UNUSED, is_ssd );
 		EnableWindow( GetDlgItem(hwnd, IDC_CHECK_SKIP_UNUSED), node->dlg.act_type != ACT_ENCRYPT_CD );
+
+		/* power-loss protection - checksums by default; encryption / re-encryption start only,
+		 * and only with a v2 header (the driver ignores it for v1): follows the header radio for
+		 * encryption (prc_common.c), the volume's current header for re-encryption */
+		{
+			BOOL safe_ok = ( node->dlg.act_type == ACT_ENCRYPT ) ? use_v2 :
+				( node->dlg.act_type == ACT_REENCRYPT && node->mnt.info.status.crypt.version >= DC_HDR_VERSION_2 );
+
+			_init_combo( GetDlgItem(hwnd, IDC_COMBO_SAFE), safe_modes, SAFE_MODE_SUMS, FALSE, -1 );
+			EnableWindow( GetDlgItem(hwnd, IDC_COMBO_SAFE), safe_ok );
+			EnableWindow( GetDlgItem(hwnd, IDC_STATIC_SAFE), safe_ok );
+			if ( node->dlg.act_type != ACT_ENCRYPT && node->dlg.act_type != ACT_REENCRYPT )
+			{
+				ShowWindow( GetDlgItem(hwnd, IDC_COMBO_SAFE), SW_HIDE );
+				ShowWindow( GetDlgItem(hwnd, IDC_STATIC_SAFE), SW_HIDE );
+			}
+		}
 
 		/* Header options section */
 		SetWindowText( GetDlgItem(hwnd, IDC_HEAD_HDR_OPTIONS), L"# Header Options" );
@@ -1202,6 +1226,28 @@ _wizard_encrypt_dlg_proc(
 							}
 							SetDlgItemTextW(h_stop, IDC_SUMMARY_HEADER, summary_buf);
 						}
+					}
+
+					/* power-loss protection - what the start will request (see the crypt.flags of the
+					   start below); with wipe passes the driver journals full copies (DC_SAFE_FAST) */
+					{
+						HWND     h_safe = GetDlgItem(h_conf, IDC_COMBO_SAFE);
+						int      mode   = SAFE_MODE_NONE;
+						BOOL     wipes  = !_get_check(h_conf, IDC_CHECK_SKIP_UNUSED) &&
+						                  _get_combo_val(GetDlgItem(h_conf, IDC_COMBO_PASSES), wipe_modes) != WP_NONE;
+						const wchar_t *txt;
+
+						if ( (node->dlg.act_type == ACT_ENCRYPT || node->dlg.act_type == ACT_REENCRYPT) && IsWindowEnabled(h_safe) ) {
+							mode = _get_combo_val(h_safe, safe_modes);
+						}
+						if (mode == SAFE_MODE_SUMS && wipes) {
+							txt = L"Full block copies (wipe passes need them)";
+						} else if (mode == SAFE_MODE_NONE && (node->dlg.act_type == ACT_ENCRYPT || node->dlg.act_type == ACT_REENCRYPT) && !IsWindowEnabled(h_safe)) {
+							txt = L"None (needs a version 2 header)";
+						} else {
+							txt = _get_combo_name(safe_modes, mode);
+						}
+						SetDlgItemTextW(h_stop, IDC_SUMMARY_SAFE, txt ? txt : L"None");
 					}
 
 					/* Notice text - show reboot warning when boot device + EFI + bootloader not active */

@@ -352,6 +352,12 @@ DcsConfigMenuShow(
 	// Zero-initialize all items to ensure PickerFunc/DisplayFunc are NULL
 	ZeroMem(items, sizeof(items));
 
+	// the config as it is now - DcsOwner (F12) may have saved into it in this boot
+	// (VerboseDebug is the one key both menus save)
+	if (gConfigFileName != NULL && !EFI_ERROR(CfgReloadCurrent())) {
+		gConfigDebug = ConfigReadInt("VerboseDebug", DCS_VERBOSE_DEBUG_DEFAULT) ? TRUE : FALSE;
+	}
+
 	// Keyboard Layout
 	items[count].Id           = CFG_ID_KEYBOARD_LAYOUT;
 	items[count].Label        = L"Keyboard Layout";
@@ -630,9 +636,6 @@ DcAuthStoreConfig(
 	EFI_STATUS   Status;
 	CFG_STRING   NewConfig;
 	CHAR8       *ConfigContent = NULL;
-	CHAR8       *Xml;
-	CHAR8        Key[128];
-	CHAR8        Value[2048];
 
 	// Check if config was initialized
 	if (gConfigFileName == NULL) {
@@ -645,13 +648,11 @@ DcAuthStoreConfig(
 	if (EFI_ERROR(Status))
 		return Status;
 
-	// Load existing config content if available
-	if (gConfigBuffer != NULL) {
-		ConfigContent = MEM_ALLOC(gConfigBufferSize + 1);
-		if (ConfigContent != NULL) {
-			CopyMem(ConfigContent, gConfigBuffer, gConfigBufferSize);
-			ConfigContent[gConfigBufferSize] = '\0';
-		}
+	// build on the config file as it is now - DcsOwner (F12) may have saved into it
+	Status = CfgLoadCurrent(&ConfigContent);
+	if (EFI_ERROR(Status)) {
+		g_Con->PrintError(L"Cannot read the config file now, not saved: %r\n", Status);
+		goto cleanup;
 	}
 
 	// Write XML header
@@ -698,31 +699,12 @@ DcAuthStoreConfig(
 	Status = CfgWriteInteger(&NewConfig, ConfigContent, "HandoffMode", gDCryptHandoffMode);
 	if (EFI_ERROR(Status)) goto cleanup;
 
-	// Copy all unmodified values from original config
-	if (ConfigContent != NULL) {
-		Xml = ConfigContent;
-		while (Xml != NULL && (Xml = XmlFindElement(Xml, "config")) != NULL) {
-			XmlGetAttributeText(Xml, "key", Key, sizeof(Key));
-			XmlGetNodeText(Xml, Value, sizeof(Value));
-
-			Status = CfgStrAppend(&NewConfig, "\n\t\t<config key=\"");
-			if (EFI_ERROR(Status)) goto cleanup;
-
-			Status = CfgStrAppend(&NewConfig, Key);
-			if (EFI_ERROR(Status)) goto cleanup;
-
-			Status = CfgStrAppend(&NewConfig, "\">");
-			if (EFI_ERROR(Status)) goto cleanup;
-
-			Status = CfgStrAppend(&NewConfig, Value);
-			if (EFI_ERROR(Status)) goto cleanup;
-
-			Status = CfgStrAppend(&NewConfig, "</config>");
-			if (EFI_ERROR(Status)) goto cleanup;
-
-			Xml++;
-		}
+	// Copy all unmodified values from the config, byte for byte
+	Status = CfgCopyUnmarked(&NewConfig, ConfigContent);
+	if (Status == EFI_COMPROMISED_DATA) {
+		g_Con->PrintError(L"Config file is malformed, not saved: %r\n", Status);
 	}
+	if (EFI_ERROR(Status)) goto cleanup;
 
 	// Write XML footer
 	Status = CfgWriteFooter(&NewConfig);

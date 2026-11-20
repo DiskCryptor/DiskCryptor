@@ -38,19 +38,23 @@ EfiExecEx(
 {
    EFI_STATUS                  res;
    EFI_DEVICE_PATH*            DevicePath;
-   EFI_HANDLE                  ImageHandle;
+   EFI_HANDLE                  ImageHandle = NULL;
    EFI_LOADED_IMAGE_PROTOCOL   *LoadedImage;
-   UINTN                       ExitDataSize;
-   CHAR16                      *ExitData;
+   UINTN                       ExitDataSize = 0;
+   CHAR16                      *ExitData = NULL;
 
    if (deviceHandle == NULL) {
       deviceHandle = gFileRootHandle;
    }
    if (!path || !deviceHandle) return EFI_INVALID_PARAMETER;
    DevicePath = FileDevicePath(deviceHandle, path);
+   if (DevicePath == NULL) return EFI_OUT_OF_RESOURCES;
 
    res = gBS->LoadImage(FALSE, gImageHandle, DevicePath, NULL, 0, &ImageHandle);
+   FreePool(DevicePath);
    if (EFI_ERROR(res)) {
+      // e.g. EFI_SECURITY_VIOLATION still returns a handle that must be unloaded
+      if (ImageHandle != NULL) gBS->UnloadImage(ImageHandle);
       return res;
    }
 
@@ -64,6 +68,7 @@ EfiExecEx(
    }
 
    res = gBS->StartImage(ImageHandle, &ExitDataSize, &ExitData);
+   if (ExitData != NULL) FreePool(ExitData);
 
    return res;
 }

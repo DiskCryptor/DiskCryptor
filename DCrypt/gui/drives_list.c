@@ -56,11 +56,16 @@ _add_drive_node(
 	mnt->exists = TRUE;
 	memcpy( &mnt->mnt.info, vol, sizeof(vol_inf) );
 
-	_snwprintf( path, countof(path), L"%s\\", vol->status.mnt_point );
-	GetVolumeInformation( path, label, countof(label), 0, 0, 0, fs, countof(fs) );
+	/* a locked volume fails every read/write (keys erased at hibernation): do not make
+	   the file system touch it, keep the last known label / file system name */
+	if (! DC_IS_LOCKED(vol->status.flags) )
+	{
+		_snwprintf( path, countof(path), L"%s\\", vol->status.mnt_point );
+		GetVolumeInformation( path, label, countof(label), 0, 0, 0, fs, countof(fs) );
 
-	wcscpy( mnt->mnt.label, label );
-	wcscpy( mnt->mnt.fs, fs );
+		wcscpy( mnt->mnt.label, label );
+		wcscpy( mnt->mnt.fs, fs );
+	}
 
 	if (! exist_node )
 	{

@@ -127,8 +127,9 @@ char *XmlGetAttributeText (char *xmlNode, const char *xmlAttrName, char *xmlAttr
 
 	t = ((char*)strchr (t, '"')) + 1;
 	e = strchr (t, '"');
+	if (e == NULL) return NULL;
 	l = (int)(e - t);
-	if (e == NULL || l > xmlAttrValueSize) return NULL;
+	if (l >= xmlAttrValueSize) return NULL;	// leave room for the terminator
 
 	memcpy (xmlAttrValue, t, l);
 	xmlAttrValue[l] = 0;
@@ -156,7 +157,7 @@ char *XmlGetNodeText (char *xmlNode, char *xmlText, int xmlTextSize)
 	if (e == NULL) return NULL;
 
 	l = (int)(e - t);
-	if (e == NULL || l > xmlTextSize) return NULL;
+	if (l >= xmlTextSize) return NULL;	// leave room for the terminator
 
 	while (i < l)
 	{

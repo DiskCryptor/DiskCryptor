@@ -33,6 +33,7 @@ extern int     gDCryptTpmMode;
 extern int     gDCryptTpmPcrMask;
 extern int     gDCryptTpmStorage;
 extern BOOLEAN gDCryptTpmPinUsed;
+extern BOOLEAN gDCryptUnlockInteractive; // the unlock needed credentials the user entered
 extern BOOLEAN gConfigDebug;
 
 extern int     gKeyboardLayout;
@@ -129,6 +130,9 @@ DcsAskConsolePwd(
 
 BOOLEAN
 DcsAskYesNo(CHAR16 *Prompt, BOOLEAN DefaultYes);
+
+VOID
+DcsPrintText(CONST CHAR16 *Text);
 
 VOID
 DcsAskPassword(

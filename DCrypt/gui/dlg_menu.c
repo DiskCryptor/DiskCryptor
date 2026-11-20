@@ -35,6 +35,7 @@
 #include "gpt_sup.h"
 #include "efiinst.h"
 #include "secure_desktop.h"
+#include "shadow.h"
 
 void _state_menu(
 		HMENU	menu,
@@ -51,6 +52,28 @@ void _state_menu(
 }
 
 
+/*
+   TRUE (with a message) if the volume is locked (keys erased at hibernation, see F_LOCKED):
+   the driver rejects every operation except unlock (mount) and unmount on it
+*/
+static
+BOOL _locked_volume_msg(
+		_dnode *node
+	)
+{
+	if ( node && !node->is_root && DC_IS_LOCKED(node->mnt.info.status.flags) )
+	{
+		__msg_i(
+			__dlg,
+			L"Volume [%s] is locked, its keys were erased at hibernation.\n"
+			L"Unlock it with its password first, or unmount it.", node->mnt.info.status.mnt_point
+			);
+		return TRUE;
+	}
+	return FALSE;
+}
+
+
 void _refresh_menu( )
 {
 	HMENU   h_menu       = GetMenu( __dlg );
@@ -64,19 +87,33 @@ void _refresh_menu( )
 	BOOL    backup       = FALSE, restore	= FALSE;
 	BOOL    format       = FALSE, reencrypt	= FALSE;
 	BOOL    del_mntpoint = FALSE, ch_pass	= FALSE;
+	BOOL    locked       = FALSE, force_unmount = FALSE;
 
-	if ( node && ListView_GetSelectedCount( __lists[HMAIN_DRIVES] ) && 
+	if ( node && ListView_GetSelectedCount( __lists[HMAIN_DRIVES] ) &&
 		 !_is_root_item( (LPARAM)node ) &&
 	 	  _is_active_item( (LPARAM)node )
 		 )
 	{
 		int flags = node->mnt.info.status.flags;
-	
-		del_mntpoint = 
-			wcsstr( node->mnt.info.status.mnt_point, L"\\\\?\\" ) == 0 && 
+
+		del_mntpoint =
+			wcsstr( node->mnt.info.status.mnt_point, L"\\\\?\\" ) == 0 &&
 			IS_UNMOUNTABLE( &node->mnt.info.status );
 
-		if ( flags & F_CDROM )
+		if ( DC_IS_LOCKED(flags) )
+		{
+			/*
+			   locked volume (keys erased at hibernation): only unlock (= mount with
+			   password) or (force) unmount make sense, the driver rejects the rest
+			*/
+			locked = TRUE;
+			mount  = TRUE;
+
+			if ( IS_UNMOUNTABLE( &node->mnt.info.status ) )
+			{
+				unmount = force_unmount = TRUE;
+			}
+		} else if ( flags & F_CDROM )
 		{
 			if ( flags & F_ENABLED )
 			{
@@ -136,11 +173,11 @@ void _refresh_menu( )
 		HWND h_mount = GetDlgItem(__dlg, IDC_BTN_MOUNT_);
 
 		GetWindowText( h_mount, ws_display, countof(ws_display) );
-		wcscpy( ws_new_display, unmount ? IDS_UNMOUNT : IDS_MOUNT );
+		wcscpy( ws_new_display, locked ? IDS_UNLOCK : ( unmount ? IDS_UNMOUNT : IDS_MOUNT ) );
 
 		if ( ( wcscmp( ws_display, ws_new_display ) != 0 ) || ( IsWindowEnabled(h_mount) != ( unmount || mount ) ) )
 		{
-			SetWindowText( h_mount, unmount ? IDS_UNMOUNT : IDS_MOUNT );
+			SetWindowText( h_mount, ws_new_display );
 			EnableWindow( h_mount, unmount || mount );
 #ifdef LOG_FILE
 			_log( 
@@ -153,7 +190,19 @@ void _refresh_menu( )
 	EnableWindow( GetDlgItem(__dlg, IDC_BTN_ENCRYPT_), encrypt );
 	EnableWindow( GetDlgItem(__dlg, IDC_BTN_DECRYPT_), decrypt );
 
+	{
+		/* "Mount Volume" unlocks a locked volume, name it accordingly */
+		wchar_t *s_mount = locked ? L"Unlock Volume" : L"Mount Volume";
+
+		if ( GetMenuString( h_menu, ID_VOLUMES_MOUNT, ws_display, countof(ws_display), MF_BYCOMMAND ) &&
+			 wcscmp( ws_display, s_mount ) != 0
+			 )
+		{
+			ModifyMenu( h_menu, ID_VOLUMES_MOUNT, MF_BYCOMMAND | MF_STRING, ID_VOLUMES_MOUNT, s_mount );
+		}
+	}
 	EnableMenuItem( h_menu, ID_VOLUMES_MOUNT, _menu_onoff(mount) );
+	EnableMenuItem( h_menu, ID_VOLUMES_FORCE_DISMOUNT, _menu_onoff(force_unmount) );
 	EnableMenuItem( h_menu, ID_VOLUMES_ENCRYPT, _menu_onoff(encrypt) );
 
 	EnableMenuItem( h_menu, ID_VOLUMES_DISMOUNT, _menu_onoff(unmount) );
@@ -176,7 +225,7 @@ int _finish_formatting(
 		_dnode *node
 	)
 {
-	int rlt;
+	int rlt = ST_OK; /* RAW: nothing to format */
 
 	if ( wcscmp(node->dlg.fs_name, L"RAW") != 0 )
 	{
@@ -492,6 +541,135 @@ int _menu_set_loader_file_efi(
 }
 
 
+/*
+   skip-unused (WP_SKIP_UNUSED) and shadow copies, asked before a skip-unused session takes its
+   first step in this driver session (after the start, a mount / reboot / unlock); see dcapi
+   shadow.h. Yes deletes every shadow copy of the volume, No keeps them, Cancel stops. A failed
+   deletion is reported and the operation goes on.
+*/
+int _check_shadow_copies(
+		HWND     hwnd,
+		vol_inf *vol,
+		int      wp_mode
+	)
+{
+	wchar_t msg[1024];
+	int     count = 0, left = -1, rlt, q;
+
+	if ( wp_mode != WP_SKIP_UNUSED ) return ST_OK;
+
+	/* not __msg_q3: it formats into MAX_PATH characters, too short for this text */
+	if ( (rlt = dc_count_shadows( vol->w32_device, &count )) == ST_OK )
+	{
+		if ( count == 0 ) return ST_OK;
+		_snwprintf( msg, countof(msg),
+			L"Volume %s has %d shadow copies (System Restore points, Previous Versions or backup snapshots).\n\n"
+			L"\"Skip unused sectors\" does not process sectors that are unused now, but older shadow copies "
+			L"may still keep data in them. Those shadow copies would become corrupt.\n\n"
+			L"Yes:\tdelete all shadow copies of this volume (recommended)\n"
+			L"No:\tkeep them (they may become unusable)\n"
+			L"Cancel:\tdo not continue now (a started operation stays paused)",
+			vol->status.mnt_point, count );
+	} else {
+		_snwprintf( msg, countof(msg),
+			L"The shadow copies of volume %s could not be checked (error %d).\n\n"
+			L"\"Skip unused sectors\" corrupts shadow copies (System Restore points, Previous Versions or "
+			L"backup snapshots) that exist when it starts.\n\n"
+			L"Yes:\tdelete all shadow copies of this volume\n"
+			L"No:\tcontinue without deleting\n"
+			L"Cancel:\tdo not continue now (a started operation stays paused)",
+			vol->status.mnt_point, rlt );
+	}
+	msg[countof(msg) - 1] = 0;
+	q = MessageBox( hwnd, msg, L"Shadow copies", MB_YESNOCANCEL | MB_ICONWARNING );
+	if ( q == IDCANCEL ) return ST_CANCEL;
+	if ( q != IDYES ) return ST_OK;
+
+	/* the wait dialog is modeless - no menu action on the volume while vssadmin runs */
+	EnableWindow( hwnd, FALSE );
+	rlt = _wait_dc_delete_shadows( hwnd, vol->w32_device, &left, L"Deleting shadow copies..." );
+	EnableWindow( hwnd, TRUE );
+	SetForegroundWindow( hwnd );
+	if ( rlt != ST_OK )
+	{
+		if ( left > 0 ) {
+			_snwprintf( msg, countof(msg),
+				L"%d shadow copies of volume %s could not be deleted.\n\n"
+				L"The operation continues; these shadow copies may become unusable.", left, vol->status.mnt_point );
+		} else {
+			_snwprintf( msg, countof(msg),
+				L"The shadow copies of volume %s could not be deleted (error %d).\n\n"
+				L"The operation continues; existing shadow copies may become unusable.", vol->status.mnt_point, rlt );
+		}
+		msg[countof(msg) - 1] = 0;
+		MessageBox( hwnd, msg, L"Warning", MB_OK | MB_ICONWARNING );
+	}
+	return ST_OK;
+}
+
+/* before the act of a started or resumed session runs. Not asked when the act runs or has
+   stepped in this driver session already (a pause keeps the bitmap; a lock clears act->stepped,
+   a remount makes a new act). The session's own mode counts; an unknown status asks. */
+static int _session_check_shadows(
+		_dnode *node
+	)
+{
+	_dact    *act = _create_act_thread( node, -1, -1 );
+	dc_status st;
+	int       wp_mode = WP_SKIP_UNUSED;
+
+	if ( act != NULL && (act->status == ACT_RUNNING || act->stepped) ) return ST_OK;
+	if ( dc_get_device_status( node->mnt.info.device, &st ) == ST_OK )
+	{
+		if ( !(st.flags & F_SYNC) ) return ST_OK; /* no session (e.g. prepared for the reboot) */
+		wp_mode = st.crypt.wp_mode;
+	}
+	return _check_shadow_copies( __dlg, &node->mnt.info, wp_mode );
+}
+
+/* the act runs - or, cancelled at the shadow copy question, stays paused */
+static void _run_act_checked(
+		_dnode *node,
+		int     act_type
+	)
+{
+	if ( _session_check_shadows( node ) == ST_OK ) {
+		_create_act_thread( node, act_type, ACT_RUNNING );
+	} else {
+		_create_act_thread( node, act_type, ACT_PAUSED );
+	}
+	_activate_page( );
+}
+
+
+/* the decryption start: what it will do (the encryption wizard has its summary page); TRUE = go */
+static BOOL _confirm_decrypt(
+		_dnode  *node,
+		dlgpass *info
+	)
+{
+	wchar_t        msg[512];
+	const wchar_t *prot = _get_text_name(info->safe_mode, safe_modes);
+
+	/* the list is greyed for a v1 header (the driver ignores the protection there) */
+	if ( info->safe_mode == SAFE_MODE_NONE && node->mnt.info.status.crypt.version < DC_HDR_VERSION_2 ) {
+		prot = L"None (needs a version 2 header)";
+	}
+	_snwprintf(
+		msg, countof(msg),
+		L"Decrypt volume %s?\n\n"
+		L"Power-loss protection:\t%s\n"
+		L"Unused sectors:\t\t%s\n\n"
+		L"Decryption can be paused and resumed at any time.",
+		node->mnt.info.status.mnt_point,
+		prot != NULL ? prot : L"None",
+		info->skip_unused ? L"skipped" : L"decrypted"
+	);
+	msg[countof(msg) - 1] = 0;
+
+	return MessageBox( __dlg, msg, L"Decrypt", MB_OKCANCEL | MB_ICONQUESTION | MB_DEFBUTTON1 ) == IDOK;
+}
+
 void _menu_decrypt(
 		_dnode *node
 	)
@@ -499,6 +677,8 @@ void _menu_decrypt(
 	dlgpass dlg_info = { NULL, node, PF_SHOW_SKIP_UNUSED };
 
 	int rlt;
+	if ( _locked_volume_msg(node) ) return;
+
 	if ( !_create_act_thread(node, -1, -1) )
 	{
 		rlt = _dlg_get_pass( __dlg, &dlg_info );
@@ -506,6 +686,13 @@ void _menu_decrypt(
 		{
 			crypt_info crypt = { 0 };
 			crypt.wp_mode = dlg_info.skip_unused ? WP_SKIP_UNUSED : WP_NONE;
+			crypt.flags |= SAFE_MODE_FLAGS( dlg_info.safe_mode ); // power-loss protection
+
+			if ( !_confirm_decrypt(node, &dlg_info) )
+			{
+				secure_free( dlg_info.pass );
+				return; /* nothing started */
+			}
 
 			rlt = _wait_dc_start_decrypt( __dlg, node->mnt.info.device, dlg_info.pass, &crypt, L"Starting decryption..." );
 			secure_free( dlg_info.pass );
@@ -523,8 +710,7 @@ void _menu_decrypt(
 	}
 	if ( rlt == ST_OK )
 	{
-		_create_act_thread( node, ACT_DECRYPT, ACT_RUNNING );
-		_activate_page( );
+		_run_act_checked( node, ACT_DECRYPT );
 	}
 }
 
@@ -867,6 +1053,8 @@ void _menu_encrypt(
 {
 	int rlt;
 
+	if ( _locked_volume_msg(node) ) return;
+
 	/* Check if this partition contains DCS bootloader files - cannot encrypt it */
 	if ( __is_efi_boot )
 	{
@@ -913,8 +1101,7 @@ void _menu_encrypt(
 			__dlg, L"Error start encrypt volume [%s]", rlt, node->mnt.info.status.mnt_point
 			);
 	} else {
-		_create_act_thread(node, ACT_ENCRYPT, ACT_RUNNING);		
-		_activate_page( );
+		_run_act_checked( node, ACT_ENCRYPT );
 
 	}
 }
@@ -938,8 +1125,7 @@ void _menu_encrypt2(
 			__dlg, L"Error start pending encrypt volume [%s]", rlt, node->mnt.info.status.mnt_point
 		);
 	} else {
-		_create_act_thread(node, ACT_ENCRYPT, ACT_RUNNING);		
-		_activate_page( );
+		_run_act_checked( node, ACT_ENCRYPT );
 
 	}
 }
@@ -989,6 +1175,8 @@ void _menu_reencrypt(
 	)
 {
 	int rlt;
+	if ( _locked_volume_msg(node) ) return;
+
 	node->dlg.act_type = ACT_REENCRYPT;
 
 	if ( _create_act_thread(node, -1, -1) == 0 &&
@@ -1011,8 +1199,7 @@ void _menu_reencrypt(
 			__dlg, L"Error start reencrypt volume [%s]", rlt, node->mnt.info.status.mnt_point
 			);
 	} else {
-		_create_act_thread( node, ACT_REENCRYPT, ACT_RUNNING );
-		_activate_page( );
+		_run_act_checked( node, ACT_REENCRYPT );
 
 	}
 }
@@ -1023,6 +1210,8 @@ void _menu_format(
 	)
 {
 	int rlt;
+
+	if ( _locked_volume_msg(node) ) return;
 
 	node->dlg.act_type = ACT_FORMAT;
 	node->dlg.q_format = FALSE;
@@ -1065,20 +1254,47 @@ void _menu_format(
 }
 
 
-void _menu_unmount(
-		_dnode *node
+static
+void _menu_unmount_ex(
+		_dnode *node,
+		BOOL    force
 	)
 {
-	int resl  = ST_ERROR;
-	int flags = __config.conf_flags & CONF_FORCE_DISMOUNT ? MF_FORCE : 0;
+	int  resl   = ST_ERROR;
+	int  flags  = ( force || (__config.conf_flags & CONF_FORCE_DISMOUNT) ) ? MF_FORCE : 0;
+	BOOL locked = DC_IS_LOCKED( node->mnt.info.status.flags );
+	int  confirm;
 
-	if ( __msg_q( __dlg, L"Unmount volume [%s]?", node->mnt.info.status.mnt_point ) )
+	if ( force )
+	{
+		confirm = __msg_q(
+			__dlg,
+			L"Force unmount volume [%s]?\n\n"
+			L"Open files are closed, data not yet written to the volume is lost.", node->mnt.info.status.mnt_point
+			);
+	} else if ( locked )
+	{
+		/* the FS cannot flush its cache to a locked volume, its writes fail */
+		confirm = __msg_q(
+			__dlg,
+			L"Unmount locked volume [%s]?\n\n"
+			L"Its keys were erased at hibernation, data not yet written to the volume is lost.", node->mnt.info.status.mnt_point
+			);
+	} else
+	{
+		confirm = __msg_q( __dlg, L"Unmount volume [%s]?", node->mnt.info.status.mnt_point );
+	}
+
+	if ( confirm )
 	{
 		resl = dc_unmount_volume( node->mnt.info.device, flags );
 
 		if ( resl == ST_LOCK_ERR )
 		{
-			if ( __msg_w( __dlg,
+			if ( __msg_w( __dlg, locked ?
+					L"The file system of this locked volume cannot be flushed.\n"
+					L"Would you like to force an unmount on this volume?\n"
+					L"Data not yet written to the volume is lost." :
 					L"This volume contains opened files.\n"
 					L"Would you like to force an unmount on this volume?" )
 				)
@@ -1108,6 +1324,149 @@ void _menu_unmount(
 }
 
 
+void _menu_unmount(
+		_dnode *node
+	)
+{
+	_menu_unmount_ex( node, FALSE );
+}
+
+
+void _menu_force_unmount(
+		_dnode *node
+	)
+{
+	_menu_unmount_ex( node, TRUE );
+}
+
+
+static
+void _unlock_error(
+		_dnode *node,
+		int     rlt
+	)
+{
+	wchar_t msg[MAX_PATH * 2];
+
+	switch ( rlt )
+	{
+		case ST_CANCEL:
+		{
+			/* the driver refuses mounts / unlocks while the system hibernates */
+			_snwprintf(
+				msg, countof(msg),
+				L"Volume [%s] cannot be unlocked while the system is entering hibernation.\n"
+				L"Try again after the resume.", node->mnt.info.status.mnt_point
+				);
+			msg[countof(msg) - 1] = 0;
+			__msg_e( __dlg, msg );
+		}
+		break;
+		case ST_MEDIA_CHANGED:
+		{
+			_snwprintf(
+				msg, countof(msg),
+				L"The volume header found on [%s] does not match the locked volume.\n"
+				L"The volume stays locked, unmount it instead.", node->mnt.info.status.mnt_point
+				);
+			msg[countof(msg) - 1] = 0;
+			__msg_e( __dlg, msg );
+		}
+		break;
+		case ST_ERROR:
+		{
+			_snwprintf(
+				msg, countof(msg),
+				L"Volume [%s] cannot be unlocked in its current state\n"
+				L"(e.g. its decryption has just finished), unmount it instead.", node->mnt.info.status.mnt_point
+				);
+			msg[countof(msg) - 1] = 0;
+			__msg_e( __dlg, msg );
+		}
+		break;
+		default:
+		{
+			__error_s(
+				__dlg, L"Error unlock volume [%s]", rlt, node->mnt.info.status.mnt_point
+				);
+		}
+		break;
+	}
+}
+
+
+/*
+   Unlock a locked volume (keys erased at hibernation, see F_LOCKED) in place: DC_CTL_MOUNT
+   with the password. The driver also tries the cached passwords, keeps the original mount
+   flags (only MF_USE_BACKUP applies) and continues a paused or running transcryption.
+*/
+static
+void _menu_unlock(
+		_dnode *node
+	)
+{
+	wchar_t caption[MAX_PATH];
+	dlgpass dlg_info = { NULL, node, PF_CAN_USE_BACKUP };
+	int     rlt;
+	int     flags;
+	int     aborted = 0;
+	/* a volume mounted from its backup header is unlocked from it as well (the driver also
+	   ORs MF_USE_BACKUP in itself): the first attempt uses it, the dialog shows it fixed */
+	int     bk_flags = node->mnt.info.status.mnt_flags & MF_USE_BACKUP;
+
+	_snwprintf(
+		caption, countof(caption), L"Unlock [%s] - %s", node->mnt.info.status.mnt_point, node->mnt.info.device
+		);
+	caption[countof(caption) - 1] = 0;
+	dlg_info.caption    = caption;
+	dlg_info.use_backup = bk_flags != 0;
+	if ( bk_flags != 0 )
+	{
+		dlg_info.flags |= PF_BACKUP_FORCED;
+	}
+
+	/* cached passwords / boot keys first; ST_DEVICE_BUSY: the volume was locked again (or
+	   another volume mounted on it) while its header was probed - probe once more */
+	rlt = _wait_dc_mount_volume_ex( __dlg, node->mnt.info.device, NULL, bk_flags, L"Unlocking volume...", &aborted );
+	if ( rlt == ST_DEVICE_BUSY && !aborted )
+	{
+		rlt = _wait_dc_mount_volume_ex( __dlg, node->mnt.info.device, NULL, bk_flags, L"Unlocking volume...", &aborted );
+	}
+	if ( aborted )
+	{
+		return; /* the user cancelled the wait (the driver reports it as ST_CANCEL) */
+	}
+
+	/* ST_NO_MOUNT: dismounted meanwhile - no password prompt (it would mount it afresh,
+	   without its original options); reported below */
+	if ( (rlt != ST_OK) && (rlt != ST_ALR_MOUNT) && (rlt != ST_ERROR) && (rlt != ST_CANCEL) && (rlt != ST_NO_MOUNT) )
+	{
+		if ( _dlg_get_pass(__dlg, &dlg_info) != ST_OK )
+		{
+			return; /* cancelled by the user */
+		}
+		flags = (dlg_info.use_backup || bk_flags) ? MF_USE_BACKUP : 0;
+
+		rlt = _wait_dc_mount_volume_ex( __dlg, node->mnt.info.device, dlg_info.pass, flags, L"Unlocking volume...", &aborted );
+		if ( rlt == ST_DEVICE_BUSY && !aborted )
+		{
+			rlt = _wait_dc_mount_volume_ex( __dlg, node->mnt.info.device, dlg_info.pass, flags, L"Unlocking volume...", &aborted );
+		}
+		secure_free( dlg_info.pass );
+		if ( aborted )
+		{
+			return;
+		}
+	}
+
+	/* ST_ALR_MOUNT: mounted and no longer locked, e.g. unlocked on resume meanwhile */
+	if ( (rlt != ST_OK) && (rlt != ST_ALR_MOUNT) )
+	{
+		_unlock_error( node, rlt );
+	}
+}
+
+
 void _menu_mount(
 		_dnode *node
 	)
@@ -1119,6 +1478,13 @@ void _menu_mount(
 	dlgpass dlg_info = { NULL, node, PF_MOUNT_OPTIONS, NULL, NULL, mnt_point};
 
 	int rlt;
+
+	if ( DC_IS_LOCKED(node->mnt.info.status.flags) )
+	{
+		_menu_unlock( node );
+		return;
+	}
+
 	rlt = _wait_dc_mount_volume(
 			__dlg, node->mnt.info.device, NULL, (mnt_point[0] != 0) ? MF_DELMP : 0, L"Mounting volume..."
 		);
@@ -1127,10 +1493,10 @@ void _menu_mount(
 	{
 		if ( _dlg_get_pass(__dlg, &dlg_info) == ST_OK )
 		{
-			if (mnt_point[0] != 0)   flags = MF_DELMP;
-			if (dlg_info.mnt_ro)     flags = MF_READ_ONLY;
-			if (dlg_info.no_hiber)   flags = MF_NO_HIBER;
-			if (dlg_info.use_backup) flags = MF_USE_BACKUP;
+			if (mnt_point[0] != 0)   flags |= MF_DELMP;
+			if (dlg_info.mnt_ro)     flags |= MF_READ_ONLY;
+			if (dlg_info.no_hiber)   flags |= MF_NO_HIBER;
+			if (dlg_info.use_backup) flags |= MF_USE_BACKUP;
 			rlt = _wait_dc_mount_volume( __dlg, node->mnt.info.device, dlg_info.pass, flags, L"Mounting volume..." );
 			secure_free( dlg_info.pass );
 
@@ -1172,13 +1538,13 @@ void _menu_mountall( )
 	{
 		if ( _dlg_get_pass(__dlg, &dlg_info) == ST_OK )
 		{
-			if (dlg_info.mnt_ro)     flags = MF_READ_ONLY;
-			if (dlg_info.no_hiber)   flags = MF_NO_HIBER;
-			if (dlg_info.use_backup) flags = MF_USE_BACKUP;
+			if (dlg_info.mnt_ro)     flags |= MF_READ_ONLY;
+			if (dlg_info.no_hiber)   flags |= MF_NO_HIBER;
+			if (dlg_info.use_backup) flags |= MF_USE_BACKUP;
 			_wait_dc_mount_all( __dlg, dlg_info.pass, &mount_cnt, flags, L"Mounting volumes..." );
 			secure_free( dlg_info.pass );
 
-			__msg_i( __dlg, L"Mounted devices: %d", mount_cnt );
+			__msg_i( __dlg, L"Mounted or unlocked devices: %d", mount_cnt );
 		}
 	}
 }
@@ -1206,6 +1572,8 @@ void _menu_change_pass(
 	dlgpass dlg_info = { NULL, node, PF_NO_KEY_SLOTS };
 	int     resl     = ST_ERROR;
 	int     flags = 0;
+
+	if ( _locked_volume_msg(node) ) return;
 
 	if ( _dlg_change_pass( __dlg, &dlg_info ) == ST_OK )
 	{
@@ -1266,9 +1634,12 @@ void _menu_backup_header(
 	dlgpass dlg_info = { NULL, node, PF_NO_KEY_SLOTS | PF_CAN_USE_BACKUP };
 
 	wchar_t s_path[MAX_PATH];
-	int rlt = _dlg_get_pass( __dlg, &dlg_info );
+	int     rlt;
 	int     flags = 0;
 
+	if ( _locked_volume_msg(node) ) return;
+
+	rlt = _dlg_get_pass( __dlg, &dlg_info );
 	if ( rlt == ST_OK )
 	{
 		int bytes = DC_AREA_MAX_SIZE;
@@ -1313,6 +1684,8 @@ void _menu_restore_header(
 	u32     bytes;
 	int     flags = 0;
 
+	if ( _locked_volume_msg(node) ) return;
+
 	if ( _open_file_dialog( __dlg, s_path, countof(s_path), L"Open backup volume header" ) )
 	{		
 		if ( (rlt = load_file(s_path, &backup, &bytes)) == ST_OK)
@@ -1347,6 +1720,8 @@ void _menu_header_config(
 		__msg_e(__dlg, L"Please select a volume");
 		return;
 	}
+	if ( _locked_volume_msg(node) ) return;
+
 	_dlg_header_config_volume(__dlg, node);
 }
 

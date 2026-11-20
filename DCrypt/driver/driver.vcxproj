@@ -50,6 +50,7 @@
     <ClCompile Include="readwrite.c" />
     <ClCompile Include="ssd_trim.c" />
     <ClCompile Include="storage.c" />
+    <ClCompile Include="safe_log.c" />
     <ClCompile Include="verify.c" />
   </ItemGroup>
   <ItemGroup>
@@ -80,6 +81,7 @@
     <ClInclude Include="include\readwrite.h" />
     <ClInclude Include="include\ssd_trim.h" />
     <ClInclude Include="include\storage.h" />
+    <ClInclude Include="include\safe_log.h" />
     <ClInclude Include="verify.h" />
   </ItemGroup>
   <PropertyGroup Label="Globals">

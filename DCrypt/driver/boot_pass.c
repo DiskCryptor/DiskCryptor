@@ -28,7 +28,7 @@
 #include "boot_pass.h"
 #include "mount.h"
 #include "debug.h"
-//#include "misc_mem.h"
+#include "misc_mem.h"
 
 
 static void *find_8b(u8 *data, int size, u32 s1, u32 s2)
@@ -187,16 +187,103 @@ static void dc_restore_ints(bd_data *bdb)
 
 char dc_boot_pass[SLOT_LABEL_LEN] = "Boot Password";
 
+/*
+ * Physical memory and the boot data block.
+ *
+ * The loaders never leave the block in memory Windows manages: DCS allocates it as
+ * EfiMemoryMappedIO (DcsPkg CommonLib EfiMem.c PrepareMemory / PrepareMemoryAny), the BIOS
+ * loader hides its body from Windows in its e820 map. So a probe address that lies in Windows
+ * RAM cannot hold the block - and mapping such a page is illegal: it is not locked, its contents
+ * and attributes can change under the view, and Driver Verifier bugchecks on it (0x1A / 0x1233).
+ * The old-loader scans (1-16 MiB, 500-640 KiB) hit such pages on every boot that did not come
+ * through DCS, so RAM is skipped and everything else is read with MmMapIoSpace. MmCopyMemory is
+ * no alternative: it refuses I/O space (the block's memory type) and does not exist on
+ * Windows 7; MmGetPhysicalMemoryRanges does.
+ */
+#define DC_BDB_MAX_SIZE (1024 * 1024) /* DCS: bd_data + password cache + boot keys, a few KiB */
+
+/* nonzero when any byte of [start, start + len) is RAM Windows manages - and when the ranges
+   cannot be queried (then nothing is mapped) */
+static int dc_phys_is_ram(u64 start, u64 len)
+{
+	PPHYSICAL_MEMORY_RANGE r = MmGetPhysicalMemoryRanges();
+	int                    ram = 0;
+	u32                    i;
+
+	if (r == NULL) return 1;
+	/* the array ends with an entry whose base and size are both zero */
+	for (i = 0; r[i].BaseAddress.QuadPart != 0 || r[i].NumberOfBytes.QuadPart != 0; i++) {
+		u64 b = (u64)r[i].BaseAddress.QuadPart;
+		u64 e = b + (u64)r[i].NumberOfBytes.QuadPart;
+
+		if (start < e && b < start + len) { ram = 1; break; }
+	}
+	ExFreePool(r);
+	return ram;
+}
+
+/* one page of physical memory into buf; RAM is skipped (see above) */
+static int dc_read_phys_page(PHYSICAL_ADDRESS addr, u8 *buf)
+{
+	void *mem;
+	int   ok = 0;
+
+	if (dc_phys_is_ram((u64)addr.QuadPart, PAGE_SIZE)) {
+		return 0;
+	}
+	if ((mem = MmMapIoSpace(addr, PAGE_SIZE, MmCached)) == NULL) {
+		return 0;
+	}
+	__try {
+		memcpy(buf, mem, PAGE_SIZE);
+		ok = 1;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER) {
+		DbgMsg("exception while reading physical memory: 0x%08X\n", GetExceptionCode());
+	}
+	MmUnmapIoSpace(mem, PAGE_SIZE);
+	return ok;
+}
+
+/*
+ * A found block names memory that is mapped (its key / password arrays) and zeroed (base,
+ * bd_size) below. It comes from memory nobody vouches for - a scan can also find a stale copy
+ * of an earlier boot - so the size has to be plausible and neither range may be Windows RAM.
+ */
+static int dc_bdb_plausible(PHYSICAL_ADDRESS addr, bd_data *bdb, u8 *page, u64 *out_base)
+{
+	/* the data block base address */
+	u64 base = *out_base = ((dc_load_flags & DST_UEFI_BOOT) && bdb->bd_base == 0) ? bdb->u.uefi.bd_base64 : (u64)bdb->bd_base;
+	/* where the block itself was found */
+	u64 blk  = (u64)addr.QuadPart + (u64)((u8*)bdb - page);
+
+	/* base is zeroed below over bd_size bytes: it must be the loader's own memory, not anything
+	   the block names. DCS puts the block at the start of its allocation (bd_base / bd_base64
+	   = the block's address); the BIOS loader's block starts inside its body [base, base + size)
+	   (the copy found there sits 384 bytes before the body's end, so it is shorter than bd_data) */
+	if (base + bdb->bd_size < base ||
+		((dc_load_flags & DST_UEFI_BOOT) ? (base != blk)
+		                                 : (blk < base || blk >= base + bdb->bd_size)))
+	{
+		DbgMsg("boot data block at 0x%016I64X rejected: base 0x%016I64X does not hold it\n", blk, base);
+		return 0;
+	}
+
+	if (bdb->bd_size == 0 || bdb->bd_size > DC_BDB_MAX_SIZE ||
+		dc_phys_is_ram((u64)addr.QuadPart, ROUND_TO_PAGES(bdb->bd_size)) ||
+		dc_phys_is_ram(base, bdb->bd_size))
+	{
+		DbgMsg("boot data block at 0x%016I64X rejected: size %u, base 0x%016I64X\n", addr.QuadPart, bdb->bd_size, base);
+		return 0;
+	}
+	return 1;
+}
+
 int dc_try_load_bdb(PHYSICAL_ADDRESS addr)
 {
 	int              ret = ST_ERROR;
 	bd_data         *bdb;
-	HANDLE			 h_mem;
-	UNICODE_STRING   u_name;
-	OBJECT_ATTRIBUTES obj_a;
-	NTSTATUS         status;
-	PVOID			 p_mem = NULL;
-	SIZE_T			 u_size = PAGE_SIZE;
+	u8              *page;
 	u64				 base = 0;
 	SIZE_T           offset = 0;
 	void            *mem;
@@ -204,30 +291,38 @@ int dc_try_load_bdb(PHYSICAL_ADDRESS addr)
 	u32              i;
 	u8              *pass_ptr;
 
-	RtlInitUnicodeString(&u_name, L"\\Device\\PhysicalMemory");
-	InitializeObjectAttributes(&obj_a, &u_name, OBJ_CASE_INSENSITIVE | OBJ_KERNEL_HANDLE, (HANDLE)NULL, (PSECURITY_DESCRIPTOR)NULL);
-	if (NT_SUCCESS(status = ZwOpenSection(&h_mem, SECTION_ALL_ACCESS, &obj_a)))
+	/* the probed page, plus room for a block found near its end (its fields past the page then
+	   read as zero); secure memory: it holds the boot password when the block is there */
+	if ((page = mm_secure_alloc(PAGE_SIZE + sizeof(bd_data))) == NULL) {
+		return ST_NOMEM;
+	}
+
+	if (dc_read_phys_page(addr, page))
 	{
-		if (NT_SUCCESS(status = ZwMapViewOfSection(h_mem, NtCurrentProcess(), &p_mem, 0L, u_size, &addr, &u_size, ViewShare, 0, PAGE_READWRITE)))
-		{
-			__try 
+			__try
 			{
-				if (bdb = find_8b((u8*)p_mem, PAGE_SIZE - offsetof(bd_data, u.extra), BDB_SIGN1, BDB_SIGN2))
+				/* only a plausible block is mapped below (MmMapIoSpace of the loader's own
+				   memory, to read its key / password arrays and zero it) */
+				if ((bdb = find_8b(page, PAGE_SIZE - offsetof(bd_data, u.extra), BDB_SIGN1, BDB_SIGN2)) != NULL &&
+					dc_bdb_plausible(addr, bdb, page, &base))
 				{
 					/* set bootloader load flag */
-					dc_load_flags |= DST_BOOTLOADER;
+					InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_BOOTLOADER); /* also on the ARM64 retry at run time */
 
-					/* determine data block base address */
-					base = ((dc_load_flags & DST_UEFI_BOOT) && bdb->bd_base == 0) ? bdb->u.uefi.bd_base64 : (u64)bdb->bd_base;
-					offset = ((u8*)bdb - (u8*)p_mem);
+					offset = ((u8*)bdb - page);
 
 					//DbgMsg("boot data block found at %p\n", bdb);
 					DbgMsg("boot data block found at 0x%016I64X\n", addr.QuadPart);
 					DbgMsg("boot loader base 0x%016I64X size %d\n", base, bdb->bd_size);
 					//DbgMsg("boot extra %08x %08x\n", bdb->u.bios.old_int13, bdb->u.uefi.sign3);
 
-					password.size = bdb->password_size;
-					RtlCopyMemory(password.pass, bdb->password_data, password.size);
+					/* password_size comes from (untrusted) physical memory - copy only a
+					 * length that fits password.pass; otherwise leave size 0 so no main
+					 * password is cached (dc_cache_password skips size 0) */
+					if (bdb->password_size > 0 && bdb->password_size <= (int)sizeof(password.pass)) {
+						password.size = bdb->password_size;
+						RtlCopyMemory(password.pass, bdb->password_data, password.size);
+					}
 					if (bdb->u.bios.old_int13 != 0)
 						dc_restore_ints(bdb);
 					else if (bdb->u.uefi.sign3 == BDB_SIGN3) 
@@ -266,16 +361,22 @@ int dc_try_load_bdb(PHYSICAL_ADDRESS addr)
 							/* validate bounds before accessing passwords */
 							if (bdb->u.uefi.pass_size > 0 && bdb->u.uefi.pass_count > 0 &&
 							    offset + bdb->u.uefi.pass_offset + (u64)bdb->u.uefi.pass_count * bdb->u.uefi.pass_size <= bdb->bd_size) {
-								memset(&password, 0, sizeof(password));
 								pass_ptr = ((u8*)mem) + offset + bdb->u.uefi.pass_offset;
 								for(i = 0; i < bdb->u.uefi.pass_count; i++) {
+									/* start each entry clean (a short pass_size must not
+									 * inherit the previous entry's fields) and cache only entries
+									 * whose size fits pass[] - the cache feeds size straight into
+									 * the KDF and memcmp */
+									memset(&password, 0, sizeof(password));
 									memcpy(&password, pass_ptr + i * bdb->u.uefi.pass_size, min(sizeof(password), bdb->u.uefi.pass_size));
-									dc_cache_password(&password);
+									if (password.size > 0 && password.size <= (int)sizeof(password.pass)) {
+										dc_cache_password(&password);
+									}
 								}
 							}
 						}
 
-						MmUnmapIoSpace(mem, bdb->bd_size);
+						MmUnmapIoSpace(mem, ROUND_TO_PAGES(bdb->bd_size)); /* the length it was mapped with */
 					}
 
 					/* save bootloader size */
@@ -290,14 +391,10 @@ int dc_try_load_bdb(PHYSICAL_ADDRESS addr)
 			__except (EXCEPTION_EXECUTE_HANDLER) {
 				DbgMsg("exception while accessing physical memory: 0x%08X\n", GetExceptionCode());
 			}
-
-			ZwUnmapViewOfSection(NtCurrentProcess(), &p_mem);
-		}
-
-		ZwClose(h_mem);
 	}
 
 	burn(&password, sizeof(password));
+	mm_secure_free(page);
 
 	return ret;
 }
@@ -344,9 +441,55 @@ BOOLEAN dc_efi_init()
 	return TRUE;
 }
 
+/* exported since NT 4 (declared here as in verify.c, ntifs.h does not declare it) */
+NTSYSCALLAPI NTSTATUS NTAPI ZwQuerySystemInformation(
+	_In_ ULONG SystemInformationClass,
+	_Out_writes_bytes_opt_(SystemInformationLength) PVOID SystemInformation,
+	_In_ ULONG SystemInformationLength,
+	_Out_opt_ PULONG ReturnLength);
+
+/* SystemBootEnvironmentInformation (Vista and later): Windows 7 returns { GUID; FIRMWARE_TYPE; },
+   Windows 8 and later append a ULONGLONG BootFlags, hence the larger buffer */
+#define DC_SYSTEM_BOOT_ENVIRONMENT_INFORMATION 90
+#define DC_FIRMWARE_TYPE_BIOS 1
+#define DC_FIRMWARE_TYPE_UEFI 2
+
+typedef struct _dc_boot_env_info {
+	GUID      boot_identifier;
+	ULONG     firmware_type;
+	ULONG     reserved;   /* alignment of boot_flags */
+	ULONGLONG boot_flags; /* Windows 8 and later */
+} dc_boot_env_info;
+
 BOOLEAN dc_efi_check()
 {
-	if (!pNtQuerySystemEnvironmentValueEx) 
+	/* ask the kernel for the firmware type first: the variable probe below expects
+	   STATUS_VARIABLE_NOT_FOUND on UEFI, which only Windows 8 and later return (Windows 7
+	   fails it with another status) */
+	{
+		dc_boot_env_info info;
+		ULONG            len = 0;
+		NTSTATUS         st;
+
+		RtlZeroMemory(&info, sizeof(info));
+		st = ZwQuerySystemInformation(DC_SYSTEM_BOOT_ENVIRONMENT_INFORMATION, &info, sizeof(info), &len);
+
+		DbgMsg("SystemBootEnvironmentInformation, status=%08x len=%u firmware_type=%u\n", st, len, info.firmware_type);
+
+		if (NT_SUCCESS(st) && len >= (ULONG)FIELD_OFFSET(dc_boot_env_info, reserved))
+		{
+			if (info.firmware_type == DC_FIRMWARE_TYPE_UEFI) {
+				InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_UEFI_BOOT);
+				return TRUE;
+			}
+			if (info.firmware_type == DC_FIRMWARE_TYPE_BIOS) {
+				return TRUE;
+			}
+		}
+	}
+
+	/* fallback (query failed or type unknown): the variable probe */
+	if (!pNtQuerySystemEnvironmentValueEx)
 		return FALSE;
 
 	UNICODE_STRING NameString;
@@ -363,7 +506,7 @@ BOOLEAN dc_efi_check()
 	DbgMsg("NtQuerySystemEnvironmentValueEx, status=%08x\n", status);
 
 	if(status == STATUS_VARIABLE_NOT_FOUND)
-		dc_load_flags |= DST_UEFI_BOOT;
+		InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_UEFI_BOOT);
 	return TRUE;
 }
 
@@ -420,7 +563,7 @@ int dc_get_uefi_boot_pass()
 		// on ASUS VivoBook with a Qualcomm Snapdragon X Elite we fail here something needs more init
 		// if that happens set up a retry
 		if (status == STATUS_NOT_SUPPORTED) {
-			dc_load_flags |= DST_UEFI_RETRY;
+			InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_UEFI_RETRY);
 		}
 #endif
 		return ST_ERROR;
@@ -448,7 +591,7 @@ void dc_get_boot_pass()
 #ifndef _M_ARM64
 	dc_efi_check();
 #else // ARM64 always boots via UEFI
-	dc_load_flags |= DST_UEFI_BOOT;
+	InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_UEFI_BOOT);
 #endif
 
 	DbgMsg("dc_get_boot_pass uefi_boot=%d\n", (dc_load_flags & DST_UEFI_BOOT) ? 1 : 0);

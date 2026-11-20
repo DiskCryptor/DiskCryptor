@@ -29,6 +29,7 @@
 #include <ata.h>
 #include "defines.h"
 #include "devhook.h"
+#include "driver.h"
 #include "disk_info.h"
 #include "misc.h"
 #include "device_io.h"
@@ -86,29 +87,35 @@ static BOOLEAN dc_is_this_ssd(dev_hook *hook)
 	return FALSE;
 }
 
-NTSTATUS dc_fill_device_info(dev_hook *hook)
+/*
+ * A mount / encryption / format start records the medium it works on, right after its
+ * dc_fill_device_info (which read the media change count): DC-internal writes are refused
+ * once the device reports another count and the identity test fails (io_check_media).
+ * Called with busy_lock held, before F_ENABLED. Not part of dc_fill_device_info: the mount
+ * probe calls that without busy_lock and would reset the identity of a concurrent mount.
+ * The identity (header salt) is set by the mount from its header, or by the first DC write
+ * at 0; until then a changed count refuses.
+ */
+void dc_media_baseline(dev_hook *hook)
+{
+	if (hook->flags & F_REMOVABLE) {
+		hook->mnt_chg_count = hook->chg_count;
+		io_id_reset(hook);
+	}
+}
+
+/*
+ * The device length (and sector size) exactly as dc_fill_device_info determines it, without
+ * writing the hook. dc_update_volume compares the new size with this: a different query
+ * (IOCTL_DISK_GET_LENGTH_INFO) could still report the old size and skip a real relocation.
+ */
+NTSTATUS dc_query_dev_length(dev_hook *hook, ULONGLONG *length, ULONG *bps)
 {
 	DISK_GEOMETRY_EX dgx;
 	DISK_GEOMETRY    dg;
-	ULONGLONG        dev_length;
-	NTSTATUS         status;
-	
-	if (hook->pnp_state != Started) {
-		DbgMsg("device not started, dev=%ws, pnp_state=%d\n", hook->dev_name, hook->pnp_state);
-		return STATUS_INVALID_DEVICE_STATE;
-	}
+	ULONGLONG        dev_length = 0;
+	NTSTATUS         status = STATUS_UNSUCCESSFUL;
 
-	// check media in removable device
-	if (hook->flags & F_REMOVABLE)
-	{
-		if ( !NT_SUCCESS(status = io_device_control(hook->orig_dev,
-			                                        IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, &hook->chg_count, sizeof(hook->chg_count))) )
-		{
-			DbgMsg("removable device has no media, dev=%ws, status=%0.8x\n", hook->dev_name, status);
-			return status;
-		}
-	}
-	
 	// get device length in bytes
 	if (hook->flags & F_CDROM)
 	{
@@ -138,6 +145,64 @@ NTSTATUS dc_fill_device_info(dev_hook *hook)
 			status = STATUS_SUCCESS;
 		}
 	}
+	if (NT_SUCCESS(status)) {
+		*length = dev_length;
+		if (bps != NULL) *bps = dg.BytesPerSector;
+	}
+	return status;
+}
+
+#ifdef DC_MBR_LEGACY_GUARD
+/*
+ * DC_MBR_LEGACY_GUARD (driver.h): is this a volume the legacy BIOS loader reads before
+ * Windows runs? Not on a UEFI boot. Otherwise the boot volume, the system volume and -
+ * because DO_SYSTEM_SYSTEM_PARTITION is not guaranteed - the active partition of an MBR disk.
+ */
+BOOLEAN dc_mbr_boot_volume(dev_hook *hook)
+{
+	PARTITION_INFORMATION_EX ptix;
+
+	if (dc_load_flags & DST_UEFI_BOOT) {
+		return FALSE;
+	}
+	if ( (hook->flags & F_SYSTEM) ||
+		 (hook->pdo_dev != NULL && (hook->pdo_dev->Flags & (DO_SYSTEM_BOOT_PARTITION | DO_SYSTEM_SYSTEM_PARTITION))) ) {
+		return TRUE;
+	}
+	/* not removable media: an active flag on a USB stick does not make it the BIOS boot volume */
+	if ( !(hook->flags & F_REMOVABLE) &&
+		 NT_SUCCESS(io_device_control(hook->orig_dev, IOCTL_DISK_GET_PARTITION_INFO_EX, NULL, 0, &ptix, sizeof(ptix))) &&
+		 ptix.PartitionStyle == PARTITION_STYLE_MBR && ptix.Mbr.BootIndicator )
+	{
+		return TRUE;
+	}
+	return FALSE;
+}
+#endif
+
+NTSTATUS dc_fill_device_info(dev_hook *hook)
+{
+	ULONGLONG        dev_length;
+	ULONG            dev_bps;
+	NTSTATUS         status;
+	
+	if (hook->pnp_state != Started) {
+		DbgMsg("device not started, dev=%ws, pnp_state=%d\n", hook->dev_name, hook->pnp_state);
+		return STATUS_INVALID_DEVICE_STATE;
+	}
+
+	// check media in removable device
+	if (hook->flags & F_REMOVABLE)
+	{
+		if ( !NT_SUCCESS(status = io_device_control(hook->orig_dev,
+			                                        IOCTL_STORAGE_CHECK_VERIFY, NULL, 0, &hook->chg_count, sizeof(hook->chg_count))) )
+		{
+			DbgMsg("removable device has no media, dev=%ws, status=%0.8x\n", hook->dev_name, status);
+			return status;
+		}
+	}
+	
+	status = dc_query_dev_length(hook, &dev_length, &dev_bps);
 	if ( !NT_SUCCESS(status) ) {
 		DbgMsg("cannot get drive size, dev=%ws, status=%0.8x\n", hook->dev_name, status);
 		return status;
@@ -146,11 +211,12 @@ NTSTATUS dc_fill_device_info(dev_hook *hook)
 	}
 
 	hook->dsk_size  = dev_length;
-	hook->bps       = dg.BytesPerSector;
+	hook->bps       = dev_bps;
 	hook->max_chunk = dc_get_device_mtl(hook);
 
 	if ( (hook->flags & (F_REMOVABLE | F_CDROM | F_SSD)) == 0 ) {
-		if ( dc_is_this_ssd(hook) ) hook->flags |= F_SSD;
+		/* interlocked: also called on mounted volumes, where hook->flags change concurrently */
+		if ( dc_is_this_ssd(hook) ) dc_hook_set_flags(hook, F_SSD);
 	}
 	return STATUS_SUCCESS;
 }

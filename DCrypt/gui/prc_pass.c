@@ -497,7 +497,9 @@ _password_change_dlg_proc(
 					if ( !info->pass || !info->new_pass )
 						return 1L;
 
-					info->pass->kdf = _get_combo_val(GetDlgItem(hwnd, IDC_COMBO_KDF_CURRENT), kdf_names);
+					/* the combo is filled from kdf_names_ex (with the search selectors): in kdf_names,
+					   "Standard..." / "Try all..." would be -1 (KDF_NONE, raw key) */
+					info->pass->kdf = _get_combo_val(GetDlgItem(hwnd, IDC_COMBO_KDF_CURRENT), kdf_names_ex);
 					info->new_pass->kdf = _get_combo_val(GetDlgItem(hwnd, IDC_COMBO_KDF_NEW), kdf_names);
 
 					info->clear_slots = _get_check(hwnd, IDC_CLEAR_KEY_SLOTS);
@@ -702,9 +704,24 @@ _password_dlg_proc(
 			}
 			ShowWindow(GetDlgItem(hwnd, IDC_CHECK_SKIP_UNUSED), (info->flags & PF_SHOW_SKIP_UNUSED) ? SW_SHOW : SW_HIDE);
 
+			/* power-loss protection - checksums by default, shown with skip unused (decrypt
+			 * start); v2 headers only (the driver ignores it for v1), so greyed for a v1 volume */
+			{
+				BOOL is_v1 = info->node && (info->node->mnt.info.status.flags & F_ENABLED)
+					&& info->node->mnt.info.status.crypt.version < DC_HDR_VERSION_2;
+				_init_combo(GetDlgItem(hwnd, IDC_COMBO_SAFE), safe_modes, SAFE_MODE_SUMS, FALSE, -1);
+				EnableWindow(GetDlgItem(hwnd, IDC_COMBO_SAFE), !is_v1);
+				EnableWindow(GetDlgItem(hwnd, IDC_STATIC_SAFE), !is_v1);
+			}
+			ShowWindow(GetDlgItem(hwnd, IDC_COMBO_SAFE), (info->flags & PF_SHOW_SKIP_UNUSED) ? SW_SHOW : SW_HIDE);
+			ShowWindow(GetDlgItem(hwnd, IDC_STATIC_SAFE), (info->flags & PF_SHOW_SKIP_UNUSED) ? SW_SHOW : SW_HIDE);
+
 			_sub_class(GetDlgItem(hwnd, IDC_CHECK_USE_BACKUP), SUB_STATIC_PROC, HWND_NULL);
-			_set_check(hwnd, IDC_CHECK_USE_BACKUP, FALSE);
+			/* pre-checked when the caller defaults to the backup header (unlock of a volume mounted from it) */
+			_set_check(hwnd, IDC_CHECK_USE_BACKUP, (info->flags & (PF_MOUNT_OPTIONS | PF_CAN_USE_BACKUP)) && info->use_backup);
 			ShowWindow(GetDlgItem(hwnd, IDC_CHECK_USE_BACKUP), (info->flags & (PF_MOUNT_OPTIONS | PF_CAN_USE_BACKUP)) ? SW_SHOW : SW_HIDE);
+			/* the caller uses the backup header regardless (e.g. the driver keeps it for an unlock) */
+			EnableWindow(GetDlgItem(hwnd, IDC_CHECK_USE_BACKUP), (info->flags & PF_BACKUP_FORCED) == 0);
 
 			/* Cache tag controls - shown only for cache password dialog */
 			ShowWindow(GetDlgItem(hwnd, IDC_STATIC_CACHE_TAG), (info->flags & PF_SHOW_CACHE_TAG) ? SW_SHOW : SW_HIDE);
@@ -735,7 +752,10 @@ _password_dlg_proc(
 				RECT rc_main;
 
 				GetWindowRect(hwnd, &rc_main);
-				enable = info->node && ( info->node->mnt.info.status.mnt_point[0] == L'\\' );
+				/* a mount point needs the volume GUID name (SetVolumeMountPoint): not for a volume
+				   listed by its device name (the Windows 7 EFI system partition, \\?\GLOBALROOT\...) */
+				enable = info->node && ( info->node->mnt.info.status.mnt_point[0] == L'\\' ) &&
+					( wcsncmp(info->node->mnt.info.w32_device, L"\\\\?\\Volume{", 11) == 0 );
 
 				EnableWindow( mnt_combo, enable );
 				EnableWindow( mnt_check, enable );
@@ -801,6 +821,7 @@ _password_dlg_proc(
 			{
 				return 1L;
 			}
+
 
 			if ( (HWND)wparam == GetDlgItem(hwnd, IDC_CHECK_MNT_SET) )
 			{
@@ -957,6 +978,8 @@ _password_dlg_proc(
 					info->mnt_ro = _get_check(hwnd, IDC_CHECK_RO_SET);
 					info->no_hiber = _get_check(hwnd, IDC_NO_HIBERNATION);
 					info->skip_unused = _get_check(hwnd, IDC_CHECK_SKIP_UNUSED);
+					info->safe_mode = IsWindowVisible(GetDlgItem(hwnd, IDC_COMBO_SAFE)) && IsWindowEnabled(GetDlgItem(hwnd, IDC_COMBO_SAFE)) ?
+						_get_combo_val(GetDlgItem(hwnd, IDC_COMBO_SAFE), safe_modes) : SAFE_MODE_NONE;
 					info->use_backup = _get_check(hwnd, IDC_CHECK_USE_BACKUP);
 
 					if (IsWindowEnabled(GetDlgItem(hwnd, IDC_COMBO_MNPOINT)) &&

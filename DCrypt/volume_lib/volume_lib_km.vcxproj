@@ -104,6 +104,7 @@
     <!-- moved out of the driver -->
     <ClCompile Include="crypto_head.c" />
     <ClCompile Include="header_io.c" />
+    <ClCompile Include="journal.c" />
     <ClCompile Include="volume_head.c" />
     <!-- added for the user-mode and EFI consumers -->
     <ClCompile Include="head_util.c" />
@@ -114,6 +115,7 @@
     <ClInclude Include="dc_internal.h" />
     <ClInclude Include="crypto_head.h" />
     <ClInclude Include="header_io.h" />
+    <ClInclude Include="journal.h" />
     <ClInclude Include="volume_head.h" />
     <ClInclude Include="head_util.h" />
     <ClInclude Include="keyfile_mix.h" />

@@ -296,19 +296,23 @@ EfiExecEx(
 {
    EFI_STATUS                  Status;
    EFI_DEVICE_PATH*            DevicePath;
-   EFI_HANDLE                  ImageHandle;
+   EFI_HANDLE                  ImageHandle = NULL;
    EFI_LOADED_IMAGE_PROTOCOL   *LoadedImage;
-   UINTN                       ExitDataSize;
-   CHAR16                      *ExitData;
+   UINTN                       ExitDataSize = 0;
+   CHAR16                      *ExitData = NULL;
 
    if (deviceHandle == NULL) {
       deviceHandle = gFileRootHandle;
    }
    if (!path || !deviceHandle) return EFI_INVALID_PARAMETER;
    DevicePath = FileDevicePath(deviceHandle, path);
+   if (DevicePath == NULL) return EFI_OUT_OF_RESOURCES;
 
    Status = gBS->LoadImage(FALSE, gImageHandle, DevicePath, NULL, 0, &ImageHandle);
+   FreePool(DevicePath);
    if (EFI_ERROR(Status)) {
+      // e.g. EFI_SECURITY_VIOLATION still returns a handle that must be unloaded
+      if (ImageHandle != NULL) gBS->UnloadImage(ImageHandle);
       return Status;
    }
 
@@ -322,6 +326,7 @@ EfiExecEx(
    }
 
    Status = gBS->StartImage(ImageHandle, &ExitDataSize, &ExitData);
+   if (ExitData != NULL) FreePool(ExitData);
 
    return Status;
 }
@@ -510,6 +515,7 @@ GetSystemUuid (
 //////////////////////////////////////////////////////////////////////////
 
 EFI_GUID gEfiDcsLdrProtocolGuid = EFI_DCS_LDR_PROTOCOL_GUID;
+EFI_GUID gEfiDcsLdrAuthProtocolGuid = EFI_DCS_LDR_AUTH_PROTOCOL_GUID;
 EFI_DCS_LDR_PROTOCOL* gDcsLdr = NULL;
 
 /* InitDcsLdr */
@@ -557,6 +563,21 @@ DcsLdrSetMokSBState(
     return gDcsLdr->SetMokSBState(gDcsLdr, MokSBState);
 }
 
+/* DcsLdrConfirmUser - the user entered credentials in this boot (an interactive
+   unlock); lets DcsLdr allow the Secure Boot enforcement override. EFI_NOT_FOUND: a DcsLdr
+   without it, the override stays refused. */
+EFI_STATUS
+DcsLdrConfirmUser(
+    VOID
+    )
+{
+    EFI_DCS_LDR_AUTH_PROTOCOL* auth = NULL;
+    if (EFI_ERROR(gBS->LocateProtocol(&gEfiDcsLdrAuthProtocolGuid, NULL, (VOID**)&auth)) || auth == NULL) {
+        return EFI_NOT_FOUND;
+    }
+    return auth->ConfirmUser(auth);
+}
+
 /* DcsLdrGetCertState */
 EFI_STATUS
 DcsLdrGetCertState(
@@ -589,8 +610,8 @@ IsSecureBootEnabled(
     Status = GetEfiVar(L"SecureBoot", &gEfiGlobalVariableGuid, (VOID**)&SecureBoot, &Size, &Attr);
     if (!EFI_ERROR(Status) && SecureBoot != NULL && Size == sizeof(UINT8)) {
         Enabled = (*SecureBoot == 1);
-        MEM_FREE(SecureBoot);
     }
+    MEM_FREE(SecureBoot);
 
     // check if shim has disabled all verification
     UINT8 sbState = 0;

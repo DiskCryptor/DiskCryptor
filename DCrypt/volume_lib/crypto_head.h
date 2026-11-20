@@ -18,6 +18,8 @@
 int argon2_mk_params(int kdf, u32* memory_cost, u32* time_cost, u32* parallelism);
 int dc_derive_key(dc_pass* password, int kdf, u8* salt, u8* dk, ULONG *interrupt_cmd);
 int cp_try_decrypt_header(u8* dk, int alg, xts_key* hdr_key, dc_header* header);
+/* damaged != NULL (*damaged = 0 on entry): a damaged header is returned too, *damaged = 1 */
+int cp_try_decrypt_header_ex(u8* dk, int alg, xts_key* hdr_key, dc_header* header, int *damaged);
 int cp_get_key_slot_size(int type);
 int cp_swap_slot_key(u8* slot, u8* old_dk, u8* new_dk, int type);
 int cp_wrap_header_key(u8* slot, u8* sk, u8* dk, int type);
@@ -29,6 +31,13 @@ int cp_get_min_header_len(dc_pass *password);
  * and not pay for the KDF twice on the same volume.
  */
 int cp_decrypt_header(xts_key *hdr_key, dc_header *header, int hdr_len, dc_pass *password, int* out_kdf, u8 *out_dk, int *out_slot, ULONG *interrupt_cmd);
+/*
+ * As cp_decrypt_header; with damaged != NULL (*damaged = 0 on entry) a header whose
+ * signature decrypts but which does not validate (is_volume_header_damaged) is returned too,
+ * with *damaged = 1 - only for a caller that repairs it or knowingly accepts it. A valid header
+ * is always preferred. damaged == NULL: exactly cp_decrypt_header.
+ */
+int cp_decrypt_header_ex(xts_key *hdr_key, dc_header *header, int hdr_len, dc_pass *password, int* out_kdf, u8 *out_dk, int *out_slot, int *damaged, ULONG *interrupt_cmd);
 int cp_set_header_key(xts_key *hdr_key, u8 salt[HEADER_SALT_SIZE], int cipher, dc_pass *password, ULONG *interrupt_cmd);
 int cp_copy_keylots(dc_header *header, u8 *in_buff, u8 *out_buff);
 

@@ -203,6 +203,10 @@ static void menu_0_2(ldr_config *conf)
 			action = L"load boot disk";
 		}
 
+		if (conf->error_type & LDR_ET_CUSTOM) {
+			action = L"custom (set in DcsProp)"; // EFI loader: kept unless another action is picked
+		}
+
 		for (i = 0, j = 0; i < sizeof(conf->err_msg); i++) {
 			if (conf->err_msg[i] != '\n') {
 				inv_msg[j++] = conf->err_msg[i];

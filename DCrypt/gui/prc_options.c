@@ -132,6 +132,23 @@ static LRESULT CALLBACK _cert_edit_proc(HWND hwnd, UINT msg, WPARAM wParam, LPAR
 	return CallWindowProc(g_cert_edit_orig_proc, hwnd, msg, wParam, lParam);
 }
 
+/* the system volume is not (fully) encrypted - "deny unencrypted HDDs" is not allowed then
+   (the rule of the main menu, prc_main.c WM_INITMENUPOPUP) */
+static BOOL _sys_volume_unencrypted(void)
+{
+	vol_inf info;
+
+	if ( dc_first_volume(&info) == ST_OK )
+	{
+		do {
+			if ( info.status.flags & F_SYSTEM ) {
+				return IS_BLOCK_UNENC_HDDS_DISABLED(info.status.flags);
+			}
+		} while ( dc_next_volume(&info) == ST_OK );
+	}
+	return TRUE;
+}
+
 INT_PTR
 CALLBACK
 _options_dlg_proc(
@@ -158,7 +175,8 @@ _options_dlg_proc(
 		{ STR_NULL, IDC_HARD_CRYPTO_SUPPORT,	CONF_HW_CRYPTO		},
 		{ STR_NULL, IDC_HIDE_FILES,				CONF_HIDE_DCSYS		},
 		{ STR_NULL, IDC_DISABLE_TRIM,			CONF_DISABLE_TRIM	},
-		{ STR_NULL, IDC_SSD_OPTIMIZATION,		CONF_ENABLE_SSD_OPT	}
+		{ STR_NULL, IDC_SSD_OPTIMIZATION,		CONF_ENABLE_SSD_OPT	},
+		{ STR_NULL, IDC_HIBER_LOCK,				CONF_HIBER_LOCK		}
 	};
 
 	_ctl_init static_head_general[ ] = 
@@ -433,7 +451,39 @@ _options_dlg_proc(
 						{
 							autorun_set(_flags & CONF_AUTO_START);
 						}
-						__config.conf_flags = _flags;
+						/* CONF_HIBER_LOCK: only the keys are protected - say what is not */
+						if ( (_flags & CONF_HIBER_LOCK) && !(__config.conf_flags & CONF_HIBER_LOCK) )
+						{
+							if ( MessageBox( hwnd,
+								L"Allow hibernation while the system volume is not encrypted?\n\n"
+								L"At hibernation DiskCryptor locks the mounted encrypted volumes: their keys are "
+								L"erased and do not reach the hibernation file. After the resume each volume must "
+								L"be unlocked with its password (cached passwords are wiped too).\n\n"
+								L"NOT protected: file contents and file system data of these volumes that Windows "
+								L"holds in memory are written to the unencrypted hibernation file on the system "
+								L"volume, readable by anyone with access to the disk.\n\n"
+								L"Fast Startup and hybrid sleep are hibernation too: the volumes are locked after "
+								L"such a shutdown or sleep. Programs with files open on a locked volume get errors "
+								L"until it is unlocked. A volume that cannot be locked (e.g. with a paging file) "
+								L"still prevents hibernation.",
+								L"Allow hibernation", MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2 ) != IDYES )
+							{
+								_flags &= ~CONF_HIBER_LOCK;
+							}
+						}
+						/* only the flags of this dialog's checkboxes: the others are set from the
+						   main menu and must be kept. A "deny unencrypted HDDs" left in the registry
+						   after the system volume was decrypted (the driver clears it in memory
+						   only) must not come back: it would block the system volume. */
+						{
+							DWORD dlg_mask = 0;
+							for ( k = 0; k < countof(ctl_chk_general); k++ ) dlg_mask |= ctl_chk_general[k].val;
+							for ( k = 0; k < countof(ctl_chk_extended); k++ ) dlg_mask |= ctl_chk_extended[k].val;
+							__config.conf_flags = (__config.conf_flags & ~dlg_mask) | _flags;
+							if ( _sys_volume_unencrypted() ) {
+								__config.conf_flags &= ~CONF_BLOCK_UNENC_HDDS;
+							}
+						}
 						memcpy(&__config.hotkeys, &_hotkeys, sizeof(DWORD)*HOTKEYS);
 
 						dc_save_config(&__config);

@@ -1,6 +1,10 @@
 #ifndef _ENC_DEC_
 #define _ENC_DEC_
 
+/* block size of an encryption with wipe passes: each pass rewrites the locked block (Gutmann: 35
+   times), so a short block keeps the I/O waiting for it short. Also the session's wipe buffer size. */
+#define DC_WIPE_BLOCK      (1280 * 1024)
+
 #define SYNC_STEP_UPDATE   0
 #define SYNC_STEP_FINISH   1
 #define SYNC_STEP_INIT     2
@@ -18,9 +22,16 @@ int  dc_transcrypt_init(dev_hook *hook, u32 type);
 int  dc_encrypt_step(wchar_t *dev_name);
 int  dc_decrypt_step(wchar_t *dev_name);
 int  dc_sync_step(wchar_t *dev_name);
-void dc_save_enc_state(dev_hook *hook, u32 step);
+int  dc_save_enc_state(dev_hook *hook, u32 step); /* ST_OK or the header write error */
 void dc_wait_for_transcrypt(dev_hook *hook);
+/* hold the step slot (busy_lock held, PASSIVE_LEVEL): no step runs until released */
+void dc_acquire_step_slot(dev_hook *hook);
+void dc_release_step_slot(dev_hook *hook);
 void dc_transcrypt_cleanup(dev_hook *hook);
+/* undo a session whose initial header is not on disk, when it ends (unmount / lock) */
+int  dc_init_pending_undo(dev_hook *hook);
+/* FF_SAFE_FAST: complete the pending block of the journal recovery (step slot held) */
+int  dc_safe_resolve_pending(dev_hook *hook);
 #else
 /* Sync thread functions */
 int  dc_enable_sync_mode(dev_hook *hook, int type);

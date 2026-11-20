@@ -692,8 +692,19 @@ BOOL_is_enabled_item(
 }
 
 
+BOOL _is_locked_item(
+		LPARAM lparam
+	)
+{
+	_dnode *info = pv(lparam);
+	return (
+		info && !info->is_root ? DC_IS_LOCKED(info->mnt.info.status.flags) : FALSE
+	);
+}
+
+
 BOOL _is_marked_item(
-		LPARAM lparam 
+		LPARAM lparam
 	)
 {
 	_dnode *info = pv(lparam);

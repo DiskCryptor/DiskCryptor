@@ -240,10 +240,32 @@ NTSTATUS mm_unlock_user_memory(HANDLE process_id, PVOID ptr)
 	return status;
 }
 
+/*
+ * Zero only the user-mode buffers locked by the driver (mm_lock_user_memory), at DumpStart
+ * when the image will not be encrypted. Called at HIGH_LEVEL there: no mutex (nothing else
+ * runs). The buffers stay locked and mapped; their owners see zeroed passwords afterwards.
+ */
+void mm_clean_usermode_memory()
+{
+	BOOLEAN     mutex_acquired = FALSE;
+	PLIST_ENTRY item;
+
+	if (KeGetCurrentIrql() <= APC_LEVEL) {
+		ExAcquireFastMutex(&g_usermode_memory_lock);
+		mutex_acquired = TRUE;
+	}
+	for (item = g_usermode_memory_list.Flink; item != &g_usermode_memory_list; item = item->Flink) {
+		PUSER_MEM_LOCK lock = CONTAINING_RECORD(item, USER_MEM_LOCK, entry);
+		RtlSecureZeroMemory(lock->map_ptr, lock->length);
+	}
+	if (mutex_acquired) {
+		ExReleaseFastMutex(&g_usermode_memory_lock);
+	}
+}
+
 void mm_clean_secure_memory()
 {
 	KLOCK_QUEUE_HANDLE lock_queue;
-	BOOLEAN            mutex_acquired = FALSE;
 	BOOLEAN            spinlock_acquired = FALSE;
 	PLIST_ENTRY        item;
 
@@ -261,17 +283,7 @@ void mm_clean_secure_memory()
 	}
 	
 	// clean locked usermode memory
-	if (KeGetCurrentIrql() <= APC_LEVEL) {
-		ExAcquireFastMutex(&g_usermode_memory_lock);
-		mutex_acquired = TRUE;
-	}
-	for (item = g_usermode_memory_list.Flink; item != &g_usermode_memory_list; item = item->Flink) {
-		PUSER_MEM_LOCK lock = CONTAINING_RECORD(item, USER_MEM_LOCK, entry);
-		RtlSecureZeroMemory(lock->map_ptr, lock->length);
-	}	
-	if (mutex_acquired) {
-		ExReleaseFastMutex(&g_usermode_memory_lock);
-	}
+	mm_clean_usermode_memory();
 
 	// Write Back and Invalidate CPU Caches
 	__wbinvd();

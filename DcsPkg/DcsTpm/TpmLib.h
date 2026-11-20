@@ -145,6 +145,12 @@ typedef BOOLEAN(*TPM_LIB_IS_OPEN)(
 	IN  UINT32    NvIndex              // NV index (0 = default)
 	);
 
+// The data index can be read with owner authorization alone (TPM 2.0 indices
+// sealed by older builds with TPMA_NV_OWNERREAD) - it has to be resealed. NULL for TPM 1.2.
+typedef BOOLEAN(*TPM_LIB_IS_OWNER_READABLE)(
+	IN  UINT32    NvIndex              // NV index (0 = default)
+	);
+
 //
 // SRK buffer-based sealing functions (caller handles file I/O)
 // These work with a buffer containing DC_TPM_SRK_FILE_HEADER + sealed data + info
@@ -232,6 +238,7 @@ typedef struct _TPM_LIB_PROTOCOL {
 	// password sealing
 	TPM_LIB_IS_CONFIGURED		NvIsConfigured;
 	TPM_LIB_IS_OPEN				NvIsOpen;
+	TPM_LIB_IS_OWNER_READABLE   NvIsOwnerReadable;
 	TPM_LIB_SEAL_PASSWORD       NvSealPassword;
 	TPM_LIB_UNSEAL_PASSWORD     NvUnsealPassword;
 	TPM_LIB_CLEAR_SECRET        NvClearSecret;

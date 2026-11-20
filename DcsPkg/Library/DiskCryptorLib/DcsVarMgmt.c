@@ -115,8 +115,18 @@ VarBuildFilePath(
 	IN  UINTN   PathBufSize
 )
 {
+	UINTN i;
+
 	UnicodeSPrint(PathBuf, PathBufSize * sizeof(CHAR16),
 		L"%s%s.bin", VAR_DUMP_DIR, VarName);
+
+	// Variable names are untrusted: keep them inside VAR_DUMP_DIR
+	for (i = StrLen(VAR_DUMP_DIR); i < PathBufSize && PathBuf[i] != L'\0'; i++) {
+		CHAR16 c = PathBuf[i];
+		if (c < L' ' || c == L'\\' || c == L'/' || c == L':' || c == L'*' ||
+			c == L'?' || c == L'"' || c == L'<' || c == L'>' || c == L'|')
+			PathBuf[i] = L'_';
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -132,7 +142,8 @@ VarCollectAll(
 {
 	EFI_STATUS    status;
 	UINTN         nameSize;
-	CHAR16        name[VAR_NAME_MAX];
+	CHAR16        *name;
+	UINTN         nameBufSize = VAR_NAME_MAX * sizeof(CHAR16);
 	EFI_GUID      guid;
 	EFI_VAR_ENTRY *list;
 	UINTN         count = 0;
@@ -142,25 +153,52 @@ VarCollectAll(
 	if (list == NULL)
 		return EFI_OUT_OF_RESOURCES;
 
+	name = MEM_ALLOC(nameBufSize);
+	if (name == NULL) {
+		MEM_FREE(list);
+		return EFI_OUT_OF_RESOURCES;
+	}
+
 	name[0] = L'\0';
 	ZeroMem(&guid, sizeof(guid));
 
 	for (;;) {
-		nameSize = VAR_NAME_MAX * sizeof(CHAR16);
+		nameSize = nameBufSize;
 		status = gST->RuntimeServices->GetNextVariableName(&nameSize, name, &guid);
+
+		// Grow the name buffer (keeping the previous name as input) and retry
+		if (status == EFI_BUFFER_TOO_SMALL && nameSize > nameBufSize) {
+			CHAR16 *newName = MEM_ALLOC(nameSize);
+			if (newName == NULL) {
+				MEM_FREE(name);
+				MEM_FREE(list);
+				return EFI_OUT_OF_RESOURCES;
+			}
+			CopyMem(newName, name, nameBufSize);
+			MEM_FREE(name);
+			name = newName;
+			nameBufSize = nameSize;
+			continue;
+		}
 
 		if (status == EFI_NOT_FOUND)
 			break;
 		if (EFI_ERROR(status)) {
+			MEM_FREE(name);
 			MEM_FREE(list);
 			return status;
 		}
+
+		// Skip names that do not fit an entry: a truncated name would address another variable
+		if (StrnLenS(name, nameBufSize / sizeof(CHAR16)) >= VAR_NAME_MAX)
+			continue;
 
 		// Grow array if needed
 		if (count >= capacity) {
 			UINTN newCap = capacity * 2;
 			EFI_VAR_ENTRY *newList = MEM_ALLOC(newCap * sizeof(EFI_VAR_ENTRY));
 			if (newList == NULL) {
+				MEM_FREE(name);
 				MEM_FREE(list);
 				return EFI_OUT_OF_RESOURCES;
 			}
@@ -202,6 +240,7 @@ VarCollectAll(
 		count++;
 	}
 
+	MEM_FREE(name);
 	*Entries = list;
 	*Count = count;
 	return EFI_SUCCESS;
@@ -459,6 +498,8 @@ HexEditorRun(
 	state.Capacity = origSize + 4096;
 	if (state.Capacity > HEX_EDITOR_MAX)
 		state.Capacity = HEX_EDITOR_MAX;
+	if (state.Capacity < origSize)
+		state.Capacity = origSize;	// never smaller than the data copied below
 	if (state.Capacity < 4096)
 		state.Capacity = 4096;
 
@@ -880,6 +921,21 @@ VarDoOverwrite(
 	CHAR16     path[512];
 	UINT8      *fileData = NULL;
 	UINT32     fileSize = 0;
+	UINT8      *curData = NULL;
+	UINTN      curSize = 0;
+	UINT32     attrs = 0;
+
+	// Use the current attributes; without BS/RT access SetVariable would delete the variable
+	status = VarReadData(Entry->Name, &Entry->Guid, &attrs, &curData, &curSize);
+	if (EFI_ERROR(status)) {
+		g_Con->PrintError(L"Failed to read variable: %r\n", status);
+		return;
+	}
+	MEM_FREE(curData);
+	if ((attrs & (EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS)) == 0) {
+		g_Con->PrintError(L"Variable has no access attributes, not overwriting\n");
+		return;
+	}
 
 	VarBuildFilePath(Entry->Name, path, 512);
 
@@ -898,11 +954,18 @@ VarDoOverwrite(
 		return;
 	}
 
+	// A zero-length write would delete the variable
+	if (fileSize == 0) {
+		MEM_FREE(fileData);
+		g_Con->PrintError(L"File is empty, not overwriting (use Erase to delete)\n");
+		return;
+	}
+
 	g_Con->Print(L"Writing %d bytes to variable '%s'... ", fileSize, Entry->Name);
 
 	status = gST->RuntimeServices->SetVariable(
 		Entry->Name, &Entry->Guid,
-		Entry->Attributes,
+		attrs,
 		(UINTN)fileSize, fileData);
 
 	MEM_FREE(fileData);
@@ -1076,7 +1139,13 @@ VarDoHexEdit(
 
 	status = HexEditorRun(&data, &dataSize, ReadOnly);
 
-	if (!EFI_ERROR(status) && !ReadOnly) {
+	if (!EFI_ERROR(status) && !ReadOnly && dataSize == 0) {
+		// A zero-length write would delete the variable
+		g_Con->Clear();
+		g_Con->PrintError(L"Variable data is empty, not written (use Erase to delete)\n");
+		g_Con->Print(L"\nPress any key to continue...\n");
+		g_Con->GetKey();
+	} else if (!EFI_ERROR(status) && !ReadOnly) {
 		// Write back
 		g_Con->Clear();
 		g_Con->Print(L"Writing %d bytes to variable '%s'... ", (UINT32)dataSize, Entry->Name);
@@ -1332,7 +1401,7 @@ DcShowEfiVariables(VOID)
 			g_Con->Print(L"Refreshing variable list...\n");
 			status = VarCollectAll(&entries, &count);
 			if (EFI_ERROR(status) || count == 0) {
-				if (count == 0) {
+				if (!EFI_ERROR(status)) {
 					g_Con->Print(L"No variables remaining.\n");
 					g_Con->Print(L"\nPress any key to continue...\n");
 					g_Con->GetKey();

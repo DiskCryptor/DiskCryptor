@@ -243,7 +243,7 @@ static int fill_memory_blocks_st(argon2_instance_t *instance) {
 static VOID EFIAPI fill_segment_thr(VOID *thread_data)
 {
     argon2_thread_data *my_data = thread_data;
-    fill_segment(my_data->instance_ptr, my_data->pos);
+    my_data->result = fill_segment(my_data->instance_ptr, my_data->pos);
 }
 #else
 #ifdef _WIN32
@@ -253,7 +253,7 @@ static void *fill_segment_thr(void *thread_data)
 #endif
 {
     argon2_thread_data *my_data = thread_data;
-    fill_segment(my_data->instance_ptr, my_data->pos);
+    my_data->result = fill_segment(my_data->instance_ptr, my_data->pos);
     argon2_thread_exit();
     return 0;
 }
@@ -304,6 +304,7 @@ static int fill_memory_blocks_mt(argon2_instance_t *instance) {
                 position.index = 0;
                 thr_data[l].instance_ptr =
                     instance; /* preparing the thread input */
+                thr_data[l].result = ARGON2_OK;
                 memcpy(&(thr_data[l].pos), &position,
                        sizeof(argon2_position_t));
                 if (argon2_thread_create(&thread[l], &fill_segment_thr,
@@ -324,6 +325,16 @@ static int fill_memory_blocks_mt(argon2_instance_t *instance) {
                  ++l) {
                 if (argon2_thread_join(thread[l])) {
                     rc = ARGON2_THREAD_FAIL;
+                    goto fail;
+                }
+            }
+
+            /* 4. Every lane of the slice is joined: a cancelled segment left
+             * its blocks unfilled, which would hash to a wrong key returned
+             * as ARGON2_OK */
+            for (l = 0; l < instance->lanes; ++l) {
+                if (thr_data[l].result != ARGON2_OK) {
+                    rc = thr_data[l].result;
                     goto fail;
                 }
             }

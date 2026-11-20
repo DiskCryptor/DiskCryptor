@@ -157,13 +157,59 @@ void dc_efi_init()
 	enable_privilege(SE_SYSTEM_ENVIRONMENT_NAME);
 }
 
+/* The firmware type from SystemBootEnvironmentInformation (no privilege needed). Windows 8 and
+ * later append BootFlags to the Windows 7 layout, hence the larger buffer.
+ * Returns DC_FIRMWARE_TYPE_* or 0 (unknown / query failed). Resolved at run time: ntdll.h and
+ * winternl.h do not mix in this file. */
+#define DC_SYSTEM_BOOT_ENVIRONMENT_INFORMATION 90
+#define DC_FIRMWARE_TYPE_BIOS 1
+#define DC_FIRMWARE_TYPE_UEFI 2
+
+typedef LONG (WINAPI *PFN_NtQuerySystemInformation)(ULONG, PVOID, ULONG, PULONG);
+
+typedef struct _dc_boot_env_info {
+	GUID      boot_identifier;
+	ULONG     firmware_type;
+	ULONG     reserved;   /* alignment of boot_flags */
+	ULONGLONG boot_flags; /* Windows 8 and later */
+} dc_boot_env_info;
+
+static int dc_efi_firmware_type()
+{
+	PFN_NtQuerySystemInformation p_query;
+	dc_boot_env_info info;
+	ULONG            len = 0;
+
+	p_query = (PFN_NtQuerySystemInformation)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQuerySystemInformation");
+	if (p_query == NULL) return 0;
+
+	memset(&info, 0, sizeof(info));
+	if (p_query(DC_SYSTEM_BOOT_ENVIRONMENT_INFORMATION, &info, sizeof(info), &len) < 0) return 0;
+	if (len < (ULONG)FIELD_OFFSET(dc_boot_env_info, reserved)) return 0;
+
+	return (int)info.firmware_type;
+}
+
 int dc_efi_check()
 {
-	byte tempBuf[4];
-	GetFirmwareEnvironmentVariableW(L" ", L"{00000000-0000-0000-0000-000000000000}", tempBuf, sizeof(tempBuf));
-	DWORD error = GetLastError();
+	byte  tempBuf[4];
+	DWORD error;
+
+	/* ask the kernel first: the variable probe below is unreliable on Windows 7 */
+	switch (dc_efi_firmware_type())
+	{
+		case DC_FIRMWARE_TYPE_UEFI: return 1;
+		case DC_FIRMWARE_TYPE_BIOS: return 0;
+	}
+
+	/* fallback: on a legacy BIOS every firmware-variable call fails with ERROR_INVALID_FUNCTION;
+	   on UEFI this non-existing variable fails with another error */
+	if (GetFirmwareEnvironmentVariableW(L" ", L"{00000000-0000-0000-0000-000000000000}", tempBuf, sizeof(tempBuf)) != 0) {
+		return 1;
+	}
+	error = GetLastError();
 	assert(error != ERROR_PRIVILEGE_NOT_HELD); // forgot to call dc_efi_init first
-	return error == ERROR_ENVVAR_NOT_FOUND;
+	return error != ERROR_INVALID_FUNCTION && error != ERROR_PRIVILEGE_NOT_HELD;
 }
 
 int dc_efi_is_secureboot()
@@ -242,8 +288,9 @@ int dc_efi_get_os_disk(void)
 		return -1;
 	}
 
-	/* Convert to Win32 path */
-	swprintf_s(volume_path, MAX_PATH, L"\\\\?%s", &boot_dev[7]);
+	/* Convert to Win32 path: GLOBALROOT + the device name. Not \\?\HarddiskVolumeN - that needs a
+	   \GLOBAL?? link, which the Windows 7 EFI system partition may lack */
+	swprintf_s(volume_path, MAX_PATH, L"\\\\?\\GLOBALROOT%s", boot_dev);
 
 	/* Open volume and get device number */
 	hVolume = CreateFile(volume_path, 0,
@@ -744,6 +791,7 @@ int dc_make_efi_rec(const wchar_t *root, int format, int shim)
 
 		ldr_config conf;
 		dc_efi_config_init(&conf);
+		conf.tmo_action = LDR_TA_CUSTOM; // keep an ActionTimeout already in DcsProp (none: the DCS default, shutdown)
 		resl = dc_efi_config_by_partition(root, 1, &conf);
 		
 	} while (0);
@@ -1200,6 +1248,7 @@ int dc_set_efi_boot(int dsk_num, int esp_part, int replace_ms, int shim)
 
 		ldr_config conf;
 		dc_efi_config_init(&conf);
+		conf.tmo_action = LDR_TA_CUSTOM; // keep an ActionTimeout already in DcsProp (none: the DCS default, shutdown)
 		resl = dc_efi_config_by_partition(root, 1, &conf);
 		if (resl != ST_OK) break;
 
@@ -1537,6 +1586,17 @@ void dc_efi_config_store(STRING* newConfig, char* configContent, DWORD size, ldr
 	WriteConfigInteger(newConfig, configContent, "PasswordTimeout", conf->timeout); // s, 0 -> no timeout
 	//																 (conf->options & LDR_OP_EPS_TMO) // timeout enabled
 	//																 (conf->options & LDR_OP_TMO_STOP) // DCS always behaves this way
+
+	// Authentication timeout action		ConfigReadString("ActionTimeout", "Shutdown", ...) in DcsInt
+		// FailOnTimeout (below) takes the invalid password action instead
+		// LDR_TA_CUSTOM: a value set by hand, kept as it is by the "unmodified values" loop
+	switch (conf->tmo_action) {
+	case LDR_TA_SHUTDOWN: WriteConfigString(newConfig, configContent, "ActionTimeout", "Shutdown"); break;
+	case LDR_TA_HALT:     WriteConfigString(newConfig, configContent, "ActionTimeout", "Halt");     break;
+	case LDR_TA_REBOOT:   WriteConfigString(newConfig, configContent, "ActionTimeout", "Reboot");   break;
+	case LDR_TA_EXIT:     WriteConfigString(newConfig, configContent, "ActionTimeout", "Exit");     break;
+	case LDR_TA_CONTINUE: WriteConfigString(newConfig, configContent, "ActionTimeout", "Continue"); break;
+	}
 		
 	// Trying password message
 	WriteConfigString(newConfig, configContent, "AuthStartMsg", (conf->options & LDR_OP_AUTH_MSG) ? conf->ago_msg : "");
@@ -1560,19 +1620,23 @@ void dc_efi_config_store(STRING* newConfig, char* configContent, DWORD size, ldr
 		// Load Boot Disk MBR			"cancel"	EFI_DCS_USER_CANCELED
 		//								"shutdown"  EFI_DCS_SHUTDOWN_REQUESTED
 
-	if (conf->error_type & LDR_ET_REBOOT) 
-		WriteConfigString(newConfig, configContent, "ActionFailed", "Reboot");
-	else if (conf->error_type & LDR_ET_MBR_BOOT) 
-		WriteConfigString(newConfig, configContent, "ActionFailed", "Cancel");
-	else if (conf->error_type & LDR_ET_RETRY)
-		WriteConfigString(newConfig, configContent, "ActionFailed", "Exit");
-	else if (conf->error_type & LDR_ET_EXIT_TO_BIOS)
-		WriteConfigString(newConfig, configContent, "ActionFailed", "Exit");
-	else if((conf->error_type & 0x3E) == 0)
-		WriteConfigString(newConfig, configContent, "ActionFailed", "Halt");
+	// LDR_ET_CUSTOM: ActionFailed / AuthorizeRetry set by hand, kept as they are by the "unmodified values" loop
+	if ((conf->error_type & LDR_ET_CUSTOM) == 0)
+	{
+		if (conf->error_type & LDR_ET_REBOOT)
+			WriteConfigString(newConfig, configContent, "ActionFailed", "Reboot");
+		else if (conf->error_type & (LDR_ET_MBR_BOOT | LDR_ET_BOOT_ACTIVE))
+			WriteConfigString(newConfig, configContent, "ActionFailed", "Cancel");
+		else if (conf->error_type & LDR_ET_RETRY)
+			WriteConfigString(newConfig, configContent, "ActionFailed", "Exit");
+		else if (conf->error_type & LDR_ET_EXIT_TO_BIOS)
+			WriteConfigString(newConfig, configContent, "ActionFailed", "Exit");
+		else
+			WriteConfigString(newConfig, configContent, "ActionFailed", "Halt");
 
-	// Authentication Tries
-	WriteConfigInteger(newConfig, configContent, "AuthorizeRetry", (conf->error_type & LDR_ET_RETRY) ? 100 : 0);
+		// Authentication Tries: DCS retries without end on 0, so every action but retry gets a single attempt
+		WriteConfigInteger(newConfig, configContent, "AuthorizeRetry", (conf->error_type & LDR_ET_RETRY) ? 100 : 1);
+	}
 
 // Other
 
@@ -1737,6 +1801,21 @@ void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf, const
 		conf->options |= LDR_OP_TMO_STOP; // DCS always behaves this way
 	}
 
+	// Authentication timeout action: the plain actions only, anything else (exec, parameters) is kept as it is
+	ReadConfigString(configContent, "ActionTimeout", "Shutdown", buffer, sizeof(buffer));
+	if (_strcmpi(buffer, "Shutdown") == 0)
+		conf->tmo_action = LDR_TA_SHUTDOWN;
+	else if (_strcmpi(buffer, "Halt") == 0)
+		conf->tmo_action = LDR_TA_HALT;
+	else if (_strcmpi(buffer, "Reboot") == 0)
+		conf->tmo_action = LDR_TA_REBOOT;
+	else if (_strcmpi(buffer, "Exit") == 0)
+		conf->tmo_action = LDR_TA_EXIT;
+	else if (_strcmpi(buffer, "Continue") == 0)
+		conf->tmo_action = LDR_TA_CONTINUE;
+	else
+		conf->tmo_action = LDR_TA_CUSTOM;
+
 	// Trying password message
 	ReadConfigString(configContent, "AuthStartMsg", "Authorizing...", buffer, sizeof(buffer));
 	if (strlen(buffer) > 0) {
@@ -1772,21 +1851,27 @@ void dc_efi_config_load(char* configContent, DWORD size, ldr_config* conf, const
 		// Retry authentication			"exit"  &&  gDCryptAuthRetry > 0; else gDCryptAuthRetry == 0;
 		// Load Boot Disk				"cancel"	EFI_DCS_USER_CANCELED
 		//								"shutdown"  EFI_DCS_SHUTDOWN_REQUESTED
-	ReadConfigString(configContent, "ActionFailed", "exit", buffer, sizeof(buffer));
-	if (_strcmpi(buffer, "Reboot") == 0)
-		conf->error_type |= LDR_ET_REBOOT;
-	else if (_strcmpi(buffer, "Cancel") == 0)
-		conf->error_type |= LDR_ET_MBR_BOOT;
-	else if (_strcmpi(buffer, "Exit") == 0)
-		conf->error_type |= LDR_ET_EXIT_TO_BIOS;
-	//else if(_strcmpi(buffer, "Exit") == 0)
-	//	conf->error_type |= LDR_ET_RETRY;
-	//else if(_strcmpi(buffer, "Halt") == 0)
-	//	conf->error_type |= 0;
+	// Authentication Tries: the GUI writes 100 (retry) or 1 (the action at once); older versions wrote 0 for every
+	// action but retry, read as that action; anything else was set by hand
+	{
+		int retry = ReadConfigInteger(configContent, "AuthorizeRetry", INT_MIN); // INT_MIN: not set
 
-	// Authentication Tries
-	if (ReadConfigInteger(configContent, "AuthorizeRetry", 100)) {
-		conf->error_type |= LDR_ET_RETRY;
+		ReadConfigString(configContent, "ActionFailed", "Exit", buffer, sizeof(buffer));
+
+		if (retry == INT_MIN) // DCS default 0: retried without end, the action never runs
+			conf->error_type |= LDR_ET_RETRY;
+		else if (retry == 100 && _strcmpi(buffer, "Exit") == 0)
+			conf->error_type |= LDR_ET_RETRY;
+		else if (retry != 0 && retry != 1)
+			conf->error_type |= LDR_ET_CUSTOM;
+		else if (_strcmpi(buffer, "Reboot") == 0)
+			conf->error_type |= LDR_ET_REBOOT;
+		else if (_strcmpi(buffer, "Cancel") == 0)
+			conf->error_type |= LDR_ET_MBR_BOOT;
+		else if (_strcmpi(buffer, "Exit") == 0)
+			conf->error_type |= LDR_ET_EXIT_TO_BIOS;
+		else if (_strcmpi(buffer, "Halt") != 0)
+			conf->error_type |= LDR_ET_CUSTOM; // shutdown, continue, exec, parameters ...
 	}
 
 // Other
@@ -2053,6 +2138,7 @@ void dc_efi_config_init(ldr_config *conf)
 
 		KDF_DEFAULT,
 		KEYFILE_MIX_HASHED,
+		LDR_TA_SHUTDOWN, /* timeout action */
 
 		{ 0 } /*reserved*/
 	};
@@ -2247,6 +2333,7 @@ int dc_update_efi_boot_on_partition(const wchar_t *root)
 
 		ldr_config conf;
 		dc_efi_config_init(&conf);
+		conf.tmo_action = LDR_TA_CUSTOM; // keep an ActionTimeout already in DcsProp (none: the DCS default, shutdown)
 		resl = dc_efi_config_by_partition(root, 1, &conf);
 
 	} while (0);
@@ -2747,7 +2834,7 @@ int dc_get_dcs_root(wchar_t* root)
 	{
 		do
 		{
-			swprintf_s(root, MAX_PATH, L"\\\\?%s", &info.device[7]);
+			swprintf_s(root, MAX_PATH, L"\\\\?\\GLOBALROOT%s", info.device); /* see dc_efi_get_os_disk */
 			if (dc_is_dcs_on_partition(root))
 				return ST_OK;
 		} while (dc_next_volume(&info) == ST_OK);

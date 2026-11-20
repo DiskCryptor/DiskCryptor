@@ -2168,8 +2168,10 @@ static void _update_props_controls(HWND hwnd, keys_dlg_state* state)
 
     /* Version switching is only allowed if header size and storage area is standard (DC_AREA_SIZE) */
     /* For v2 headers with non-standard size, downgrade would require a layout change */
+    /* never to v1 with a backup header - v1 has no room for it (remove the backup first) */
     can_change_version = !is_v2 || (state->header->head_len == DC_AREA_SIZE &&
-                         (state->header->stor_len == DC_AREA_SIZE || (state->header->flags & VF_STORAGE_FILE)));
+                         (state->header->stor_len == DC_AREA_SIZE || (state->header->flags & VF_STORAGE_FILE)) &&
+                         !(state->header->flags & VF_BACKUP_HEADER));
     EnableWindow(GetDlgItem(hwnd, IDC_RADIO_V1), can_change_version);
     EnableWindow(GetDlgItem(hwnd, IDC_RADIO_V2), can_change_version);
 
@@ -2262,6 +2264,25 @@ static void _update_props_controls(HWND hwnd, keys_dlg_state* state)
     /* Unmount on hibernation checkbox */
     state->orig_no_hiber = (state->header->flags & VF_NO_HIBER) ? TRUE : FALSE;
     _set_check(hwnd, IDC_CHECK_NO_HIBER, state->orig_no_hiber);
+
+    /* the option cannot work on the system / hibernation / crash dump volume (the
+     * image is written onto that volume); the driver ignores and drops it there.
+     * Show it unchecked and disabled; if the header still carries it, mark the header
+     * base as modified so the next save clears it on disk. */
+    if (state->mode == MODE_VOLUME)
+    {
+        dc_status st;
+
+        if (dc_get_device_status(state->device, &st) == ST_OK &&
+            (st.flags & (F_SYSTEM | F_HIBERNATE | F_CRASHDUMP)))
+        {
+            _set_check(hwnd, IDC_CHECK_NO_HIBER, FALSE);
+            EnableWindow(GetDlgItem(hwnd, IDC_CHECK_NO_HIBER), FALSE);
+            if (state->orig_no_hiber) {
+                state->modified |= HF_UPDATE_BASE;
+            }
+        }
+    }
 }
 
 /*

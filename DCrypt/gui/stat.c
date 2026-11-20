@@ -320,7 +320,18 @@ void _update_info_table(
 
 			_list_set_item_text( __lists[HMAIN_INFO], 0, 1, node->mnt.info.w32_device );
 			_list_set_item_text( __lists[HMAIN_INFO], 1, 1, node->mnt.info.device );
-			_list_set_item_text( __lists[HMAIN_INFO], 2, 1, STR_NULL );
+			if ( DC_IS_LOCKED(node->mnt.info.status.flags) )
+			{
+				/* row 2 is a spacer, use it for the locked state */
+				_list_set_item_text( __lists[HMAIN_INFO], 2, 0, L"State" );
+				_list_set_item_text(
+					__lists[HMAIN_INFO], 2, 1, L"LOCKED (keys erased at hibernation) - unlock or unmount"
+					);
+			} else
+			{
+				_list_set_item_text( __lists[HMAIN_INFO], 2, 0, _info_table_items[2] );
+				_list_set_item_text( __lists[HMAIN_INFO], 2, 1, STR_NULL );
+			}
 
 			crypt_info = node->mnt.info.status.flags & F_ENABLED;
 
@@ -372,7 +383,7 @@ void _update_info_table(
 					}
 					if (node->mnt.info.status.flags & F_NO_HIBER) {
 						if (options[0]) wcscat_s(options, countof(options), L", ");
-						wcscat_s(options, countof(options), L"Unmount on hibernation");
+						wcscat_s(options, countof(options), L"Lock on hibernation");
 					}
 					_list_set_item_text( __lists[HMAIN_INFO], 6, 1, options[0] ? options : STR_EMPTY );
 				}
@@ -441,6 +452,7 @@ void _update_info_table(
 		{
 			_list_set_item_text( __lists[HMAIN_INFO], k, 1, STR_NULL );
 		}
+		_list_set_item_text( __lists[HMAIN_INFO], 2, 0, _info_table_items[2] );
 	}
 	if ( !idt_act_enb )
 	{

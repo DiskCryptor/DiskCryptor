@@ -83,25 +83,23 @@ InitConfigFromBootConfig(
 	IN DCS_BOOT_CONFIG *BootConfig
 	)
 {
-	if (BootConfig == NULL || BootConfig->Size < sizeof(DCS_BOOT_CONFIG)) {
+	// only a boot config of this build (the caller checked the block's size)
+	if (BootConfig == NULL || BootConfig->Magic != DCS_BOOT_CONFIG_MAGIC ||
+		BootConfig->Version != DCS_BOOT_CONFIG_VERSION || BootConfig->Size != sizeof(DCS_BOOT_CONFIG)) {
 		return FALSE;
 	}
 
 	// Store pointer to boot config for later updates
 	gDcsBootConfig = BootConfig;
 
-	// Use config buffer from caller (avoids re-reading file)
-	gConfigFileName = BootConfig->ConfigFileName;
+	// Use config buffer from caller (avoids re-reading file); the file is always CONFIG_FILE_PATH
+	gConfigFileName = CONFIG_FILE_PATH;
 	gConfigBuffer = BootConfig->ConfigBuffer;
 	gConfigBufferSize = BootConfig->ConfigBufferSize;
 
 	gExternMode = BootConfig->ExternMode;
 
-#ifdef DEBUG_BUILD
-	gConfigDebug = ConfigReadInt("VerboseDebug", 1) ? TRUE : FALSE;
-#else
-	gConfigDebug = ConfigReadInt("VerboseDebug", 0) ? TRUE : FALSE;
-#endif
+	gConfigDebug = ConfigReadInt("VerboseDebug", DCS_VERBOSE_DEBUG_DEFAULT) ? TRUE : FALSE;
 
 	return TRUE;
 }
@@ -194,17 +192,22 @@ BOOLEAN
 InitParams()
 {
 	EFI_STATUS res;
-	CHAR16*    cmd;
+	CHAR16*    cmd = NULL;
 	UINTN      cmdSize;
 	UINT32     cmdAttr;
 
 	res = EfiGetVar(L"DcsExecMode", NULL, &cmd, &cmdSize, &cmdAttr);
 	if (!EFI_ERROR(res)) {
 		EfiSetVar(L"DcsExecMode", NULL, NULL, 0, cmdAttr); // clear variable
-		if (StrStr(cmd, OPT_EXTERN_KEY) != NULL) {
+		// Only DcsRe's volatile BS-only variable counts; the OS can create NV/RT ones
+		if (cmd != NULL && cmdAttr == EFI_VARIABLE_BOOTSERVICE_ACCESS &&
+			cmdSize >= sizeof(CHAR16) && (cmdSize % sizeof(CHAR16)) == 0 &&
+			cmd[cmdSize / sizeof(CHAR16) - 1] == 0 &&
+			StrStr(cmd, OPT_EXTERN_KEY) != NULL) {
 			gExternMode = TRUE;
 		}
 	}
+	MEM_FREE(cmd);
 
 	return TRUE;
 }
@@ -259,14 +262,15 @@ CfgStrFree(
 	S->Size = 0;
 }
 
+// Append len bytes of Str (need not be NUL-terminated)
+STATIC
 EFI_STATUS
-CfgStrAppend(
+CfgStrAppendN(
 	CFG_STRING  *S,
-	CONST CHAR8 *Str
+	CONST CHAR8 *Str,
+	UINTN        len
 )
 {
-	UINTN len = AsciiStrLen(Str);
-
 	if (S->Len + len + 1 > S->Size) {
 		UINTN newSize = S->Size * 2;
 		CHAR8 *newStr;
@@ -281,9 +285,43 @@ CfgStrAppend(
 		S->Size = newSize;
 	}
 
-	CopyMem(S->Str + S->Len, Str, len + 1);
+	CopyMem(S->Str + S->Len, Str, len);
 	S->Len += len;
+	S->Str[S->Len] = '\0';
 	return EFI_SUCCESS;
+}
+
+EFI_STATUS
+CfgStrAppend(
+	CFG_STRING  *S,
+	CONST CHAR8 *Str
+)
+{
+	return CfgStrAppendN(S, Str, AsciiStrLen(Str));
+}
+
+// Element text with &, < and > encoded, as XmlGetNodeText decodes it
+STATIC
+EFI_STATUS
+CfgStrAppendQuoted(
+	CFG_STRING  *S,
+	CONST CHAR8 *Str
+)
+{
+	EFI_STATUS   Status;
+	CONST CHAR8 *Run = Str;
+	CONST CHAR8 *Ent;
+
+	for (; *Str != '\0'; Str++) {
+		Ent = (*Str == '&') ? "&amp;" : (*Str == '<') ? "&lt;" : (*Str == '>') ? "&gt;" : NULL;
+		if (Ent == NULL) continue;
+		Status = CfgStrAppendN(S, Run, (UINTN)(Str - Run));
+		if (EFI_ERROR(Status)) return Status;
+		Status = CfgStrAppend(S, Ent);
+		if (EFI_ERROR(Status)) return Status;
+		Run = Str + 1;
+	}
+	return CfgStrAppendN(S, Run, (UINTN)(Str - Run));
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -341,11 +379,116 @@ CfgWriteString(
 	Status = CfgStrAppend(S, "\">");
 	if (EFI_ERROR(Status)) return Status;
 
-	Status = CfgStrAppend(S, ConfigValue);
+	Status = CfgStrAppendQuoted(S, ConfigValue);   // encoded, read back as written
 	if (EFI_ERROR(Status)) return Status;
 
 	Status = CfgStrAppend(S, "</config>");
 	return Status;
+}
+
+/**
+  The config file as it is now, so a save builds on what another module saved in this boot.
+
+  @param[out] Content  NUL-terminated buffer (MEM_FREE); NULL if there was no config at boot and none now.
+  @retval other        A config existed at boot but cannot be read now - the save must not go ahead.
+**/
+EFI_STATUS
+CfgLoadCurrent(
+	OUT CHAR8  **Content
+)
+{
+	EFI_STATUS  res = EFI_NOT_FOUND;
+	VOID       *Buf = NULL;
+	UINTN       Size = 0;
+
+	*Content = NULL;
+	if (gConfigFileName != NULL) {
+		if (IsPxeBoot()) {
+			res = PxeDownloadFile(gConfigFileName, &Buf, &Size);
+		} else {
+			res = FileLoad(NULL, gConfigFileName, &Buf, &Size);
+		}
+	}
+	if (!EFI_ERROR(res) && Buf != NULL) {
+		*Content = MEM_ALLOC(Size + 1);
+		if (*Content != NULL) {
+			CopyMem(*Content, Buf, Size);
+			(*Content)[Size] = '\0';
+		}
+	}
+	if (Buf != NULL) {
+		MEM_FREE(Buf);
+	}
+	if (*Content != NULL) {
+		return EFI_SUCCESS;
+	}
+	if (gConfigBufferUpdated == NULL && gConfigBuffer == NULL) {
+		return EFI_SUCCESS;   // no config at boot, none readable now
+	}
+	return EFI_NOT_READY;
+}
+
+/**
+  Make the config as it is now this module's copy (as ConfigSave does), so a menu
+  shows what another module saved in this boot.
+**/
+EFI_STATUS
+CfgReloadCurrent(
+	VOID
+)
+{
+	CHAR8      *Content = NULL;
+	EFI_STATUS  Status = CfgLoadCurrent(&Content);
+
+	if (EFI_ERROR(Status) || Content == NULL) {
+		return EFI_ERROR(Status) ? Status : EFI_NOT_FOUND;   // the module keeps its copy
+	}
+	if (gConfigBufferUpdated != NULL) {
+		MEM_FREE(gConfigBufferUpdated);
+	}
+	gConfigBufferUpdated = Content;
+	gConfigBufferUpdatedSize = AsciiStrLen(Content);
+	return EFI_SUCCESS;
+}
+
+/**
+  Copy every <config> element of ConfigContent that CfgWrite* did not replace (those
+  are marked "<!onfig") byte for byte - nothing decoded and re-encoded, nothing too long to
+  drop. A malformed element (no end) fails the save instead of writing a damaged file.
+**/
+EFI_STATUS
+CfgCopyUnmarked(
+	CFG_STRING  *S,
+	CHAR8       *ConfigContent
+)
+{
+	EFI_STATUS  Status;
+	CHAR8      *Xml;
+	CHAR8      *Gt;
+	CHAR8      *End;
+
+	if (ConfigContent == NULL) return EFI_SUCCESS;
+
+	Xml = ConfigContent;
+	while ((Xml = XmlFindElement(Xml, "config")) != NULL) {
+		Gt = AsciiStrStr(Xml, ">");
+		if (Gt == NULL) return EFI_COMPROMISED_DATA;
+		if (Gt[-1] == '/') {
+			End = Gt + 1;                                  // <config key="..."/>
+		} else {
+			End = AsciiStrStr(Gt, "</config>");
+			if (End == NULL) return EFI_COMPROMISED_DATA;
+			End += sizeof("</config>") - 1;
+		}
+
+		Status = CfgStrAppend(S, "\n\t\t");
+		if (EFI_ERROR(Status)) return Status;
+		Status = CfgStrAppendN(S, Xml, (UINTN)(End - Xml));
+		if (EFI_ERROR(Status)) return Status;
+
+		Xml = End;
+	}
+	return EFI_SUCCESS;
 }
 
 EFI_STATUS

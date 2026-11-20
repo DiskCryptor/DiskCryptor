@@ -425,6 +425,7 @@ typedef struct _TOUCH_CONSOLE_DATA {
     // Text console buffer for status area
     CHAR16          *TextBuffer;
     UINT8           *AttrBuffer;
+    UINTN           TextBufferSize;     // chars allocated in TextBuffer/AttrBuffer
     INT32           TextCols;
     INT32           TextRows;
     INT32           CursorCol;
@@ -487,7 +488,6 @@ STATIC VOID TouchRebuildLayout(VOID);
 STATIC KEY_BUTTON* TouchHitTestKey(IN UINTN X, IN UINTN Y);
 STATIC VOID TouchConsoleRefresh(VOID);
 STATIC VOID TouchConsoleScroll(VOID);
-STATIC VOID TranslateKeyForLayout(IN OUT EFI_INPUT_KEY *Key);
 STATIC VOID TouchConsolePutChar(IN CHAR16 Ch, IN UINT8 Attr);
 STATIC VOID TouchConsolePrintInternal(IN CONST CHAR16 *Text, IN UINT8 Attr);
 STATIC EFI_INPUT_KEY TouchWaitForKey(VOID);
@@ -497,59 +497,6 @@ STATIC BOOLEAN TouchEnsureInitialized(VOID);
 // Keyboard Layout Translation for Physical Keyboard
 //////////////////////////////////////////////////////////////////////////
 
-/**
-  Translate a key press from the physical keyboard according to the
-  currently selected keyboard layout.
-
-  Physical keyboards typically report US QWERTY layout. This function
-  translates the key to match the selected layout (QWERTZ, AZERTY, etc.)
-**/
-STATIC
-VOID
-TranslateKeyForLayout(
-    IN OUT EFI_INPUT_KEY *Key
-    )
-{
-    CHAR16 ch = Key->UnicodeChar;
-
-    if (ch == 0) {
-        return;  // Non-character key, no translation needed
-    }
-
-    switch (gTouchData.CurrentLayout) {
-    case KB_MAP_QWERTZ:
-        // QWERTZ: Swap Y and Z
-        if (ch == 'y') { Key->UnicodeChar = 'z'; }
-        else if (ch == 'Y') { Key->UnicodeChar = 'Z'; }
-        else if (ch == 'z') { Key->UnicodeChar = 'y'; }
-        else if (ch == 'Z') { Key->UnicodeChar = 'Y'; }
-        break;
-
-    case KB_MAP_AZERTY:
-        // AZERTY: Multiple swaps
-        // Q <-> A
-        if (ch == 'q') { Key->UnicodeChar = 'a'; }
-        else if (ch == 'Q') { Key->UnicodeChar = 'A'; }
-        else if (ch == 'a') { Key->UnicodeChar = 'q'; }
-        else if (ch == 'A') { Key->UnicodeChar = 'Q'; }
-        // W <-> Z
-        else if (ch == 'w') { Key->UnicodeChar = 'z'; }
-        else if (ch == 'W') { Key->UnicodeChar = 'Z'; }
-        else if (ch == 'z') { Key->UnicodeChar = 'w'; }
-        else if (ch == 'Z') { Key->UnicodeChar = 'W'; }
-        // M in different position - swap with semicolon/comma area
-        else if (ch == ';') { Key->UnicodeChar = 'm'; }
-        else if (ch == ':') { Key->UnicodeChar = 'M'; }
-        else if (ch == 'm') { Key->UnicodeChar = ','; }
-        else if (ch == 'M') { Key->UnicodeChar = '?'; }
-        break;
-
-    case KB_MAP_QWERTY:
-    default:
-        // No translation needed for QWERTY
-        break;
-    }
-}
 
 //////////////////////////////////////////////////////////////////////////
 // Helper Functions
@@ -559,7 +506,8 @@ STATIC
 TOUCH_KEY**
 TouchGetLayout(VOID)
 {
-    switch (gTouchData.CurrentLayout) {
+    // the layout configured now (it can change in the F6 menu)
+    switch (gKeyboardLayout) {
     case KB_MAP_QWERTZ:
         return gQwertzLayout;
     case KB_MAP_AZERTY:
@@ -1021,6 +969,11 @@ TouchConsolePutChar(
     }
 
     if (Ch == L'\b') {
+        // Wrap back to the previous row so erase sequences clear wrapped text
+        if (gTouchData.CursorCol <= 0 && gTouchData.CursorRow > 0) {
+            gTouchData.CursorRow--;
+            gTouchData.CursorCol = gTouchData.TextCols;
+        }
         if (gTouchData.CursorCol > 0) {
             gTouchData.CursorCol--;
             INT32 idx = gTouchData.CursorRow * gTouchData.TextCols + gTouchData.CursorCol;
@@ -1099,6 +1052,36 @@ TouchDrawFullScreen(VOID)
 //////////////////////////////////////////////////////////////////////////
 
 /**
+  Map an absolute pointer state to screen coordinates.
+  Returns FALSE if the device reports an empty coordinate range.
+**/
+STATIC
+BOOLEAN
+TouchGetScreenPos(
+    IN EFI_ABSOLUTE_POINTER_STATE *Aps,
+    OUT UINTN *X,
+    OUT UINTN *Y
+    )
+{
+    EFI_ABSOLUTE_POINTER_MODE *mode = gTouchPointer->Mode;
+    UINT64 cx, cy;
+
+    if (mode == NULL ||
+        mode->AbsoluteMaxX <= mode->AbsoluteMinX ||
+        mode->AbsoluteMaxY <= mode->AbsoluteMinY) {
+        return FALSE;
+    }
+
+    cx = MIN(MAX(Aps->CurrentX, mode->AbsoluteMinX), mode->AbsoluteMaxX);
+    cy = MIN(MAX(Aps->CurrentY, mode->AbsoluteMinY), mode->AbsoluteMaxY);
+    *X = (UINTN)((cx - mode->AbsoluteMinX) * gTouchData.ScreenWidth /
+        (mode->AbsoluteMaxX - mode->AbsoluteMinX));
+    *Y = (UINTN)((cy - mode->AbsoluteMinY) * gTouchData.ScreenHeight /
+        (mode->AbsoluteMaxY - mode->AbsoluteMinY));
+    return TRUE;
+}
+
+/**
   Wait for a key press from either physical keyboard or touch keyboard.
   Handles touch keyboard highlighting and returns the resulting key.
 **/
@@ -1151,9 +1134,9 @@ TouchWaitForKey(VOID)
     }
 
     // Check for already-pending keyboard input first (don't discard buffered keystrokes)
-    res = gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
+    // through the shared mapper (layout, AltGr, Caps Lock, dead keys)
+    res = KbReadKey(&key);
     if (!EFI_ERROR(res)) {
-        TranslateKeyForLayout(&key);
         gBS->CloseEvent(InputEvents[1]);
         return key;
     }
@@ -1165,10 +1148,8 @@ TouchWaitForKey(VOID)
 
         // Handle physical keyboard input
         if (EventIndex == 0) {
-            res = gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
+            res = KbReadKey(&key);   // mapped as on the text console
             if (!EFI_ERROR(res)) {
-                // Translate key according to selected keyboard layout
-                TranslateKeyForLayout(&key);
                 resultKey = key;
                 gotKey = TRUE;
                 break;
@@ -1178,13 +1159,10 @@ TouchWaitForKey(VOID)
         // Handle touch input
         BOOLEAN gotTouchState = FALSE;
         if (EventIndex == 2 && gTouchPointer != NULL) {
+            KbResetState();   // a physical dead key does not carry over to touch input
             res = gTouchPointer->GetState(gTouchPointer, &aps);
             if (!EFI_ERROR(res)) {
-                gotTouchState = TRUE;
-                curX = (UINTN)(aps.CurrentX * gTouchData.ScreenWidth /
-                    (gTouchPointer->Mode->AbsoluteMaxX - gTouchPointer->Mode->AbsoluteMinX));
-                curY = (UINTN)(aps.CurrentY * gTouchData.ScreenHeight /
-                    (gTouchPointer->Mode->AbsoluteMaxY - gTouchPointer->Mode->AbsoluteMinY));
+                gotTouchState = TouchGetScreenPos(&aps, &curX, &curY);
             }
         }
         // Poll touch on timer if we have highlighted elements
@@ -1192,11 +1170,7 @@ TouchWaitForKey(VOID)
                  (wasTouchActive || highlightedKey != NULL)) {
             res = gTouchPointer->GetState(gTouchPointer, &aps);
             if (!EFI_ERROR(res)) {
-                gotTouchState = TRUE;
-                curX = (UINTN)(aps.CurrentX * gTouchData.ScreenWidth /
-                    (gTouchPointer->Mode->AbsoluteMaxX - gTouchPointer->Mode->AbsoluteMinX));
-                curY = (UINTN)(aps.CurrentY * gTouchData.ScreenHeight /
-                    (gTouchPointer->Mode->AbsoluteMaxY - gTouchPointer->Mode->AbsoluteMinY));
+                gotTouchState = TouchGetScreenPos(&aps, &curX, &curY);
             } else if (highlightedKey != NULL) {
                 // Clear highlight on failed GetState
                 TouchDrawKey(highlightedKey, FALSE);
@@ -1450,11 +1424,19 @@ TouchEnsureInitialized(VOID)
 
     // Allocate text buffers
     bufferSize = (UINTN)(gTouchData.TextCols * gTouchData.TextRows);
-    if (bufferSize > 0 && gTouchData.TextBuffer == NULL) {
+    if (bufferSize > 0 && (gTouchData.TextBuffer == NULL || gTouchData.AttrBuffer == NULL)) {
+        MEM_FREE(gTouchData.TextBuffer);
+        MEM_FREE(gTouchData.AttrBuffer);
         gTouchData.TextBuffer = MEM_ALLOC(bufferSize * sizeof(CHAR16));
         gTouchData.AttrBuffer = MEM_ALLOC(bufferSize);
+        gTouchData.TextBufferSize = bufferSize;
 
         if (gTouchData.TextBuffer == NULL || gTouchData.AttrBuffer == NULL) {
+            MEM_FREE(gTouchData.TextBuffer);
+            MEM_FREE(gTouchData.AttrBuffer);
+            gTouchData.TextBuffer = NULL;
+            gTouchData.AttrBuffer = NULL;
+            gTouchData.TextBufferSize = 0;
             return FALSE;
         }
 
@@ -1483,14 +1465,18 @@ TouchEnsureInitialized(VOID)
 VOID
 TouchConsoleShutdown(VOID)
 {
+    // Text and pixel buffers may hold echoed password characters
     if (gTouchData.TextBuffer != NULL) {
+        MEM_BURN(gTouchData.TextBuffer, gTouchData.TextBufferSize * sizeof(CHAR16));
         MEM_FREE(gTouchData.TextBuffer);
         gTouchData.TextBuffer = NULL;
     }
     if (gTouchData.AttrBuffer != NULL) {
+        MEM_BURN(gTouchData.AttrBuffer, gTouchData.TextBufferSize);
         MEM_FREE(gTouchData.AttrBuffer);
         gTouchData.AttrBuffer = NULL;
     }
+    gTouchData.TextBufferSize = 0;
     if (gTouchData.KeyButtons != NULL) {
         MEM_FREE(gTouchData.KeyButtons);
         gTouchData.KeyButtons = NULL;
@@ -1498,6 +1484,8 @@ TouchConsoleShutdown(VOID)
     if (gTouchData.Screen != NULL) {
         // Clear screen before freeing
         ScreenFillRect(&gColorBlack, 0, 0, gTouchData.ScreenWidth, gTouchData.ScreenHeight);
+        MEM_BURN(gTouchData.Screen->Pixels,
+            (UINTN)gTouchData.Screen->Width * gTouchData.Screen->Height * sizeof(EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
         MEM_FREE(gTouchData.Screen);
         gTouchData.Screen = NULL;
     }
@@ -1518,60 +1506,70 @@ TouchConsoleGetPrivateData(VOID)
 // Public Interface - Output Functions
 //////////////////////////////////////////////////////////////////////////
 
-// Marker character for escaped color codes (ASCII SOH - won't appear in normal text)
-#define COLOR_MARKER 0x01
+// Colour codes of the format become marker + letter; formatted twice with two markers,
+// only where the results differ is a colour code (as EfiAttrPrint.c, ATTR_MARK_1)
+#define COLOR_MARKER_1 ((CHAR16)0xF8F0)
+#define COLOR_MARKER_2 ((CHAR16)0xF8F1)
 
 /**
-  Escape color codes (%N, %E, %H, %V, %O) before UnicodeVSPrint processes them.
-  Replaces %X with \x01X so UnicodeVSPrint doesn't consume the %.
+  Copy Input to Output (OutputSize bytes), replacing each colour code "%X" by Marker followed by X.
+  "%%" and any other "%." pair are copied whole (left to UnicodeVSPrint); a pair is never split; a
+  lone '%' at the end is dropped.
 **/
 STATIC
 VOID
 EscapeColorCodes(
     IN CONST CHAR16 *Input,
     OUT CHAR16 *Output,
-    IN UINTN OutputSize
+    IN UINTN OutputSize,
+    IN CHAR16 Marker
     )
 {
     UINTN outIdx = 0;
     UINTN maxIdx = OutputSize / sizeof(CHAR16) - 1;
 
-    while (*Input && outIdx < maxIdx) {
+    while (*Input) {
         if (*Input == L'%' && *(Input + 1)) {
             CHAR16 code = *(Input + 1);
-            if (code == L'N' || code == L'E' || code == L'H' || code == L'V' || code == L'O') {
-                // Replace % with marker
-                Output[outIdx++] = COLOR_MARKER;
-                Input++;  // Skip %, next iteration will copy the letter
-                continue;
+            if (outIdx + 2 > maxIdx) break;
+            if (code == L'N' || code == L'E' || code == L'H' || code == L'V' || code == L'O' || code == L'B') {
+                Output[outIdx++] = Marker;
+            } else {
+                Output[outIdx++] = L'%';
             }
+            Output[outIdx++] = code;
+            Input += 2;
+            continue;
         }
+        if (outIdx + 1 > maxIdx || *Input == L'%') break;
         Output[outIdx++] = *Input++;
     }
     Output[outIdx] = 0;
 }
 
 /**
-  Print with color code parsing.
-  Handles both escaped (marker+X) and original (%X) color codes:
+  Print Text (formatted with COLOR_MARKER_1) applying the colour codes: the positions where Other
+  (the same text formatted with COLOR_MARKER_2) differs.
   N (normal), E (error), H (highlight), V (value), O (orange/warning)
 **/
 STATIC
 VOID
 TouchConsolePrintWithColors(
-    IN CONST CHAR16 *Text
+    IN CONST CHAR16 *Text,
+    IN CONST CHAR16 *Other
     )
 {
     UINT8 currentAttr = ATTR_NORMAL;
     CONST CHAR16 *p = Text;
+    CONST CHAR16 *q = Other;
     CHAR16 segment[256];
     UINTN segIdx = 0;
 
-    if (Text == NULL) return;
+    if (Text == NULL || Other == NULL) return;
 
     while (*p) {
-        // Check for color code (both escaped marker and original %)
-        if ((*p == COLOR_MARKER || *p == L'%') && *(p + 1)) {
+        // A colour code from the format: the two formattings differ here
+        if (*p != *q && *(p + 1)) {
             CHAR16 code = *(p + 1);
             UINT8 newAttr = currentAttr;
             BOOLEAN isColorCode = TRUE;
@@ -1585,17 +1583,21 @@ TouchConsolePrintWithColors(
                 default: isColorCode = FALSE; break;
             }
 
-            if (isColorCode) {
-                // Flush current segment
-                if (segIdx > 0) {
-                    segment[segIdx] = 0;
-                    TouchConsolePrintInternal(segment, currentAttr);
-                    segIdx = 0;
-                }
-                currentAttr = newAttr;
-                p += 2;  // Skip marker/% + X
-                continue;
+            // Flush current segment
+            if (segIdx > 0) {
+                segment[segIdx] = 0;
+                TouchConsolePrintInternal(segment, currentAttr);
+                segIdx = 0;
             }
+            if (isColorCode) {
+                currentAttr = newAttr;
+            }
+            p += 2;  // Skip marker + X
+            q += 2;
+            continue;
+        }
+        if (*p != *q) {
+            break;   // a marker cut off at the end of the buffer
         }
 
         // Regular character
@@ -1603,6 +1605,7 @@ TouchConsolePrintWithColors(
             segment[segIdx++] = *p;
         }
         p++;
+        q++;
 
         // Flush if segment is full
         if (segIdx >= 255) {
@@ -1617,6 +1620,7 @@ TouchConsolePrintWithColors(
         segment[segIdx] = 0;
         TouchConsolePrintInternal(segment, currentAttr);
     }
+    MEM_BURN(segment, sizeof(segment));
 }
 
 VOID
@@ -1626,17 +1630,26 @@ TouchConsolePrint(
     )
 {
     VA_LIST Args;
+    VA_LIST Args2;
     CHAR16 EscapedFormat[1024];
+    CHAR16 EscapedFormat2[1024];
     CHAR16 Buffer[1024];
+    CHAR16 Buffer2[1024];
 
-    // Escape color codes before UnicodeVSPrint processes them
-    EscapeColorCodes(Format, EscapedFormat, sizeof(EscapedFormat));
+    // Format twice with different markers for the colour codes
+    EscapeColorCodes(Format, EscapedFormat, sizeof(EscapedFormat), COLOR_MARKER_1);
+    EscapeColorCodes(Format, EscapedFormat2, sizeof(EscapedFormat2), COLOR_MARKER_2);
 
     VA_START(Args, Format);
+    VA_COPY(Args2, Args);
     UnicodeVSPrint(Buffer, sizeof(Buffer), EscapedFormat, Args);
+    UnicodeVSPrint(Buffer2, sizeof(Buffer2), EscapedFormat2, Args2);
+    VA_END(Args2);
     VA_END(Args);
 
-    TouchConsolePrintWithColors(Buffer);
+    TouchConsolePrintWithColors(Buffer, Buffer2);
+    MEM_BURN(Buffer, sizeof(Buffer));
+    MEM_BURN(Buffer2, sizeof(Buffer2));
 }
 
 VOID
@@ -1680,20 +1693,29 @@ TouchConsolePrintAt(
     )
 {
     VA_LIST Args;
+    VA_LIST Args2;
     CHAR16 EscapedFormat[1024];
+    CHAR16 EscapedFormat2[1024];
     CHAR16 Buffer[1024];
+    CHAR16 Buffer2[1024];
 
     if (Col >= 0) gTouchData.CursorCol = Col;
     if (Row >= 0) gTouchData.CursorRow = Row;
 
-    // Escape color codes before UnicodeVSPrint processes them
-    EscapeColorCodes(Format, EscapedFormat, sizeof(EscapedFormat));
+    // Format twice with different markers for the colour codes
+    EscapeColorCodes(Format, EscapedFormat, sizeof(EscapedFormat), COLOR_MARKER_1);
+    EscapeColorCodes(Format, EscapedFormat2, sizeof(EscapedFormat2), COLOR_MARKER_2);
 
     VA_START(Args, Format);
+    VA_COPY(Args2, Args);
     UnicodeVSPrint(Buffer, sizeof(Buffer), EscapedFormat, Args);
+    UnicodeVSPrint(Buffer2, sizeof(Buffer2), EscapedFormat2, Args2);
+    VA_END(Args2);
     VA_END(Args);
 
-    TouchConsolePrintWithColors(Buffer);
+    TouchConsolePrintWithColors(Buffer, Buffer2);
+    MEM_BURN(Buffer, sizeof(Buffer));
+    MEM_BURN(Buffer2, sizeof(Buffer2));
 }
 
 VOID
@@ -1806,6 +1828,7 @@ TouchConsoleFlushInput(
     EFI_INPUT_KEY key;
     EFI_ABSOLUTE_POINTER_STATE aps;
 
+    KbResetState();   // also a key held after a dead key
     if (DelayUs > 0) {
         gBS->Stall(DelayUs);
     }

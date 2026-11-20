@@ -41,6 +41,10 @@
  */
 int dc_decrypt_header(dc_header *header, int hdr_len, dc_pass *password,
                       int *out_alg, u8 *out_key, int *out_kdf, int *out_slot);
+/* as dc_decrypt_header; with damaged != NULL a header whose signature decrypts but
+   whose CRC does not match is returned too, *damaged = 1 (repair it: dc_header_recover_efi) */
+int dc_decrypt_header_ex(dc_header *header, int hdr_len, dc_pass *password,
+                         int *out_alg, u8 *out_key, int *out_kdf, int *out_slot, int *damaged);
 
 /* Installs the volume_lib host. Call once before anything above. */
 int dcs_volume_lib_init(void);

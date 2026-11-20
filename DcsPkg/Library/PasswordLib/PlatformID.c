@@ -48,25 +48,27 @@ typedef struct _DCS_AUTH_DATA_MARK {
 
 CHAR8* SMBIOSGetString(UINTN StringNumber, SMBIOS_STRUCTURE* smbtbl, CHAR8* lastAddr) {
 	CHAR8* String;
+	CHAR8* Current;
 	UINTN Index;
 	String = ((UINT8*)smbtbl) + smbtbl->Length;
 	for (Index = 1; Index <= StringNumber; Index++) {
-		if (StringNumber == Index) {
-			return String;
+		Current = String;
+		//
+		// Skip string, it must be terminated inside the table
+		//
+		if (String >= lastAddr) {
+			return NULL;
 		}
-		//
-		// Skip string
-		//
 		while (*String != 0) {
 			String++;
-			if (String > lastAddr) {
+			if (String >= lastAddr) {
 				return NULL;
 			}
 		}
+		if (StringNumber == Index) {
+			return Current;
+		}
 		String++;
-// 		if (*String == 0) {
-// 			return NULL;
-// 		}
 	}
 	return NULL;
 }
@@ -81,17 +83,39 @@ SMBIOSGetSerials()
 	SMBIOS_STRUCTURE_POINTER      pSMBIOS;
 	CHAR8*                        pos = NULL;
 	CHAR8*                        endOfTable;
+	SMBIOS_TABLE_3_0_ENTRY_POINT* smb3 = NULL;
 
-	// Get SMBIOS tables pointer from System Configure table
+	// Get SMBIOS tables pointer from System Configure table. The 2.x entry point comes first:
+	// a machine that publishes both keeps the platform ID it always had.
+	// Firmware with only the SMBIOS 3.x entry point (common on AArch64) uses that one.
 	res = EfiGetSystemConfigurationTable(&gEfiSmbiosTableGuid, (VOID**)&gSmbTable);
-	if (EFI_ERROR(res)) {
-		return res;
+	if (!EFI_ERROR(res) && gSmbTable != NULL) {
+		pSMBIOS.Raw = (UINT8 *)(UINTN)(gSmbTable->TableAddress);
+		endOfTable = pSMBIOS.Raw + gSmbTable->TableLength;
+	} else {
+		gSmbTable = NULL;
+		res = EfiGetSystemConfigurationTable(&gEfiSmbios3TableGuid, (VOID**)&smb3);
+		if (EFI_ERROR(res) || smb3 == NULL) {
+			return EFI_ERROR(res) ? res : EFI_NOT_FOUND;
+		}
+		pSMBIOS.Raw = (UINT8 *)(UINTN)(smb3->TableAddress);
+		endOfTable = pSMBIOS.Raw + smb3->TableMaximumSize;
 	}
-	pSMBIOS.Raw = (UINT8 *)(UINTN)(gSmbTable->TableAddress);
+	if (pSMBIOS.Raw == NULL) {
+		return EFI_NOT_FOUND;
+	}
 	pos = pSMBIOS.Raw;
-	endOfTable = pSMBIOS.Raw + gSmbTable->TableLength;
 	do {
 		SMBIOS_STRUCTURE* smbtbl = (SMBIOS_STRUCTURE*)pos;
+		if ((UINTN)(endOfTable - pos) < sizeof(SMBIOS_STRUCTURE) ||
+			smbtbl->Length < sizeof(SMBIOS_STRUCTURE) ||
+			(UINTN)(endOfTable - pos) < smbtbl->Length) {
+			break;
+		}
+		// End-of-table structure
+		if (smbtbl->Type == 127) {
+			break;
+		}
 		// BIOS information
 		if (smbtbl->Type == 0) {
 			gSmbBiosVendor = SMBIOSGetString(1, smbtbl, endOfTable);
@@ -100,7 +124,9 @@ SMBIOSGetSerials()
 		}
 		// System info
 		if (smbtbl->Type == 1) {
-			gSmbSystemUUID = (EFI_GUID*)&pos[8];
+			if (smbtbl->Length >= 8 + sizeof(EFI_GUID)) {
+				gSmbSystemUUID = (EFI_GUID*)&pos[8];
+			}
 			gSmbSystemManufacture = SMBIOSGetString(1, smbtbl, endOfTable);
 			gSmbSystemModel = SMBIOSGetString(2, smbtbl, endOfTable);
 			gSmbSystemVersion = SMBIOSGetString(3, smbtbl, endOfTable);
@@ -112,11 +138,11 @@ SMBIOSGetSerials()
 			gSmbBaseBoardSerial = SMBIOSGetString(4, smbtbl, endOfTable);
 		}
 		// Processor
-		if (smbtbl->Type == 4) {
+		if (smbtbl->Type == 4 && smbtbl->Length >= 8 + sizeof(UINT64)) {
 			gSmbProcessorID = (UINT64*)&pos[8];
 		}
 		pos += smbtbl->Length;
-		while (((pos[0] != 0) || (pos[1] != 0)) && (pos < endOfTable)) pos++;
+		while ((pos + 1 < endOfTable) && ((pos[0] != 0) || (pos[1] != 0))) pos++;
 		pos += 2;
 	} while (pos < endOfTable);
 

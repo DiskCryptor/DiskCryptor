@@ -487,9 +487,9 @@ _tab_proc(
 
 				case IDB_ACT_PAUSE :
 				{
-					if ( node )
-					{	
-						if (act->status == ACT_RUNNING) 
+					if ( node && act )
+					{
+						if (act->status == ACT_RUNNING)
 						{
 							act->status	= act->act != ACT_FORMAT ? ACT_PAUSED : ACT_STOPPED;
 							act->act	= ACT_ENCRYPT;
@@ -625,6 +625,14 @@ _tab_proc(
 					EnableWindow(GetDlgItem(hwnd, IDC_STATIC_HDR_SLOTS), is_v2);
 					EnableWindow(GetDlgItem(hwnd, IDC_EDIT_HDR_SLOTS), is_v2);
 
+					/* power-loss protection needs a v2 header */
+					if (GetDlgItem(hwnd, IDC_COMBO_SAFE) != NULL)
+					{
+						EnableWindow(GetDlgItem(hwnd, IDC_COMBO_SAFE), is_v2);
+						EnableWindow(GetDlgItem(hwnd, IDC_STATIC_SAFE), is_v2);
+						InvalidateRect(GetDlgItem(hwnd, IDC_COMBO_SAFE), NULL, TRUE);
+					}
+
 					/* Update KDF combo in password dialog only if user hasn't changed it */
 					{
 						HWND h_tab = GetParent(hwnd);
@@ -691,16 +699,28 @@ _tab_proc(
 									GetDlgItem(hwnd, IDC_BT_CANCEL_TMOUT), (BOOL)SendMessage(GetDlgItem(hwnd, IDC_COMBO_AUTH_TMOUT), CB_GETCURSEL, 0, 0)
 									);
 							}
+							/* timeout action: only with a timeout, and only for the EFI loader (an empty combo) */
+							EnableWindow(
+								GetDlgItem(hwnd, IDC_COMBO_TMOUT_ACT), b_pass &&
+								SendMessage(GetDlgItem(hwnd, IDC_COMBO_AUTH_TMOUT), CB_GETCURSEL, 0, 0) > 0 &&
+								SendMessage(GetDlgItem(hwnd, IDC_COMBO_TMOUT_ACT), CB_GETCOUNT, 0, 0) > 0
+								);
 						}
 						break;
 
 						case IDC_COMBO_AUTH_TMOUT :
-						{						
+						{
 							EnableWindow(
 								GetDlgItem(hwnd, IDC_BT_CANCEL_TMOUT), (BOOL)SendMessage((HWND)lparam, CB_GETCURSEL, 0, 0)
 								);
+							EnableWindow(
+								GetDlgItem(hwnd, IDC_COMBO_TMOUT_ACT),
+								SendMessage((HWND)lparam, CB_GETCURSEL, 0, 0) > 0 &&
+								SendMessage(GetDlgItem(hwnd, IDC_COMBO_TMOUT_ACT), CB_GETCOUNT, 0, 0) > 0
+								);
 
 							InvalidateRect( GetDlgItem(hwnd, IDC_BT_CANCEL_TMOUT), NULL, TRUE );
+							InvalidateRect( GetDlgItem(hwnd, IDC_COMBO_TMOUT_ACT), NULL, TRUE );
 
 						}
 						break;

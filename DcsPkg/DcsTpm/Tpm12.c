@@ -57,6 +57,7 @@ HmacSha1Init (
   UINT8         KeyHash[HMAC_SHA1_DIGEST_SIZE];
   UINT8         iPad[HMAC_SHA1_BLOCK_SIZE];
   UINTN         Index;
+  BOOLEAN       Ok;
 
   if (HmacContext == NULL) {
     return FALSE;
@@ -72,13 +73,9 @@ HmacSha1Init (
       return FALSE;
     }
     CopyMem(Ctx->Key, KeyHash, HMAC_SHA1_DIGEST_SIZE);
+    ZeroMem(KeyHash, sizeof(KeyHash));
   } else {
     CopyMem(Ctx->Key, Key, KeySize);
-  }
-
-  // Prepare inner padding (key XOR 0x36)
-  for (Index = 0; Index < HMAC_SHA1_BLOCK_SIZE; Index++) {
-    iPad[Index] = Ctx->Key[Index] ^ 0x36;
   }
 
   // Start inner hash: SHA1(key XOR iPad || message)
@@ -86,11 +83,14 @@ HmacSha1Init (
     return FALSE;
   }
 
-  if (!Sha1Update(Ctx->Sha1Context, iPad, HMAC_SHA1_BLOCK_SIZE)) {
-    return FALSE;
+  // Prepare inner padding (key XOR 0x36)
+  for (Index = 0; Index < HMAC_SHA1_BLOCK_SIZE; Index++) {
+    iPad[Index] = Ctx->Key[Index] ^ 0x36;
   }
 
-  return TRUE;
+  Ok = Sha1Update(Ctx->Sha1Context, iPad, HMAC_SHA1_BLOCK_SIZE);
+  ZeroMem(iPad, sizeof(iPad));
+  return Ok;
 }
 
 STATIC
@@ -122,6 +122,7 @@ HmacSha1Final (
   UINT8         InnerHash[HMAC_SHA1_DIGEST_SIZE];
   UINT8         oPad[HMAC_SHA1_BLOCK_SIZE];
   UINTN         Index;
+  BOOLEAN       Ok;
 
   if ((HmacContext == NULL) || (HmacValue == NULL)) {
     return FALSE;
@@ -140,23 +141,27 @@ HmacSha1Final (
   }
 
   // Compute outer hash: SHA1(key XOR oPad || inner_hash)
-  if (!Sha1Init(Ctx->Sha1Context)) {
-    return FALSE;
-  }
+  Ok = Sha1Init(Ctx->Sha1Context) &&
+       Sha1Update(Ctx->Sha1Context, oPad, HMAC_SHA1_BLOCK_SIZE) &&
+       Sha1Update(Ctx->Sha1Context, InnerHash, HMAC_SHA1_DIGEST_SIZE) &&
+       Sha1Final(Ctx->Sha1Context, HmacValue);
 
-  if (!Sha1Update(Ctx->Sha1Context, oPad, HMAC_SHA1_BLOCK_SIZE)) {
-    return FALSE;
-  }
+  ZeroMem(oPad, sizeof(oPad));
+  ZeroMem(InnerHash, sizeof(InnerHash));
+  return Ok;
+}
 
-  if (!Sha1Update(Ctx->Sha1Context, InnerHash, HMAC_SHA1_DIGEST_SIZE)) {
-    return FALSE;
+// Wipe the context (holds the raw HMAC key) before freeing it
+STATIC
+VOID
+HmacSha1Free (
+  IN VOID  *HmacContext
+  )
+{
+  if (HmacContext != NULL) {
+    ZeroMem(HmacContext, HmacSha1GetContextSize());
+    FreePool(HmacContext);
   }
-
-  if (!Sha1Final(Ctx->Sha1Context, HmacValue)) {
-    return FALSE;
-  }
-
-  return TRUE;
 }
 
 //#pragma warning(disable: 4706)
@@ -179,6 +184,7 @@ typedef struct  {
 	UINT8      *Resp;
 	UINTN      RespPos;
 	UINTN      RespSize;
+	UINTN      RespLen;     // bytes the TPM returned - the bound for every response read
 	UINT8      *Hash;
 } TPM12IO;
 
@@ -212,6 +218,7 @@ Tpm12IOCreate(
 	}
 	io->RespPos = 0;
 	io->RespSize = respSize;
+	io->RespLen = 0;
 	if (io->Hash == NULL) {
 		UINTN sha1ctxsize;
 		sha1ctxsize = Sha1GetContextSize();
@@ -342,6 +349,7 @@ Tpm12IOInit(
 	tpmio->CmdPos = 0;
 	ZeroMem(tpmio->Cmd, tpmio->CmdSize);
 	tpmio->RespPos = 0;
+	tpmio->RespLen = 0;
 	ZeroMem(tpmio->Resp, tpmio->RespSize);
 	Sha1Init(tpmio->Hash);
 	Tpm12IOWrite16(tpmio, tag, FALSE);
@@ -403,7 +411,7 @@ Tpm12RespRead16(
 {
 	UINT16 *tmp;
 	if (tpmio == NULL) return EFI_INVALID_PARAMETER;
-	if(tpmio->RespPos + 2 > tpmio->RespSize) return EFI_BUFFER_TOO_SMALL;
+	if (tpmio->RespPos > tpmio->RespLen || tpmio->RespLen - tpmio->RespPos < 2) return EFI_BUFFER_TOO_SMALL;
 	tmp = (UINT16 *)&tpmio->Resp[tpmio->RespPos];
 	if (data != NULL) {
 		*data = SwapBytes16(*tmp);
@@ -424,7 +432,7 @@ Tpm12RespRead32(
 {
 	UINT32 *tmp;
 	if (tpmio == NULL) return EFI_INVALID_PARAMETER;
-	if (tpmio->RespPos + 4 > tpmio->RespSize) return EFI_BUFFER_TOO_SMALL;
+	if (tpmio->RespPos > tpmio->RespLen || tpmio->RespLen - tpmio->RespPos < 4) return EFI_BUFFER_TOO_SMALL;
 	tmp = (UINT32 *)&tpmio->Resp[tpmio->RespPos];
 	if (data != NULL) {
 		*data = SwapBytes32(*tmp);
@@ -446,7 +454,7 @@ Tpm12RespReadBytes(
 {
 	UINT8 *tmp;
 	if (tpmio == NULL) return EFI_INVALID_PARAMETER;
-	if (tpmio->RespPos + dataSize > tpmio->RespSize) return EFI_BUFFER_TOO_SMALL;
+	if (tpmio->RespPos > tpmio->RespLen || tpmio->RespLen - tpmio->RespPos < dataSize) return EFI_BUFFER_TOO_SMALL;
 	tmp = &tpmio->Resp[tpmio->RespPos];
 	if (data != NULL) {
 		CopyMem(data, tmp, dataSize);
@@ -456,6 +464,50 @@ Tpm12RespReadBytes(
 	}
 	tpmio->RespPos += dataSize;
 	return EFI_SUCCESS;
+}
+
+// A TPM-sized field (UINT32 length, then the bytes) into a caller buffer of *size
+// bytes. A length beyond the buffer is refused; *size gets the length read. With data NULL the
+// bytes are only skipped (bounded by the response) and *size is not read.
+STATIC
+EFI_STATUS
+Tpm12RespReadSized(
+	IN     TPM12IO  *tpmio,
+	IN OUT UINT32   *size,
+	OUT    VOID     *data,
+	IN     BOOLEAN  hashIt
+	)
+{
+	EFI_STATUS res;
+	UINT32     len = 0;
+	if (size == NULL) return EFI_INVALID_PARAMETER;
+	res = Tpm12RespRead32(tpmio, &len, hashIt);
+	if (EFI_ERROR(res)) return res;
+	if (data != NULL && len > *size) return EFI_DEVICE_ERROR;
+	res = Tpm12RespReadBytes(tpmio, data, len, hashIt);
+	if (!EFI_ERROR(res)) *size = len;
+	return res;
+}
+
+// TPM_NV_DATA_PUBLIC as the TPM returned it - every field inside the returned
+// length, at most 3 select bytes per PCR selection (TPM 1.2 has 24 PCRs)
+STATIC
+BOOLEAN
+Tpm12NvPublicFits(
+	IN UINT8   *buf,
+	IN UINT32  len
+	)
+{
+	UINT32 pos = 2 + 4;   // tag, nvIndex
+	UINT32 i;
+	for (i = 0; i < 2; i++) {   // pcrInfoRead, pcrInfoWrite (TPM_PCR_INFO_SHORT)
+		UINT16 sel;
+		if (len < pos + 2) return FALSE;
+		sel = (UINT16)((buf[pos] << 8) | buf[pos + 1]);
+		if (sel > 3) return FALSE;
+		pos += 2 + sel + 1 + 20;
+	}
+	return len >= pos + 2 + 4 + 3 + 4;   // permission tag + attributes, 3 flags, dataSize
 }
 
 VOID
@@ -497,10 +549,17 @@ Tpm12Transmit(
 	if (tpmio == NULL) return EFI_INVALID_PARAMETER;
 	if (tpmio->CmdPos >= tpmio->CmdSize) return EFI_BUFFER_TOO_SMALL;
 	TpmRecvSize = (UINT32)tpmio->RespSize;
+	tpmio->RespLen = 0;
 	res = Tpm12SubmitCommand((UINT32)tpmio->CmdPos, tpmio->Cmd, &TpmRecvSize, tpmio->Resp);
 	if (EFI_ERROR(res)) {
 		return res;
 	}
+	// The size the TPM reports (its header paramSize) bounds every read of the
+	// response - it has to cover the header and fit the buffer
+	if (TpmRecvSize < 10 || TpmRecvSize > tpmio->RespSize) {
+		return EFI_DEVICE_ERROR;
+	}
+	tpmio->RespLen = TpmRecvSize;
 	if (Tpm12RespCode(tpmio) != TPM_SUCCESS) {
 		return EFI_DEVICE_ERROR;
 	}
@@ -526,6 +585,20 @@ GetTpm12Io()
 		return EFI_NOT_READY;
 	}
 	return res;
+}
+
+// Release an auth session that no command will consume (TPM 1.2 has only a few session slots)
+STATIC
+VOID
+Tpm12FlushAuthHandle(
+	IN UINT32 authHandle
+	)
+{
+	if (gTpm12Io == NULL) return;
+	Tpm12IOInit(gTpm12Io, TPM_TAG_RQU_COMMAND, TPM_ORD_FlushSpecific);
+	Tpm12IOWrite32(gTpm12Io, authHandle, FALSE);
+	Tpm12IOWrite32(gTpm12Io, TPM_RT_AUTH, FALSE);
+	Tpm12Transmit(gTpm12Io);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -704,11 +777,8 @@ Tpm12GetCapability(
 	if (EFI_ERROR(res)) {
 		return res;
 	}
-	res = Tpm12RespRead32(gTpm12Io, respSize, TRUE);
-	if (!EFI_ERROR(res)) {
-		res = Tpm12RespReadBytes(gTpm12Io, resp, *respSize, TRUE);
-	}
-	return res;
+	// with resp, *respSize is its capacity on input
+	return Tpm12RespReadSized(gTpm12Io, respSize, resp, TRUE);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -724,7 +794,8 @@ Tpm12GetNvList(
 	UINT32      i;
 	UINT32      count;
 
-	res = Tpm12GetCapability(TPM_CAP_NV_LIST, 0, NULL, &byteCount, (UINT8*)IndexList);
+	// Leave the list in gTpm12Io->Resp until it is known to fit the caller's array
+	res = Tpm12GetCapability(TPM_CAP_NV_LIST, 0, NULL, &byteCount, NULL);
 	if (EFI_ERROR(res)) {
 		*IndexCount = 0;
 		return res;
@@ -732,6 +803,11 @@ Tpm12GetNvList(
 
 	// TPM returns byte count, convert to index count
 	count = byteCount / sizeof(UINT32);
+	if (count > *IndexCount) {
+		*IndexCount = count;
+		return EFI_BUFFER_TOO_SMALL;
+	}
+	CopyMem(IndexList, &gTpm12Io->Resp[gTpm12Io->RespPos - byteCount], count * sizeof(UINT32));
 
 	// Indices are returned in big-endian, swap to native
 	for (i = 0; i < count; i++) {
@@ -819,6 +895,7 @@ Tpm12NvDetails(
 	UINT32 swapindex = SwapBytes32(index);
 	res = Tpm12GetCapability(TPM_CAP_NV_INDEX, 4, (UINT8*)&swapindex, &sz, nvdata);
 	if(EFI_ERROR(res)) return res;
+	if (!Tpm12NvPublicFits(nvdata, sz)) return EFI_DEVICE_ERROR;
 	Tpm12Parse16(&pos, NULL);
 	Tpm12Parse32(&pos, &index);
 	pcrRead = (TPM_PCR_INFO_SHORT*)pos;
@@ -1002,10 +1079,12 @@ Tpm12OSAPStart(
 	TPM_DIGEST   ownerKey;
 	UINTN        CtxSize;
 	VOID*        HmacCtx;
+	BOOLEAN      ok;
 	res = GetTpm12Io();
 	if (EFI_ERROR(res)) return res;
 	if (gTpm12Osap == NULL) {
 		gTpm12Osap = MEM_ALLOC(sizeof(TPM12_OSAP));
+		if (gTpm12Osap == NULL) return EFI_OUT_OF_RESOURCES;
 	}
 	// Initialize nonces with random values
 	Tpm12InitOsapNonces(gTpm12Osap);
@@ -1023,11 +1102,18 @@ Tpm12OSAPStart(
 	GetOwnerAuthFromPassword(ownerPass, &ownerKey);
 	CtxSize = HmacSha1GetContextSize();
 	HmacCtx = MEM_ALLOC(CtxSize);
-	HmacSha1Init(HmacCtx, (UINT8*)&ownerKey, sizeof(ownerKey));
-	HmacSha1Update(HmacCtx, &gTpm12Osap->nonceEvenOSAP, sizeof(gTpm12Osap->nonceEvenOSAP));
-	HmacSha1Update(HmacCtx, &gTpm12Osap->nonceOddOSAP, sizeof(gTpm12Osap->nonceOddOSAP));
-	HmacSha1Final(HmacCtx, (UINT8*)&gTpm12Osap->SharedSecret);
-	MEM_FREE(HmacCtx);
+	ok = HmacCtx != NULL &&
+		HmacSha1Init(HmacCtx, (UINT8*)&ownerKey, sizeof(ownerKey)) &&
+		HmacSha1Update(HmacCtx, &gTpm12Osap->nonceEvenOSAP, sizeof(gTpm12Osap->nonceEvenOSAP)) &&
+		HmacSha1Update(HmacCtx, &gTpm12Osap->nonceOddOSAP, sizeof(gTpm12Osap->nonceOddOSAP)) &&
+		HmacSha1Final(HmacCtx, (UINT8*)&gTpm12Osap->SharedSecret);
+	HmacSha1Free(HmacCtx);
+	ZeroMem(&ownerKey, sizeof(ownerKey));
+	if (!ok) {
+		ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+		Tpm12FlushAuthHandle(gTpm12Osap->authHandle);
+		return EFI_OUT_OF_RESOURCES;
+	}
 	return res;
 }
 
@@ -1042,10 +1128,12 @@ Tpm12OSAPStartRaw(
 	EFI_STATUS   res;
 	UINTN        CtxSize;
 	VOID*        HmacCtx;
+	BOOLEAN      ok;
 	res = GetTpm12Io();
 	if (EFI_ERROR(res)) return res;
 	if (gTpm12Osap == NULL) {
 		gTpm12Osap = MEM_ALLOC(sizeof(TPM12_OSAP));
+		if (gTpm12Osap == NULL) return EFI_OUT_OF_RESOURCES;
 	}
 	// Initialize nonces with random values
 	Tpm12InitOsapNonces(gTpm12Osap);
@@ -1062,11 +1150,17 @@ Tpm12OSAPStartRaw(
 	// Use raw auth value directly
 	CtxSize = HmacSha1GetContextSize();
 	HmacCtx = MEM_ALLOC(CtxSize);
-	HmacSha1Init(HmacCtx, (UINT8*)authValue, sizeof(TPM_DIGEST));
-	HmacSha1Update(HmacCtx, &gTpm12Osap->nonceEvenOSAP, sizeof(gTpm12Osap->nonceEvenOSAP));
-	HmacSha1Update(HmacCtx, &gTpm12Osap->nonceOddOSAP, sizeof(gTpm12Osap->nonceOddOSAP));
-	HmacSha1Final(HmacCtx, (UINT8*)&gTpm12Osap->SharedSecret);
-	MEM_FREE(HmacCtx);
+	ok = HmacCtx != NULL &&
+		HmacSha1Init(HmacCtx, (UINT8*)authValue, sizeof(TPM_DIGEST)) &&
+		HmacSha1Update(HmacCtx, &gTpm12Osap->nonceEvenOSAP, sizeof(gTpm12Osap->nonceEvenOSAP)) &&
+		HmacSha1Update(HmacCtx, &gTpm12Osap->nonceOddOSAP, sizeof(gTpm12Osap->nonceOddOSAP)) &&
+		HmacSha1Final(HmacCtx, (UINT8*)&gTpm12Osap->SharedSecret);
+	HmacSha1Free(HmacCtx);
+	if (!ok) {
+		ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+		Tpm12FlushAuthHandle(gTpm12Osap->authHandle);
+		return EFI_OUT_OF_RESOURCES;
+	}
 	return res;
 }
 
@@ -1088,14 +1182,24 @@ Tpm12OSAPAppend(
 	Sha1Final(gTpm12Io->Hash, (UINT8*)&hashCmd);
 	CtxSize = HmacSha1GetContextSize();
 	HmacCtx = MEM_ALLOC(CtxSize);
-	if (HmacCtx == NULL) return EFI_BUFFER_TOO_SMALL;
+	if (HmacCtx == NULL) {
+		ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+		Tpm12FlushAuthHandle(gTpm12Osap->authHandle);
+		// Callers ignore our status: make their Tpm12Transmit fail locally
+		gTpm12Io->CmdPos = gTpm12Io->CmdSize;
+		return EFI_BUFFER_TOO_SMALL;
+	}
 	HmacSha1Init(HmacCtx, (UINT8*)&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
 	HmacSha1Update(HmacCtx, &hashCmd, sizeof(hashCmd));
 	HmacSha1Update(HmacCtx, &gTpm12Osap->nonceEven, sizeof(gTpm12Osap->nonceEven));
 	HmacSha1Update(HmacCtx, &gTpm12Osap->nonceOdd, sizeof(gTpm12Osap->nonceOdd));
 	HmacSha1Update(HmacCtx, &continueSession, sizeof(continueSession));
 	HmacSha1Final(HmacCtx, (UINT8*)&auth);
-	MEM_FREE(HmacCtx);
+	HmacSha1Free(HmacCtx);
+	if (continueSession == 0) {
+		// Session ends with this command; SharedSecret allows offline attacks on the owner auth
+		ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+	}
 	res = Tpm12IOWriteBytes(gTpm12Io, &auth, sizeof(auth), FALSE);
 	return res;
 }
@@ -1166,7 +1270,7 @@ Tpm12OIAPAppend(
 	HmacSha1Update(HmacCtx, &gTpm12Oiap->nonceOdd, sizeof(gTpm12Oiap->nonceOdd));
 	HmacSha1Update(HmacCtx, &continueSession, sizeof(continueSession));
 	HmacSha1Final(HmacCtx, (UINT8*)&auth);
-	MEM_FREE(HmacCtx);
+	HmacSha1Free(HmacCtx);
 	res = Tpm12IOWriteBytes(gTpm12Io, &auth, sizeof(auth), FALSE);
 	return res;
 }
@@ -1214,7 +1318,7 @@ Tpm12OIAPVerifyResponse(
 	HmacSha1Update(HmacCtx, &gTpm12Oiap->nonceOdd, sizeof(gTpm12Oiap->nonceOdd));
 	HmacSha1Update(HmacCtx, &respContinue, sizeof(respContinue));
 	HmacSha1Final(HmacCtx, (UINT8*)&expectedAuth);
-	MEM_FREE(HmacCtx);
+	HmacSha1Free(HmacCtx);
 
 	if (CompareMem(&respAuth, &expectedAuth, sizeof(TPM_DIGEST)) != 0) {
 		return EFI_SECURITY_VIOLATION;
@@ -1300,6 +1404,8 @@ Tpm12NvSpaceWithAuth(
 		Sha1CtxSize = Sha1GetContextSize();
 		Sha1Ctx = MEM_ALLOC(Sha1CtxSize);
 		if (Sha1Ctx == NULL) {
+			ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+			Tpm12FlushAuthHandle(gTpm12Osap->authHandle);
 			return EFI_OUT_OF_RESOURCES;
 		}
 		Sha1Init(Sha1Ctx);
@@ -1406,10 +1512,9 @@ Tpm12NvRead(
 	if (EFI_ERROR(res)) {
 		return res;
 	}
-	res = Tpm12RespRead32(gTpm12Io, DataSize, TRUE);
-	if (!EFI_ERROR(res)) {
-		res = Tpm12RespReadBytes(gTpm12Io, Data, *DataSize, TRUE);
-	}
+	res = Tpm12RespReadSized(gTpm12Io, DataSize, Data, TRUE);   // at most *DataSize
+	// Response may hold the sealed password data
+	ZeroMem(gTpm12Io->Resp, gTpm12Io->RespSize);
 	return res;
 }
 
@@ -1436,12 +1541,14 @@ Tpm12NvReadAuth(
 	)
 {
 	EFI_STATUS res;
+	BOOLEAN    sessionOpen = FALSE;
 
 	res = GetTpm12Io();
 	if (EFI_ERROR(res)) return res;
 
 	// Start OIAP session
 	CE(Tpm12OIAPStart());
+	sessionOpen = TRUE;
 
 	// Initialize nonceOdd with random value
 	Tpm12InitOiapNonce(&gTpm12Oiap->nonceOdd);
@@ -1456,21 +1563,28 @@ Tpm12NvReadAuth(
 	// Append OIAP authorization
 	CE(Tpm12OIAPAppend(nvAuth, 0));
 
+	// continueSession = 0: the TPM ends the session with this command
+	sessionOpen = FALSE;
 	res = Tpm12Transmit(gTpm12Io);
 	if (EFI_ERROR(res)) {
 		goto err;
 	}
 
 	// Read response data size and data (before verifying auth)
-	res = Tpm12RespRead32(gTpm12Io, DataSize, TRUE);
-	if (EFI_ERROR(res)) goto err;
-	res = Tpm12RespReadBytes(gTpm12Io, Data, *DataSize, TRUE);
+	res = Tpm12RespReadSized(gTpm12Io, DataSize, Data, TRUE);   // at most *DataSize
 	if (EFI_ERROR(res)) goto err;
 
 	// Verify response authorization
 	res = Tpm12OIAPVerifyResponse(nvAuth, 0);
 
 err:
+	if (sessionOpen) {
+		Tpm12FlushAuthHandle(gTpm12Oiap->authHandle);
+	}
+	// Response may hold the sealed password data
+	if (gTpm12Io != NULL) {
+		ZeroMem(gTpm12Io->Resp, gTpm12Io->RespSize);
+	}
 	return res;
 }
 
@@ -1522,7 +1636,11 @@ Tpm12NvWrite(
 		return res;
 	}
 	res = Tpm12Cmd_NvWrite(gTpm12Io, NvIndex, Offset, DataSize, Data);
-	if (EFI_ERROR(res)) return res;
+	if (EFI_ERROR(res)) {
+		ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+		Tpm12FlushAuthHandle(gTpm12Osap->authHandle);
+		return res;
+	}
 	// OSAP
 	Tpm12OSAPAppend(0);
 	res = Tpm12Transmit(gTpm12Io);
@@ -1552,9 +1670,10 @@ Tpm12GetRandom(
 	if (EFI_ERROR(res)) {
 		return res;
 	}
-	res = Tpm12RespRead32(gTpm12Io, DataSize, TRUE);
-	if (!EFI_ERROR(res)) {
-		res = Tpm12RespReadBytes(gTpm12Io, Data, *DataSize, TRUE);
+	// at most the requested size, and not nothing (Tpm12LibGetRandom loops on it)
+	res = Tpm12RespReadSized(gTpm12Io, DataSize, Data, TRUE);
+	if (!EFI_ERROR(res) && *DataSize == 0) {
+		res = EFI_DEVICE_ERROR;
 	}
 err:
 	return res;
@@ -1612,6 +1731,10 @@ Tpm12ResolveNvIndex(
 	IN UINT32 NvIndex
 	)
 {
+	// NvIndex 0 means the default DCS entry (DC_TPM_NV_INDEX_PRIMARY), same as TPM 2.0
+	if (NvIndex == 0) {
+		return 0x0DC5C;
+	}
 	return NvIndex;
 }
 
@@ -1669,7 +1792,7 @@ Tpm12IsOpen(
 	if (!EFI_ERROR(res) && nvDataSz >= DC_TPM_PCRINFO_BASE_SIZE) {
 		pcrInfoSz = DC_TPM_PCRINFO_BASE_SIZE;
 		res = Tpm12NvRead(PcrInfoNvIndex, 0, &pcrInfoSz, pcrInfoBuf);
-		if (!EFI_ERROR(res) && pcrInfo->Magic == DC_TPM_PCRINFO_MAGIC) {
+		if (!EFI_ERROR(res) && pcrInfoSz >= DC_TPM_PCRINFO_BASE_SIZE && pcrInfo->Magic == DC_TPM_PCRINFO_MAGIC) {
 			pinRequired = (pcrInfo->Flags & DC_TPM_FLAG_PIN_REQUIRED) != 0;
 			pcrBinding = (pcrInfo->PcrMask != 0);
 		}
@@ -1870,7 +1993,7 @@ Tpm12UnsealPassword(
 	if (!EFI_ERROR(res) && nvDataSz >= DC_TPM_PCRINFO_BASE_SIZE) {
 		pcrInfoSz = DC_TPM_PCRINFO_BASE_SIZE;
 		res = Tpm12NvRead(PcrInfoNvIndex, 0, &pcrInfoSz, pcrInfoBuf);
-		if (!EFI_ERROR(res) && pcrInfo->Magic == DC_TPM_PCRINFO_MAGIC) {
+		if (!EFI_ERROR(res) && pcrInfoSz >= DC_TPM_PCRINFO_BASE_SIZE && pcrInfo->Magic == DC_TPM_PCRINFO_MAGIC) {
 			pinRequired = (pcrInfo->Flags & DC_TPM_FLAG_PIN_REQUIRED) != 0;
 			pcrBinding = (pcrInfo->PcrMask != 0);
 		}
@@ -1893,6 +2016,12 @@ Tpm12UnsealPassword(
 	} else {
 		// No PIN and no PCR binding - use unauthenticated read
 		CE(Tpm12NvRead(DataNvIndex, 0, &nvSize, sealedBuffer));
+	}
+
+	// the TPM may return less than asked - the header has to be there
+	if (nvSize < DC_TPM_SEALED_BASE_SIZE) {
+		res = EFI_COMPROMISED_DATA;
+		goto err;
 	}
 
 	// Validate
@@ -1989,7 +2118,7 @@ Tpm12GetInfo(
 		sz = sizeof(pcrInfoBuf);
 		if (sz > nvDataSz) sz = nvDataSz;
 		res = Tpm12NvRead(PcrInfoNvIndex, 0, &sz, pcrInfoBuf);
-		if (!EFI_ERROR(res) && pcrInfo->Magic == DC_TPM_PCRINFO_MAGIC) {
+		if (!EFI_ERROR(res) && sz >= DC_TPM_PCRINFO_BASE_SIZE && pcrInfo->Magic == DC_TPM_PCRINFO_MAGIC) {
 			havePcrInfo = TRUE;
 		}
 	}
@@ -2181,6 +2310,8 @@ Tpm12ChangeOwnerPassword(
 	Sha1CtxSize = Sha1GetContextSize();
 	Sha1Ctx = MEM_ALLOC(Sha1CtxSize);
 	if (Sha1Ctx == NULL) {
+		ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+		Tpm12FlushAuthHandle(gTpm12Osap->authHandle);
 		res = EFI_OUT_OF_RESOURCES;
 		goto err;
 	}
@@ -2208,12 +2339,11 @@ Tpm12ChangeOwnerPassword(
 
 	res = Tpm12Transmit(gTpm12Io);
 
+err:
 	// Clear sensitive data
 	SetMem(&newAuthData, sizeof(newAuthData), 0);
 	SetMem(&encKey, sizeof(encKey), 0);
 	SetMem(&encAuth, sizeof(encAuth), 0);
-
-err:
 	return res;
 }
 
@@ -2377,6 +2507,12 @@ Tpm12Seal(
 	//	return EFI_BAD_BUFFER_SIZE;  // TPM_Seal has size limits (max ~256 bytes due to RSA)
 	//}
 
+	// Limit to PCRs 0-15 (sizeOfSelect=2) - some TPMs don't support 24 PCRs
+	// A mask with PCRs 16-23 is refused rather than sealed without them while the header records them
+	if ((pcrMask & ~0xFFFFu) != 0) {
+		return EFI_UNSUPPORTED;
+	}
+
 	CE(GetTpm12Io());
 
 	// Read current PCR values for the composite hash
@@ -2396,6 +2532,8 @@ Tpm12Seal(
 	Sha1CtxSize = Sha1GetContextSize();
 	Sha1Ctx = MEM_ALLOC(Sha1CtxSize);
 	if (Sha1Ctx == NULL) {
+		ZeroMem(&gTpm12Osap->SharedSecret, sizeof(gTpm12Osap->SharedSecret));
+		Tpm12FlushAuthHandle(gTpm12Osap->authHandle);
 		res = EFI_OUT_OF_RESOURCES;
 		goto err;
 	}
@@ -2409,9 +2547,6 @@ Tpm12Seal(
 	for (i = 0; i < sizeof(TPM_DIGEST); i++) {
 		encAuth.digest[i] = encKey.digest[i] ^ dataAuth->digest[i];
 	}
-
-	// Limit to PCRs 0-15 (sizeOfSelect=2) - some TPMs don't support 24 PCRs
-	pcrMask &= 0xFFFF;
 
 	// Build TPM_Seal command
 	// Format: keyHandle, encAuth, pcrInfoSize, pcrInfo, inDataSize, inData
@@ -2466,21 +2601,24 @@ Tpm12Seal(
 		UINT32 ver, sealInfoSize, encDataSize;
 		UINT32 pos = 0;
 
+		// each copy into sealedBlob is checked against *sealedBlobSize (no wrap)
 		// Read version
 		res = Tpm12RespRead32(gTpm12Io, &ver, FALSE);
 		if (EFI_ERROR(res)) goto err;
+		if (*sealedBlobSize - pos < 4) { res = EFI_BUFFER_TOO_SMALL; goto err; }
 		CopyMem(sealedBlob + pos, &gTpm12Io->Resp[gTpm12Io->RespPos - 4], 4);
 		pos += 4;
 
 		// Read sealInfoSize
 		res = Tpm12RespRead32(gTpm12Io, &sealInfoSize, FALSE);
 		if (EFI_ERROR(res)) goto err;
+		if (*sealedBlobSize - pos < 4) { res = EFI_BUFFER_TOO_SMALL; goto err; }
 		CopyMem(sealedBlob + pos, &gTpm12Io->Resp[gTpm12Io->RespPos - 4], 4);
 		pos += 4;
 
 		// Read sealInfo
 		if (sealInfoSize > 0) {
-			if (pos + sealInfoSize > *sealedBlobSize) {
+			if (sealInfoSize > *sealedBlobSize - pos) {
 				res = EFI_BUFFER_TOO_SMALL;
 				goto err;
 			}
@@ -2492,11 +2630,12 @@ Tpm12Seal(
 		// Read encDataSize
 		res = Tpm12RespRead32(gTpm12Io, &encDataSize, FALSE);
 		if (EFI_ERROR(res)) goto err;
+		if (*sealedBlobSize - pos < 4) { res = EFI_BUFFER_TOO_SMALL; goto err; }
 		CopyMem(sealedBlob + pos, &gTpm12Io->Resp[gTpm12Io->RespPos - 4], 4);
 		pos += 4;
 
 		// Read encData
-		if (pos + encDataSize > *sealedBlobSize) {
+		if (encDataSize > *sealedBlobSize - pos) {
 			res = EFI_BUFFER_TOO_SMALL;
 			goto err;
 		}
@@ -2508,11 +2647,14 @@ Tpm12Seal(
 	}
 	*sealedBlobSize = sealedSize;
 
+err:
 	// Clear sensitive data
 	SetMem(&encKey, sizeof(encKey), 0);
 	SetMem(&encAuth, sizeof(encAuth), 0);
-
-err:
+	// Command buffer holds the plaintext data that was sealed
+	if (gTpm12Io != NULL) {
+		ZeroMem(gTpm12Io->Cmd, gTpm12Io->CmdSize);
+	}
 	return res;
 }
 
@@ -2554,6 +2696,7 @@ Tpm12UnsealSimple(
 	VOID         *HmacCtx;
 	TPM_DIGEST   hashCmd;
 	TPM_DIGEST   auth1, auth2;
+	UINT32       openSessions = 0;
 
 	CE(GetTpm12Io());
 
@@ -2567,12 +2710,14 @@ Tpm12UnsealSimple(
 	CE(Tpm12Transmit(gTpm12Io));
 	Tpm12RespRead32(gTpm12Io, &oiap1.authHandle, FALSE);
 	Tpm12RespReadBytes(gTpm12Io, &oiap1.nonceEven, sizeof(TPM_NONCE), FALSE);
+	openSessions = 1;
 
 	// Second OIAP (for sealed data)
 	Tpm12IOInit(gTpm12Io, TPM_TAG_RQU_COMMAND, TPM_ORD_OIAP);
 	CE(Tpm12Transmit(gTpm12Io));
 	Tpm12RespRead32(gTpm12Io, &oiap2.authHandle, FALSE);
 	Tpm12RespReadBytes(gTpm12Io, &oiap2.nonceEven, sizeof(TPM_NONCE), FALSE);
+	openSessions = 2;
 
 	// Build TPM_Unseal command with AUTH2
 	// TPM_Unseal input: parentHandle + inData (TPM_STORED_DATA directly, NO size prefix)
@@ -2594,7 +2739,10 @@ Tpm12UnsealSimple(
 	// Compute auth1 HMAC (with well-known SRK auth = zeros)
 	CtxSize = HmacSha1GetContextSize();
 	HmacCtx = MEM_ALLOC(CtxSize);
-	if (HmacCtx == NULL) return EFI_OUT_OF_RESOURCES;
+	if (HmacCtx == NULL) {
+		res = EFI_OUT_OF_RESOURCES;
+		goto err;
+	}
 	HmacSha1Init(HmacCtx, (UINT8*)&gSrkWellKnownAuth, sizeof(TPM_DIGEST));
 	HmacSha1Update(HmacCtx, &hashCmd, sizeof(hashCmd));
 	HmacSha1Update(HmacCtx, &oiap1.nonceEven, sizeof(oiap1.nonceEven));
@@ -2604,7 +2752,7 @@ Tpm12UnsealSimple(
 		HmacSha1Update(HmacCtx, &cont, 1);
 	}
 	HmacSha1Final(HmacCtx, (UINT8*)&auth1);
-	MEM_FREE(HmacCtx);
+	HmacSha1Free(HmacCtx);
 	Tpm12IOWriteBytes(gTpm12Io, &auth1, sizeof(auth1), FALSE);
 
 	// Second auth block (data blob - also using well-known auth)
@@ -2613,7 +2761,10 @@ Tpm12UnsealSimple(
 	Tpm12IOWrite8(gTpm12Io, 0, FALSE);  // continueSession = FALSE
 
 	HmacCtx = MEM_ALLOC(CtxSize);
-	if (HmacCtx == NULL) return EFI_OUT_OF_RESOURCES;
+	if (HmacCtx == NULL) {
+		res = EFI_OUT_OF_RESOURCES;
+		goto err;
+	}
 	HmacSha1Init(HmacCtx, (UINT8*)&gSrkWellKnownAuth, sizeof(TPM_DIGEST));  // data auth also well-known
 	HmacSha1Update(HmacCtx, &hashCmd, sizeof(hashCmd));
 	HmacSha1Update(HmacCtx, &oiap2.nonceEven, sizeof(oiap2.nonceEven));
@@ -2623,9 +2774,14 @@ Tpm12UnsealSimple(
 		HmacSha1Update(HmacCtx, &cont, 1);
 	}
 	HmacSha1Final(HmacCtx, (UINT8*)&auth2);
-	MEM_FREE(HmacCtx);
+	HmacSha1Free(HmacCtx);
 	Tpm12IOWriteBytes(gTpm12Io, &auth2, sizeof(auth2), FALSE);
 
+	// continueSession = 0: the TPM ends both sessions once it gets the command,
+	// unless it overflowed the command buffer (e.g. oversized blob) and is never sent
+	if (gTpm12Io->CmdPos < gTpm12Io->CmdSize) {
+		openSessions = 0;
+	}
 	res = Tpm12Transmit(gTpm12Io);
 	if (EFI_ERROR(res)) {
 		goto err;
@@ -2644,6 +2800,16 @@ Tpm12UnsealSimple(
 	*dataSize = outSize;
 
 err:
+	if (openSessions > 1) {
+		Tpm12FlushAuthHandle(oiap2.authHandle);
+	}
+	if (openSessions > 0) {
+		Tpm12FlushAuthHandle(oiap1.authHandle);
+	}
+	// Response holds the unsealed plaintext
+	if (gTpm12Io != NULL) {
+		ZeroMem(gTpm12Io->Resp, gTpm12Io->RespSize);
+	}
 	return res;
 }
 
@@ -2675,6 +2841,7 @@ Tpm12UnsealWithAuth(
 	VOID         *HmacCtx;
 	TPM_DIGEST   hashCmd;
 	TPM_DIGEST   auth1, auth2;
+	UINT32       openSessions = 0;
 	TPM_DIGEST   *blobAuth;
 
 	// Use provided dataAuth or fall back to well-known (zeros)
@@ -2696,12 +2863,14 @@ Tpm12UnsealWithAuth(
 	CE(Tpm12Transmit(gTpm12Io));
 	Tpm12RespRead32(gTpm12Io, &oiap1.authHandle, FALSE);
 	Tpm12RespReadBytes(gTpm12Io, &oiap1.nonceEven, sizeof(TPM_NONCE), FALSE);
+	openSessions = 1;
 
 	// Second OIAP (for sealed data)
 	Tpm12IOInit(gTpm12Io, TPM_TAG_RQU_COMMAND, TPM_ORD_OIAP);
 	CE(Tpm12Transmit(gTpm12Io));
 	Tpm12RespRead32(gTpm12Io, &oiap2.authHandle, FALSE);
 	Tpm12RespReadBytes(gTpm12Io, &oiap2.nonceEven, sizeof(TPM_NONCE), FALSE);
+	openSessions = 2;
 
 	// Build TPM_Unseal command with AUTH2
 	Tpm12IOInit(gTpm12Io, TPM_TAG_RQU_AUTH2_COMMAND, TPM_ORD_Unseal);
@@ -2718,7 +2887,10 @@ Tpm12UnsealWithAuth(
 
 	CtxSize = HmacSha1GetContextSize();
 	HmacCtx = MEM_ALLOC(CtxSize);
-	if (HmacCtx == NULL) return EFI_OUT_OF_RESOURCES;
+	if (HmacCtx == NULL) {
+		res = EFI_OUT_OF_RESOURCES;
+		goto err;
+	}
 	HmacSha1Init(HmacCtx, (UINT8*)&gSrkWellKnownAuth, sizeof(TPM_DIGEST));
 	HmacSha1Update(HmacCtx, &hashCmd, sizeof(hashCmd));
 	HmacSha1Update(HmacCtx, &oiap1.nonceEven, sizeof(oiap1.nonceEven));
@@ -2728,7 +2900,7 @@ Tpm12UnsealWithAuth(
 		HmacSha1Update(HmacCtx, &cont, 1);
 	}
 	HmacSha1Final(HmacCtx, (UINT8*)&auth1);
-	MEM_FREE(HmacCtx);
+	HmacSha1Free(HmacCtx);
 	Tpm12IOWriteBytes(gTpm12Io, &auth1, sizeof(auth1), FALSE);
 
 	// Second auth block (data blob - use provided auth or well-known)
@@ -2737,7 +2909,10 @@ Tpm12UnsealWithAuth(
 	Tpm12IOWrite8(gTpm12Io, 0, FALSE);
 
 	HmacCtx = MEM_ALLOC(CtxSize);
-	if (HmacCtx == NULL) return EFI_OUT_OF_RESOURCES;
+	if (HmacCtx == NULL) {
+		res = EFI_OUT_OF_RESOURCES;
+		goto err;
+	}
 	HmacSha1Init(HmacCtx, (UINT8*)blobAuth, sizeof(TPM_DIGEST));  // Use PIN-derived auth
 	HmacSha1Update(HmacCtx, &hashCmd, sizeof(hashCmd));
 	HmacSha1Update(HmacCtx, &oiap2.nonceEven, sizeof(oiap2.nonceEven));
@@ -2747,9 +2922,14 @@ Tpm12UnsealWithAuth(
 		HmacSha1Update(HmacCtx, &cont, 1);
 	}
 	HmacSha1Final(HmacCtx, (UINT8*)&auth2);
-	MEM_FREE(HmacCtx);
+	HmacSha1Free(HmacCtx);
 	Tpm12IOWriteBytes(gTpm12Io, &auth2, sizeof(auth2), FALSE);
 
+	// continueSession = 0: the TPM ends both sessions once it gets the command,
+	// unless it overflowed the command buffer (e.g. oversized blob) and is never sent
+	if (gTpm12Io->CmdPos < gTpm12Io->CmdSize) {
+		openSessions = 0;
+	}
 	res = Tpm12Transmit(gTpm12Io);
 	if (EFI_ERROR(res)) {
 		goto err;
@@ -2768,6 +2948,16 @@ Tpm12UnsealWithAuth(
 	*dataSize = outSize;
 
 err:
+	if (openSessions > 1) {
+		Tpm12FlushAuthHandle(oiap2.authHandle);
+	}
+	if (openSessions > 0) {
+		Tpm12FlushAuthHandle(oiap1.authHandle);
+	}
+	// Response holds the unsealed plaintext
+	if (gTpm12Io != NULL) {
+		ZeroMem(gTpm12Io->Resp, gTpm12Io->RespSize);
+	}
 	return res;
 }
 
@@ -3121,6 +3311,7 @@ InitTpmLib12(
 	// NV-based: PCR binding on NV space
 	Tpm->NvIsConfigured = Tpm12IsConfigured;
 	Tpm->NvIsOpen = Tpm12IsOpen;
+	Tpm->NvIsOwnerReadable = NULL; // TPM 1.2 indices never had the owner read path
 	Tpm->NvSealPassword = Tpm12SealPassword;
 	Tpm->NvUnsealPassword = Tpm12UnsealPassword;
 	Tpm->NvClearSecret = Tpm12ClearSecret;

@@ -130,6 +130,9 @@
     <ClInclude Include="volume_lib\header_io.h">
       <Filter>volume_lib</Filter>
     </ClInclude>
+    <ClInclude Include="volume_lib\journal.h">
+      <Filter>volume_lib</Filter>
+    </ClInclude>
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="crypto_lib\aes_key.c">
@@ -194,6 +197,7 @@
     </ClCompile>
     <ClCompile Include="dc_host_efi.c" />
     <ClCompile Include="dc_io.c" />
+    <ClCompile Include="dc_safe_efi.c" />
     <ClCompile Include="dc_keyfiles.c" />
     <ClCompile Include="DcsCliHelpers.c" />
     <ClCompile Include="DcsConfigMenu.c" />
@@ -207,6 +211,9 @@
       <Filter>volume_lib</Filter>
     </ClCompile>
     <ClCompile Include="volume_lib\header_io.c">
+      <Filter>volume_lib</Filter>
+    </ClCompile>
+    <ClCompile Include="volume_lib\journal.c">
       <Filter>volume_lib</Filter>
     </ClCompile>
   </ItemGroup>

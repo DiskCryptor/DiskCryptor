@@ -60,7 +60,7 @@
   gEfiFileInfoGuid
   gEfiPartTypeUnusedGuid
   gEfiPartTypeSystemPartGuid
-  gEfiEventVirtualAddressChangeGuid
+  gEfiEventExitBootServicesGuid
 
 [BuildOptions.IA32]
 MSFT:*_*_IA32_CC_FLAGS = /arch:IA32 /FAcs /D_UEFI

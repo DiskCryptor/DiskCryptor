@@ -142,6 +142,19 @@ typedef struct _DC_REFS_VOL_DATA {
 } DC_REFS_VOL_DATA;
 
 /*
+ * NUL-terminate FileSystemName inside a FileFsAttributeInformation query buffer of
+ * buf_size bytes. A name that exactly fills the buffer is truncated by one character
+ * (it can never match a supported FS name).
+ */
+static void dc_term_fs_name(PFILE_FS_ATTRIBUTE_INFORMATION inf, u32 buf_size)
+{
+	u32 cap = (buf_size - (u32)FIELD_OFFSET(FILE_FS_ATTRIBUTE_INFORMATION, FileSystemName)) / (u32)sizeof(WCHAR);
+	u32 len = (u32)inf->FileSystemNameLength / (u32)sizeof(WCHAR);
+
+	inf->FileSystemName[min(len, cap - 1)] = 0;
+}
+
+/*
  * Calculate volume slack - space between filesystem end and partition end.
  * Uses FSCTL queries for NTFS/ReFS, boot sector parsing for FAT/exFAT.
  * Returns ST_OK and sets *slack_size, or error code if size cannot be determined.
@@ -176,7 +189,7 @@ int dc_get_volume_slack(dev_hook *hook, u64 *slack_size)
         DbgMsg("dc_get_volume_slack: FileFsAttributeInformation failed, status=%08x\n", status);
         return ST_UNK_FS;
     }
-    fs_info->FileSystemName[fs_info->FileSystemNameLength / sizeof(WCHAR)] = 0;
+    dc_term_fs_name(fs_info, (u32)sizeof(fs_buf));
 
     DbgMsg("dc_get_volume_slack: filesystem=%ws\n", fs_info->FileSystemName);
 
@@ -312,7 +325,7 @@ int dc_try_shrink_fs(dev_hook *hook, u64 shrink_bytes)
         DbgMsg("dc_try_shrink_fs: FileFsAttributeInformation failed\n");
         return ST_UNK_FS;
     }
-    fs_info->FileSystemName[fs_info->FileSystemNameLength / sizeof(WCHAR)] = 0;
+    dc_term_fs_name(fs_info, (u32)sizeof(fs_buf));
 
     if (_wcsicmp(fs_info->FileSystemName, L"NTFS") != 0) {
         ZwClose(h_dev);
@@ -435,34 +448,88 @@ NTSTATUS dc_delete_file(HANDLE h_file)
 	return ZwSetInformationFile(h_file, &iosb, &dinf, sizeof(dinf), FileDispositionInformation);
 }
 
-static void dc_rename_file(HANDLE h_file)
+static void dc_rename_file(dev_hook *hook, HANDLE h_file, const wchar_t *name)
 {
 	char                     buff[sizeof(FILE_RENAME_INFORMATION) + 64];
 	PFILE_RENAME_INFORMATION info = pv(buff);
 	IO_STATUS_BLOCK          iosb;
-	
+
 	info->ReplaceIfExists = TRUE;
 	info->RootDirectory   = NULL;
-	RtlStringCchPrintfW(info->FileName, 32, L"$dcsys$_fail_%x", __rdtsc());
+	RtlStringCchPrintfW(info->FileName, 32, L"%s_fail_%x", name, (u32)__rdtsc());
 	info->FileNameLength = (ULONG)(wcslen(info->FileName) * sizeof(wchar_t));
 
+	/* the minifilter denies renaming $dcsys$ for every thread but the worker thread */
+	hook->wrk_thread_id = PsGetCurrentThreadId();
 	ZwSetInformationFile(h_file, &iosb, info, sizeof(buff), FileRenameInformation);
+	hook->wrk_thread_id = NULL;
 }
 
-static HANDLE dc_create_dcsys(dev_hook *hook, u32 *stor_len)
+/*
+ * Explicit descriptor for a NEW $dcsys$: SYSTEM full access, Administrators read, protected
+ * (no inheritance of the root ACL). With the inherited root ACL any user could open or
+ * hard-link the new file before the minifilter protection is armed and keep that handle /
+ * link. The driver's own opens are kernel-mode (no access check). FAT/exFAT have no ACLs:
+ * there the minifilter is the only protection.
+ */
+typedef struct _dcsys_sd {
+	SECURITY_DESCRIPTOR sd;
+	ULONG               acl_buf[32];  /* 128 bytes, ULONG aligned; two ACEs need ~52 */
+} dcsys_sd;
+
+static BOOLEAN dc_build_dcsys_sd(dcsys_sd *dsd)
+{
+	PACL  acl = (PACL)dsd->acl_buf;
+	PSID  sys_sid = SeExports->SeLocalSystemSid;
+	PSID  adm_sid = SeExports->SeAliasAdminsSid;
+	ULONG acl_len;
+
+	acl_len = (ULONG)(sizeof(ACL) +
+		(sizeof(ACCESS_ALLOWED_ACE) - sizeof(ULONG) + RtlLengthSid(sys_sid)) +
+		(sizeof(ACCESS_ALLOWED_ACE) - sizeof(ULONG) + RtlLengthSid(adm_sid)));
+	acl_len = (acl_len + 3) & ~3UL;
+
+	if (acl_len > sizeof(dsd->acl_buf)) return FALSE;
+
+	if ( !NT_SUCCESS(RtlCreateAcl(acl, acl_len, ACL_REVISION)) ||
+		 !NT_SUCCESS(RtlAddAccessAllowedAce(acl, ACL_REVISION, FILE_ALL_ACCESS, sys_sid)) ||
+		 !NT_SUCCESS(RtlAddAccessAllowedAce(acl, ACL_REVISION, FILE_GENERIC_READ, adm_sid)) ||
+		 !NT_SUCCESS(RtlCreateSecurityDescriptor(&dsd->sd, SECURITY_DESCRIPTOR_REVISION)) ||
+		 !NT_SUCCESS(RtlSetDaclSecurityDescriptor(&dsd->sd, TRUE, acl, FALSE)) )
+	{
+		return FALSE;
+	}
+	dsd->sd.Control |= SE_DACL_PROTECTED;
+	return TRUE;
+}
+
+/* $dcsys$ or $dclog$: the storage files are created / opened the same way */
+static HANDLE dc_create_named(dev_hook *hook, const wchar_t *name, u32 *stor_len)
 {
 	OBJECT_ATTRIBUTES obj_a;
-	UNICODE_STRING    u_name;	
+	UNICODE_STRING    u_name;
 	IO_STATUS_BLOCK   iosb;
 	wchar_t           buff[MAX_PATH];
 	HANDLE            h_file;
 	NTSTATUS          status;
-	
-	status = RtlStringCchPrintfW(buff, MAX_PATH, L"%s\\$dcsys$", hook->dev_name);
+	dcsys_sd          dsd;
+	PVOID             sd = NULL;
+
+	status = RtlStringCchPrintfW(buff, MAX_PATH, L"%s\\%s", hook->dev_name, name);
 	if (NT_SUCCESS(status) == FALSE) return NULL;
 
+	/* a new file (stor_len != NULL: FILE_CREATE) gets the protected descriptor; if it
+	 * cannot be built the root ACL is inherited (the minifilter still applies) */
+	if (stor_len != NULL) {
+		if (dc_build_dcsys_sd(&dsd)) {
+			sd = &dsd.sd;
+		} else {
+			DbgMsg("dc_create_dcsys: cannot build the security descriptor, dev=%ws\n", hook->dev_name);
+		}
+	}
+
 	RtlInitUnicodeString(&u_name, buff);
-	InitializeObjectAttributes(&obj_a, &u_name, OBJ_KERNEL_HANDLE, NULL, NULL);
+	InitializeObjectAttributes(&obj_a, &u_name, OBJ_KERNEL_HANDLE, NULL, sd);
 
 	hook->wrk_thread_id = PsGetCurrentThreadId();
 	status = ZwCreateFile(&h_file, (stor_len == NULL ? FILE_WRITE_ATTRIBUTES | DELETE : GENERIC_WRITE), 
@@ -478,6 +545,8 @@ static HANDLE dc_create_dcsys(dev_hook *hook, u32 *stor_len)
 		dc_delete_file(h_file);
 		ZwClose(h_file); h_file = NULL;
 	}
+	/* a new $dcsys$ (new file ID) exists, or the failed one is gone */
+	InterlockedIncrement(&hook->stor_gen);
 	return h_file;
 }
 
@@ -513,7 +582,7 @@ static int dc_first_cluster_offset(HANDLE h_dev, u32 bps, u64 *offset)
 	{
 		return ST_ERROR;
 	} else {
-		ainf->FileSystemName[ainf->FileSystemNameLength >> 1] = 0;
+		dc_term_fs_name(ainf, (u32)sizeof(buff));
 	}
 	if (_wcsicmp(ainf->FileSystemName, L"NTFS") == 0) {
 		*offset = 0; return ST_OK;
@@ -580,7 +649,12 @@ static int dc_cluster_to_offset(dev_hook *hook, HANDLE h_file, u64 cluster, u64 
 	ZwClose(h_dev); return resl;
 }
 
-int dc_create_storage(dev_hook *hook, u64 *storage, u32 *stor_len, u32 margin)
+static void dc_delete_named(dev_hook *hook, const wchar_t *name);
+
+/* a contiguous file outside the header areas: $dcsys$ (dc_create_storage) or $dclog$ */
+/* max_try: attempts (0 or above MAX_RETRY: MAX_RETRY) - each failed one keeps its clusters
+   (an open, deleted file) so that the next one lands elsewhere */
+static int dc_create_contig(dev_hook *hook, const wchar_t *name, u64 *storage, u32 *stor_len, u32 margin, int max_try)
 {
 	HANDLE h_files[MAX_RETRY];
 	u32    n_files = 0;
@@ -589,24 +663,26 @@ int dc_create_storage(dev_hook *hook, u64 *storage, u32 *stor_len, u32 margin)
 	u64    offset;
 	int    i, resl;
 
-	/* delete old storage first */
-	dc_delete_storage(hook);
+	if (max_try <= 0 || max_try > MAX_RETRY) max_try = MAX_RETRY;
+
+	/* delete an old file of this name first */
+	dc_delete_named(hook, name);
 
 	/* try to create contiguous $dcsys$ file that doesn't overlap with header area */
 	for (i = 0; ; i++)
 	{
 		if (h_file != NULL) {
-			dc_rename_file(h_file);
+			dc_rename_file(hook, h_file, name);
 			dc_delete_file(h_file);
 			h_files[n_files++] = h_file; h_file = NULL;
 		}
 
-		if (i >= MAX_RETRY) {
-			DbgMsg("$dcsys$ create failed after %d attempts\n", MAX_RETRY);
+		if (i >= max_try) {
+			DbgMsg("%ws create failed after %d attempts\n", name, max_try);
 			break;
 		}
 
-		if ( (h_file = dc_create_dcsys(hook, stor_len)) == NULL ) {
+		if ( (h_file = dc_create_named(hook, name, stor_len)) == NULL ) {
 			continue;
 		}
 		if (dc_num_fragments(h_file, &cluster) != 1) {
@@ -638,24 +714,54 @@ int dc_create_storage(dev_hook *hook, u64 *storage, u32 *stor_len, u32 margin)
 	while (n_files != 0) {
 		ZwClose(h_files[--n_files]);
 	}
+	/* failed attempts were renamed away from $dcsys$ and are deleted now */
+	InterlockedIncrement(&hook->stor_gen);
 	if (h_file == NULL) {
 		return ST_CLUS_USED;
 	}
-	DbgMsg("$dcsys$ created, cluster %x:%0.8x; offset: %x:%0.8x\n", 
+	DbgMsg("%ws created, cluster %x:%0.8x; offset: %x:%0.8x\n", name,
 		d32(cluster >> 32), d32(cluster), d32(offset >> 32), d32(offset));
 
 	*storage = offset;
 	ZwClose(h_file); return ST_OK;
 }
 
-void dc_delete_storage(dev_hook *hook)
+int dc_create_storage(dev_hook *hook, u64 *storage, u32 *stor_len, u32 margin)
+{
+	return dc_create_contig(hook, L"$dcsys$", storage, stor_len, margin, MAX_RETRY);
+}
+
+/*
+ * The $dclog$ journal of a power-loss protected session: contiguous, outside the header
+ * areas (margin at both ends, like $dcsys$). A leftover $dclog$ is deleted first. *log_len in:
+ * the minimum size, out: the size allocated (cluster multiple). Returns its partition offset.
+ * max_try: attempts, 0 = the default (MAX_RETRY).
+ */
+int dc_create_log_file(dev_hook *hook, u64 *offset, u32 *log_len, u32 margin, int max_try)
+{
+	return dc_create_contig(hook, L"$dclog$", offset, log_len, margin, max_try);
+}
+
+void dc_delete_log_file(dev_hook *hook)
+{
+	dc_delete_named(hook, L"$dclog$");
+}
+
+static void dc_delete_named(dev_hook *hook, const wchar_t *name)
 {
 	HANDLE h_file;
 
-	if (h_file = dc_create_dcsys(hook, NULL)) {
+	if (h_file = dc_create_named(hook, name, NULL)) {
 		dc_delete_file(h_file);
 		ZwClose(h_file);
+		/* the file is deleted on this close */
+		InterlockedIncrement(&hook->stor_gen);
 	}
+}
+
+void dc_delete_storage(dev_hook *hook)
+{
+	dc_delete_named(hook, L"$dcsys$");
 }
 
 /*
@@ -752,8 +858,17 @@ int dc_rename_storage(dev_hook *hook, wchar_t *old_name, wchar_t *new_name)
 	RtlStringCchCopyW(ren_info->FileName, MAX_PATH, new_name);
 	ren_info->FileNameLength = (ULONG)(wcslen(ren_info->FileName) * sizeof(wchar_t));
 
+	/*
+	 * The minifilter denies renames onto $dcsys$ / $dcbak$ in the volume root for every
+	 * thread but the worker thread (kernel-mode requests included), so the rename (incl.
+	 * the $dcbak$ -> $dcsys$ rollback of dc_apply_layout) runs as the worker thread.
+	 */
+	hook->wrk_thread_id = PsGetCurrentThreadId();
 	status = ZwSetInformationFile(h_file, &iosb, ren_info, sizeof(ren_buff), FileRenameInformation);
+	hook->wrk_thread_id = NULL;
 	ZwClose(h_file);
+	/* the storage file IDs may have changed (FAT: IDs follow the dirent) */
+	InterlockedIncrement(&hook->stor_gen);
 
 	if (!NT_SUCCESS(status)) {
 		DbgMsg("dc_rename_storage: rename %ws to %ws failed, status=%08x\n", old_name, new_name, status);
@@ -785,9 +900,13 @@ void dc_delete_storage_by_name(dev_hook *hook, wchar_t *name)
 	RtlInitUnicodeString(&u_name, buff);
 	InitializeObjectAttributes(&obj_a, &u_name, OBJ_KERNEL_HANDLE, NULL, NULL);
 
+	/* the minifilter protects $dcbak$ like $dcsys$ (it holds the live storage during
+	 * dc_apply_layout relocation), so open it as the worker thread */
+	hook->wrk_thread_id = PsGetCurrentThreadId();
 	status = ZwCreateFile(&h_file, FILE_WRITE_ATTRIBUTES | DELETE | SYNCHRONIZE,
 		&obj_a, &iosb, NULL, 0, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
 		FILE_OPEN, FILE_SYNCHRONOUS_IO_NONALERT | FILE_NON_DIRECTORY_FILE, NULL, 0);
+	hook->wrk_thread_id = NULL;
 
 	if (!NT_SUCCESS(status)) {
 		DbgMsg("dc_delete_storage_by_name: failed to open %ws, status=%08x\n", name, status);
@@ -796,6 +915,8 @@ void dc_delete_storage_by_name(dev_hook *hook, wchar_t *name)
 
 	status = dc_delete_file(h_file);
 	ZwClose(h_file);
+	/* the file is gone after this close */
+	InterlockedIncrement(&hook->stor_gen);
 
 	if (!NT_SUCCESS(status)) {
 		DbgMsg("dc_delete_storage_by_name: failed to delete %ws, status=%08x\n", name, status);
@@ -838,7 +959,7 @@ int dc_try_expand_fs(dev_hook *hook, u64 expand_bytes)
 		DbgMsg("dc_try_expand_fs: FileFsAttributeInformation failed\n");
 		return ST_UNK_FS;
 	}
-	fs_info->FileSystemName[fs_info->FileSystemNameLength / sizeof(WCHAR)] = 0;
+	dc_term_fs_name(fs_info, (u32)sizeof(fs_buf));
 
 	if (_wcsicmp(fs_info->FileSystemName, L"NTFS") != 0) {
 		ZwClose(h_dev);

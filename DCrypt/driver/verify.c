@@ -190,98 +190,6 @@ CleanupExit:
     return status;
 }
 
-NTSTATUS KphHashFile(
-    _In_ PUNICODE_STRING FileName,
-    _Out_ PVOID *Hash,
-    _Out_ PULONG HashSize
-    )
-{
-    NTSTATUS status;
-    MY_HASH_OBJ hashObj;
-    ULONG querySize;
-    OBJECT_ATTRIBUTES objectAttributes;
-    IO_STATUS_BLOCK iosb;
-    HANDLE fileHandle = NULL;
-    FILE_STANDARD_INFORMATION standardInfo;
-    ULONG remainingBytes;
-    ULONG bytesToRead;
-    PVOID buffer = NULL;
-
-    if(!NT_SUCCESS(status = MyInitHash(&hashObj)))
-        goto CleanupExit;
-
-    // Open the file and compute the hash.
-
-    InitializeObjectAttributes(&objectAttributes, FileName, OBJ_KERNEL_HANDLE, NULL, NULL);
-
-    if (!NT_SUCCESS(status = ZwCreateFile(&fileHandle, FILE_GENERIC_READ, &objectAttributes,
-        &iosb, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0)))
-    {
-        goto CleanupExit;
-    }
-
-    if (!NT_SUCCESS(status = ZwQueryInformationFile(fileHandle, &iosb, &standardInfo,
-        sizeof(FILE_STANDARD_INFORMATION), FileStandardInformation)))
-    {
-        goto CleanupExit;
-    }
-
-    if (standardInfo.EndOfFile.QuadPart <= 0)
-    {
-        status = STATUS_UNSUCCESSFUL;
-        goto CleanupExit;
-    }
-    if (standardInfo.EndOfFile.QuadPart > FILE_MAX_SIZE)
-    {
-        status = STATUS_FILE_TOO_LARGE;
-        goto CleanupExit;
-    }
-
-    if (!(buffer = ExAllocatePoolWithTag(PagedPool, FILE_BUFFER_SIZE, VERIFY_TAG)))
-    {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto CleanupExit;
-    }
-
-    remainingBytes = (ULONG)standardInfo.EndOfFile.QuadPart;
-
-    while (remainingBytes != 0)
-    {
-        bytesToRead = FILE_BUFFER_SIZE;
-        if (bytesToRead > remainingBytes)
-            bytesToRead = remainingBytes;
-
-        if (!NT_SUCCESS(status = ZwReadFile(fileHandle, NULL, NULL, NULL, &iosb, buffer, bytesToRead,
-            NULL, NULL)))
-        {
-            goto CleanupExit;
-        }
-        if ((ULONG)iosb.Information != bytesToRead)
-        {
-            status = STATUS_INTERNAL_ERROR;
-            goto CleanupExit;
-        }
-
-        if (!NT_SUCCESS(status = MyHashData(&hashObj, buffer, bytesToRead)))
-            goto CleanupExit;
-
-        remainingBytes -= bytesToRead;
-    }
-
-    if (!NT_SUCCESS(status = MyFinishHash(&hashObj, Hash, HashSize)))
-        goto CleanupExit;
-
-CleanupExit:
-    if (buffer)
-        ExFreePoolWithTag(buffer, VERIFY_TAG);
-    if (fileHandle)
-        ZwClose(fileHandle);
-    MyFreeHash(&hashObj);
-
-    return status;
-}
-
 NTSTATUS KphVerifySignature(
     _In_ PVOID Hash,
     _In_ ULONG HashSize,
@@ -318,178 +226,6 @@ CleanupExit:
         BCryptDestroyKey(keyHandle);
     if (signAlgHandle)
         BCryptCloseAlgorithmProvider(signAlgHandle, 0);
-
-    return status;
-}
-
-NTSTATUS KphVerifyFile(
-    _In_ PUNICODE_STRING FileName,
-    _In_ PUCHAR Signature,
-    _In_ ULONG SignatureSize
-    )
-{
-    NTSTATUS status;
-    PVOID hash = NULL;
-    ULONG hashSize;
-
-    // Hash the file.
-
-    if (!NT_SUCCESS(status = KphHashFile(FileName, &hash, &hashSize)))
-        goto CleanupExit;
-
-    // Verify the hash.
-
-    if (!NT_SUCCESS(status = KphVerifySignature(hash, hashSize, Signature, SignatureSize)))
-    {
-        goto CleanupExit;
-    }
-
-CleanupExit:
-    if (hash)
-        ExFreePoolWithTag(hash, VERIFY_TAG);
-
-    return status;
-}
-
-NTSTATUS KphVerifyBuffer(
-    _In_ PUCHAR Buffer,
-    _In_ ULONG BufferSize,
-    _In_ PUCHAR Signature,
-    _In_ ULONG SignatureSize
-    )
-{
-    NTSTATUS status;
-    MY_HASH_OBJ hashObj;
-    PVOID hash = NULL;
-    ULONG hashSize;
-
-    // Hash the Buffer.
-
-    if(!NT_SUCCESS(status = MyInitHash(&hashObj)))
-        goto CleanupExit;
-
-    MyHashData(&hashObj, Buffer, BufferSize);
-
-    if(!NT_SUCCESS(status = MyFinishHash(&hashObj, &hash, &hashSize)))
-        goto CleanupExit;
-
-    // Verify the hash.
-
-    if (!NT_SUCCESS(status = KphVerifySignature(hash, hashSize, Signature, SignatureSize)))
-    {
-        goto CleanupExit;
-    }
-
-CleanupExit:
-
-    if (hash)
-        ExFreePoolWithTag(hash, VERIFY_TAG);
-
-    MyFreeHash(&hashObj);
-
-    return status;
-}
-
-NTSTATUS KphReadSignature(
-    _In_ PUNICODE_STRING FileName,
-    _Out_ PUCHAR *Signature,
-    _Out_ ULONG *SignatureSize
-    )
-{
-    NTSTATUS status;
-    OBJECT_ATTRIBUTES objectAttributes;
-    IO_STATUS_BLOCK iosb;
-    HANDLE fileHandle = NULL;
-    FILE_STANDARD_INFORMATION standardInfo;
-
-    // Open the file and read it.
-
-    InitializeObjectAttributes(&objectAttributes, FileName, OBJ_KERNEL_HANDLE, NULL, NULL);
-
-    if (!NT_SUCCESS(status = ZwCreateFile(&fileHandle, FILE_GENERIC_READ, &objectAttributes,
-        &iosb, NULL, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_READ, FILE_OPEN,
-        FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT, NULL, 0)))
-    {
-        goto CleanupExit;
-    }
-
-    if (!NT_SUCCESS(status = ZwQueryInformationFile(fileHandle, &iosb, &standardInfo,
-        sizeof(FILE_STANDARD_INFORMATION), FileStandardInformation)))
-    {
-        goto CleanupExit;
-    }
-
-    if (standardInfo.EndOfFile.QuadPart <= 0)
-    {
-        status = STATUS_UNSUCCESSFUL;
-        goto CleanupExit;
-    }
-    if (standardInfo.EndOfFile.QuadPart > KPH_SIGNATURE_MAX_SIZE)
-    {
-        status = STATUS_FILE_TOO_LARGE;
-        goto CleanupExit;
-    }
-
-    *SignatureSize = (ULONG)standardInfo.EndOfFile.QuadPart;
-
-    *Signature = ExAllocatePoolWithTag(PagedPool, *SignatureSize, VERIFY_TAG);
-    if(!*Signature)
-    {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto CleanupExit;
-    }
-
-    if (!NT_SUCCESS(status = ZwReadFile(fileHandle, NULL, NULL, NULL, &iosb, *Signature, *SignatureSize,
-        NULL, NULL)))
-    {
-        goto CleanupExit;
-    }
-
-CleanupExit:
-    if (fileHandle)
-        ZwClose(fileHandle);
-
-    return status;
-}
-
-NTSTATUS KphVerifyCurrentProcess(void)
-{
-    NTSTATUS status;
-    PUNICODE_STRING processFileName = NULL;
-    PUNICODE_STRING signatureFileName = NULL;
-    ULONG signatureSize = 0;
-    PUCHAR signature = NULL;
-
-    if (!NT_SUCCESS(status = SeLocateProcessImageName(PsGetCurrentProcess(), &processFileName)))
-        goto CleanupExit;
-
-    signatureFileName = ExAllocatePoolWithTag(PagedPool, sizeof(UNICODE_STRING) + processFileName->MaximumLength + 5 * sizeof(WCHAR), VERIFY_TAG);
-    if (!signatureFileName)
-    {
-        status = STATUS_INSUFFICIENT_RESOURCES;
-        goto CleanupExit;
-    }
-    signatureFileName->Buffer = (PWCH)(((PUCHAR)signatureFileName) + sizeof(UNICODE_STRING));
-    signatureFileName->MaximumLength = processFileName->MaximumLength + 5 * sizeof(WCHAR);
-
-    wcscpy(signatureFileName->Buffer, processFileName->Buffer);
-    signatureFileName->Length = processFileName->Length;
-
-    wcscat(signatureFileName->Buffer, L".sig");
-    signatureFileName->Length += 4 * sizeof(WCHAR);
-
-    if (!NT_SUCCESS(status = KphReadSignature(signatureFileName, &signature, &signatureSize)))
-        goto CleanupExit;
-
-    status = KphVerifyFile(processFileName, signature, signatureSize);
-
-CleanupExit:
-    if (signature)
-        ExFreePoolWithTag(signature, VERIFY_TAG);
-    if (processFileName)
-        ExFreePool(processFileName);
-    if (signatureFileName)
-        ExFreePoolWithTag(signatureFileName, VERIFY_TAG);
 
     return status;
 }
@@ -954,10 +690,13 @@ static NTSTATUS Verify_ReadLine(VERIFY_STREAM *stream, WCHAR *line, int *linenum
 #include "verify.h"
 
 SCertInfo Verify_CertInfo = { 0 };
+/* the check works on a private copy, dc_verify_cert publishes it with one store: a
+ * DC_FLAGS2 reader never sees a half-built state (only one check runs at a time) */
+static SCertInfo Verify_CertWork = { 0 };
 
 NTSTATUS KphValidateCertificate(void)
 {
-    BOOLEAN CertDbg = FALSE;
+    BOOLEAN CertDbg = TRUE;
 
     NTSTATUS status;
     VERIFY_STREAM *stream = NULL;
@@ -974,6 +713,8 @@ NTSTATUS KphValidateCertificate(void)
     PUCHAR signature = NULL;
 
     const int line_size = (CONF_LINE_LEN + 2) * sizeof(WCHAR);
+    /* UTF-8 needs up to 3 bytes per UTF-16 unit (a surrogate pair: 4 bytes for 2 units) */
+    const int temp_size = (CONF_LINE_LEN + 2) * 3;
     WCHAR *line = NULL;
     char *temp = NULL;
     int line_num = 0;
@@ -990,7 +731,7 @@ NTSTATUS KphValidateCertificate(void)
     BOOLEAN node_lock = FALSE;
     BOOLEAN node_pass = FALSE;
 
-    Verify_CertInfo.State = 0; // clear
+    Verify_CertWork.State = 0; // clear
 
     if(!NT_SUCCESS(status = MyInitHash(&hashObj)))
         goto CleanupExit;
@@ -1000,7 +741,7 @@ NTSTATUS KphValidateCertificate(void)
     //
 
     line = ExAllocatePoolWithTag(PagedPool, line_size, VERIFY_TAG);
-    temp = ExAllocatePoolWithTag(PagedPool, line_size, VERIFY_TAG);
+    temp = ExAllocatePoolWithTag(PagedPool, temp_size, VERIFY_TAG);
     if (!line || !temp) {
         status = STATUS_INSUFFICIENT_RESOURCES;
         goto CleanupExit;
@@ -1104,12 +845,21 @@ NTSTATUS KphValidateCertificate(void)
 
         if (_wcsicmp(L"SIGNATURE", name) == 0 && signature == NULL) {
             signatureSize = (ULONG)Verify_B64DecodedSize(value);
+            /* malformed base64 (size 0) - no 0-byte signature buffer */
+            if (signatureSize == 0) {
+                status = STATUS_INVALID_SECURITY_DESCR;
+                goto CleanupExit;
+            }
             signature = ExAllocatePoolWithTag(PagedPool, signatureSize, VERIFY_TAG);
             if (!signature) {
                 status = STATUS_INSUFFICIENT_RESOURCES;
                 goto CleanupExit;
             }
-            Verify_B64Decode(value, signature, signatureSize);
+            /* a failed decode must not leave an uninitialised buffer as the signature */
+            if (Verify_B64Decode(value, signature, signatureSize) == 0) {
+                status = STATUS_INVALID_SECURITY_DESCR;
+                goto CleanupExit;
+            }
             goto next;
         }
 
@@ -1117,11 +867,24 @@ NTSTATUS KphValidateCertificate(void)
         // Hash the tag
         //
 
-        if (NT_SUCCESS(RtlUnicodeToUTF8N(temp, line_size, &temp_len, name, (ULONG)(wcslen(name) * sizeof(wchar_t)))))
-            MyHashData(&hashObj, temp, temp_len);
+        /* every byte that is parsed and applied below must be covered by the signature:
+         * only an exact conversion (STATUS_SOME_NOT_MAPPED is lossy) is hashed, anything
+         * else rejects the certificate */
+        temp_len = 0; /* an empty field hashes nothing */
+        if (*name != L'\0' &&
+            RtlUnicodeToUTF8N(temp, temp_size, &temp_len, name, (ULONG)(wcslen(name) * sizeof(wchar_t))) != STATUS_SUCCESS) {
+            status = STATUS_INVALID_SIGNATURE;
+            goto CleanupExit;
+        }
+        MyHashData(&hashObj, temp, temp_len);
 
-        if (NT_SUCCESS(RtlUnicodeToUTF8N(temp, line_size, &temp_len, value, (ULONG)(wcslen(value) * sizeof(wchar_t)))))
-            MyHashData(&hashObj, temp, temp_len);
+        temp_len = 0; /* an empty field hashes nothing */
+        if (*value != L'\0' &&
+            RtlUnicodeToUTF8N(temp, temp_size, &temp_len, value, (ULONG)(wcslen(value) * sizeof(wchar_t))) != STATUS_SUCCESS) {
+            status = STATUS_INVALID_SIGNATURE;
+            goto CleanupExit;
+        }
+        MyHashData(&hashObj, temp, temp_len);
 
         //
         // Note: when parsing we may change the value of value, by adding \0's, hence we do all that after the hashing
@@ -1239,14 +1002,14 @@ NTSTATUS KphValidateCertificate(void)
 
     // signature OK
     if (node_lock) {
-        Verify_CertInfo.locked = 1;
+        Verify_CertWork.locked = 1;
         if (!node_pass) {
             status = STATUS_FIRMWARE_IMAGE_INVALID;
             goto CleanupExit;
         }
     }
 
-    Verify_CertInfo.active = 1;
+    Verify_CertWork.active = 1;
 
     if (CertDbg) {
         if(level) DbgMsg("Cert type: %S-%S\n", type, level);
@@ -1294,60 +1057,60 @@ NTSTATUS KphValidateCertificate(void)
     if (!type) // type is mandatory
         ;
     else if (_wcsicmp(type, L"CONTRIBUTOR") == 0)
-        Verify_CertInfo.type = eCertContributor;
+        Verify_CertWork.type = eCertContributor;
     else if (_wcsicmp(type, L"ETERNAL") == 0)
-        Verify_CertInfo.type = eCertEternal;
+        Verify_CertWork.type = eCertEternal;
     else if (_wcsicmp(type, L"BUSINESS") == 0)
-        Verify_CertInfo.type = eCertBusiness;
+        Verify_CertWork.type = eCertBusiness;
     else if (_wcsicmp(type, L"EVALUATION") == 0 || _wcsicmp(type, L"TEST") == 0)
-        Verify_CertInfo.type = eCertEvaluation;
+        Verify_CertWork.type = eCertEvaluation;
     else if (_wcsicmp(type, L"HOME") == 0)
-        Verify_CertInfo.type = eCertHome;
+        Verify_CertWork.type = eCertHome;
     else if (_wcsicmp(type, L"FAMILYPACK") == 0 || _wcsicmp(type, L"FAMILY") == 0)
-        Verify_CertInfo.type = eCertFamily;
+        Verify_CertWork.type = eCertFamily;
     // patreon >>>
     else if (wcsstr(type, L"PATREON") != NULL) // TYPE: [CLASS]_PATREON-[LEVEL]
     {
         if(_wcsnicmp(type, L"GREAT", 5) == 0)
-            Verify_CertInfo.type = eCertGreatPatreon;
+            Verify_CertWork.type = eCertGreatPatreon;
         else if (_wcsnicmp(type, L"ENTRY", 5) == 0) { // new patreons get only 3 months for start
-            Verify_CertInfo.type = eCertEntryPatreon;
+            Verify_CertWork.type = eCertEntryPatreon;
             expiration_date.QuadPart = cert_date.QuadPart + KphGetDateInterval(0, 3, 0);
         } else
-            Verify_CertInfo.type = eCertPatreon;
+            Verify_CertWork.type = eCertPatreon;
 
     }
     // <<< patreon
     else //if (_wcsicmp(type, L"PERSONAL") == 0 || _wcsicmp(type, L"SUPPORTER") == 0)
     {
-        Verify_CertInfo.type = eCertPersonal;
+        Verify_CertWork.type = eCertPersonal;
     }
 
-    if(CertDbg) DbgMsg("Cert type: %X\n", Verify_CertInfo.type);
+    if(CertDbg) DbgMsg("Cert type: %X\n", Verify_CertWork.type);
 
-    //if (CERT_IS_TYPE(Verify_CertInfo, eCertEternal)) // includes contributor
-    //    Verify_CertInfo.level = eCertMaxLevel;
-    //else if (CERT_IS_TYPE(Verify_CertInfo, eCertDeveloper))
-    //    Verify_CertInfo.level = eCertMaxLevel;
-    //else if (CERT_IS_TYPE(Verify_CertInfo, eCertEvaluation)) // in evaluation the level field holds the amount of days to allow evaluation for
+    //if (CERT_IS_TYPE(Verify_CertWork, eCertEternal)) // includes contributor
+    //    Verify_CertWork.level = eCertMaxLevel;
+    //else if (CERT_IS_TYPE(Verify_CertWork, eCertDeveloper))
+    //    Verify_CertWork.level = eCertMaxLevel;
+    //else if (CERT_IS_TYPE(Verify_CertWork, eCertEvaluation)) // in evaluation the level field holds the amount of days to allow evaluation for
     //{
     //    if(days) expiration_date.QuadPart = cert_date.QuadPart + KphGetDateInterval((CSHORT)(days), 0, 0);
     //    else expiration_date.QuadPart = cert_date.QuadPart + KphGetDateInterval((CSHORT)(level ? _wtoi(level) : 7), 0, 0); // x days, default 7
-    //    Verify_CertInfo.level = eCertMaxLevel;
+    //    Verify_CertWork.level = eCertMaxLevel;
     //}
     //else if (!level || _wcsicmp(level, L"STANDARD") == 0) // not used, default does not have explicit level
-    //    Verify_CertInfo.level = eCertStandard;
+    //    Verify_CertWork.level = eCertStandard;
     //else if (_wcsicmp(level, L"ADVANCED") == 0)
     //{
-    //    if(Verify_CertInfo.type == eCertGreatPatreon)
-    //        Verify_CertInfo.level = eCertMaxLevel;
-    //    else if(Verify_CertInfo.type == eCertPatreon || Verify_CertInfo.type == eCertEntryPatreon)
-    //        Verify_CertInfo.level = eCertAdvanced1;
+    //    if(Verify_CertWork.type == eCertGreatPatreon)
+    //        Verify_CertWork.level = eCertMaxLevel;
+    //    else if(Verify_CertWork.type == eCertPatreon || Verify_CertWork.type == eCertEntryPatreon)
+    //        Verify_CertWork.level = eCertAdvanced1;
     //    else
-    //        Verify_CertInfo.level = eCertAdvanced;
+    //        Verify_CertWork.level = eCertAdvanced;
     //}
     //
-    //if(CertDbg) DbgMsg("Cert level: %X\n", Verify_CertInfo.level);
+    //if(CertDbg) DbgMsg("Cert level: %X\n", Verify_CertWork.level);
 
     //if (options) {
     //
@@ -1367,7 +1130,7 @@ NTSTATUS KphValidateCertificate(void)
     //    }
     //}
 
-    if (CERT_IS_TYPE(Verify_CertInfo, eCertEternal))
+    if (CERT_IS_TYPE(Verify_CertWork, eCertEternal))
         expiration_date.QuadPart = -1; // at the end of time (never)
     else if (!expiration_date.QuadPart) {
         if (days) expiration_date.QuadPart = cert_date.QuadPart + KphGetDateInterval((CSHORT)(days), 0, 0);
@@ -1375,39 +1138,39 @@ NTSTATUS KphValidateCertificate(void)
     }
 
     // check if this is a subscription type certificate
-    BOOLEAN isSubscription = CERT_IS_SUBSCRIPTION(Verify_CertInfo);
+    BOOLEAN isSubscription = CERT_IS_SUBSCRIPTION(Verify_CertWork);
 
     if (expiration_date.QuadPart == -2)
-        Verify_CertInfo.expired = 1; // but not outdated
+        Verify_CertWork.expired = 1; // but not outdated
     else if (expiration_date.QuadPart != -1)
     {
         // check if this certificate is expired
         if (expiration_date.QuadPart < UtcTime.QuadPart)
-            Verify_CertInfo.expired = 1;
-        Verify_CertInfo.expirers_in_sec = (ULONG)((expiration_date.QuadPart - UtcTime.QuadPart) / 10000000ll); // 100ns steps -> 1sec
+            Verify_CertWork.expired = 1;
+        Verify_CertWork.expirers_in_sec = (ULONG)((expiration_date.QuadPart - UtcTime.QuadPart) / 10000000ll); // 100ns steps -> 1sec
 
         // check if a non subscription type certificate is valid for the current build
         if (!isSubscription && expiration_date.QuadPart < BuildDate.QuadPart)
-            Verify_CertInfo.outdated = 1;
+            Verify_CertWork.outdated = 1;
     }
 
     // check if the certificate is valid
-    if (isSubscription ? Verify_CertInfo.expired : Verify_CertInfo.outdated)
+    if (isSubscription ? Verify_CertWork.expired : Verify_CertWork.outdated)
     {
-        if (!CERT_IS_TYPE(Verify_CertInfo, eCertEvaluation)) { // non eval certs get 1 month extra
+        if (!CERT_IS_TYPE(Verify_CertWork, eCertEvaluation)) { // non eval certs get 1 month extra
             if (expiration_date.QuadPart + KphGetDateInterval(0, 1, 0) >= UtcTime.QuadPart)
-                Verify_CertInfo.grace_period = 1;
+                Verify_CertWork.grace_period = 1;
         }
 
-        if (!Verify_CertInfo.grace_period) {
-            Verify_CertInfo.active = 0;
+        if (!Verify_CertWork.grace_period) {
+            Verify_CertWork.active = 0;
             status = STATUS_ACCOUNT_EXPIRED;
         }
     }
 
 
 CleanupExit:
-    if(CertDbg) DbgMsg("Cert status: %08x; active: %d\n", status, Verify_CertInfo.active);
+    if(CertDbg) DbgMsg("Cert status: %08x; active: %d\n", status, Verify_CertWork.active);
 
 #ifndef VERIFY_CERT_FROM_REGISTRY
     if(path)        ExFreePoolWithTag(path, VERIFY_TAG);
@@ -1553,12 +1316,14 @@ static wchar_t* hexbyte(UCHAR b, wchar_t* ptr)
 }
 
 wchar_t g_uuid_str[40] = { 0 };
+static BOOLEAN g_uuid_ok = FALSE; /* the SMBIOS UUID was read; a failure is retried on the next check */
 
 void InitFwUuid(void)
 {
     UCHAR uuid[16];
     if (GetFwUuid(uuid))
     {
+        g_uuid_ok = TRUE;
         wchar_t* ptr = g_uuid_str;
         int i;
         for (i = 0; i < 4; i++)
@@ -1584,18 +1349,35 @@ void InitFwUuid(void)
 }
 
 
+/*
+ * Called from DriverEntry, the boot driver reinitialization routine and DC_CTL_CHECK_CERT.
+ * The DriverEntry check of a boot start driver can fail (dcrypt is initialized before KSecDD,
+ * whose BCrypt functions verify the signature); the reinitialization routine repeats it.
+ * One check at a time (a concurrent caller keeps the current state); dc_load_flags is
+ * changed atomically (other bits are set at run time too).
+ */
+static volatile LONG dc_cert_busy = 0;
+
 NTSTATUS dc_verify_cert()
 {
-    if(!*g_uuid_str)
+    NTSTATUS status;
+
+    if (InterlockedCompareExchange(&dc_cert_busy, 1, 0) != 0)
+        return STATUS_DEVICE_BUSY;
+
+    if (!g_uuid_ok)
         InitFwUuid();
 
-    NTSTATUS status = KphValidateCertificate();
-    
-    if (Verify_CertInfo.active) {
-		dc_load_flags |= DST_PRO_ENABLED;
-    } else {
-        dc_load_flags &= ~DST_PRO_ENABLED;   
-	}
+    status = KphValidateCertificate();
 
-	return status;
+    /* publish the whole state at once, then the flag derived from it */
+    InterlockedExchange64((volatile LONG64*)&Verify_CertInfo.State, (LONG64)Verify_CertWork.State);
+    if (Verify_CertWork.active) {
+        InterlockedOr((volatile LONG*)&dc_load_flags, (LONG)DST_PRO_ENABLED);
+    } else {
+        InterlockedAnd((volatile LONG*)&dc_load_flags, (LONG)~DST_PRO_ENABLED);
+    }
+
+    InterlockedExchange(&dc_cert_busy, 0);
+    return status;
 }

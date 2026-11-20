@@ -42,11 +42,15 @@ EFI_STATUS
 DoExecCmd()
 {
 	EFI_STATUS          res;
+	EFI_FILE            *root = NULL;
 	gDoExecCmdMsg[0] = 0;
 	res = EfiFindPartByGUID(gEfiExecPartGuid, &gFileRootHandle);
 	if (!EFI_ERROR(res)) {
-		res = FileOpenRoot(gFileRootHandle, &gFileRoot);
+		res = FileOpenRoot(gFileRootHandle, &root);
 		if (!EFI_ERROR(res)) {
+			if (gFileRoot != NULL)
+				FileClose(gFileRoot);
+			gFileRoot = root;
 			res = EfiExec(NULL, gEfiExecCmd);
 			if (EFI_ERROR(res))
 				AsciiSPrint(gDoExecCmdMsg, sizeof(gDoExecCmdMsg), "\nCannot execute %s start partition %g\n", gEfiExecCmd, gEfiExecPartGuid);
@@ -134,14 +138,15 @@ SearchWindowsLoaderOnDisk(
 
 	res = GptReadEntryArray(bio, gptHdr, &gptEntry);
 	if (EFI_ERROR(res)) {
+		MEM_FREE(gptEntry); // set even when the CRC check fails
 		MEM_FREE(gptHdr);
 		return res;
 	}
 
 	for (i = 0; i < gptHdr->NumberOfPartitionEntries; ++i) {
-		if (CompareGuid(&gptEntry[i].PartitionTypeGUID, &gEfiPartTypeSystemPartGuid)) {
+		if (CompareGuid(&GPT_ENTRY(gptEntry, gptHdr, i)->PartitionTypeGUID, &gEfiPartTypeSystemPartGuid)) {
 			EFI_HANDLE espHandle = NULL;
-			if (!EFI_ERROR(EfiFindPartByGUID(&gptEntry[i].UniquePartitionGUID, &espHandle))) {
+			if (!EFI_ERROR(EfiFindPartByGUID(&GPT_ENTRY(gptEntry, gptHdr, i)->UniquePartitionGUID, &espHandle))) {
 				res = TryWindowsLoaderOnPartition(espHandle);
 				if (!EFI_ERROR(res)) {
 					MEM_FREE(gptEntry);
@@ -197,6 +202,22 @@ ExecMSWindowsLoader()
 
 	ERR_PRINT(L"Could not find the original Windows loader\r\n");
 	return EFI_NOT_READY;
+}
+
+/**
+ * The recovery menu (DcsRe), as the last thing to try when no Windows loader can be started.
+ * Not for extern mode - there DcsRe started us, and the caller returns to it.
+ */
+STATIC EFI_STATUS
+ExecDcsRecovery()
+{
+	CHAR16* sDcsRe = L"\\EFI\\" DCS_DIRECTORY L"\\DcsRe.efi";
+
+	if (gExternMode || !UefiFileExistsPath(sDcsRe))
+		return EFI_NOT_FOUND;
+
+	OUT_PRINT(L"\nNo Windows loader could be started, opening the recovery menu...\n");
+	return UefiExec(sDcsRe);
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -274,7 +295,7 @@ DcsBootMain(
 	EFI_STATUS			res;
 	BOOLEAN             searchOnESP = FALSE;
 	BOOLEAN             searchMsOnESP = FALSE;
-	EFI_GUID			*pEfiExecPartBackup = NULL;
+	EFI_GUID			execPartBackup;
 	DCS_BOOT_CONFIG     bootConfig;
 	UINT32              bmeEnabled;
 	UINT32              lockFlags;
@@ -334,7 +355,8 @@ DcsBootMain(
 	// Initialize boot config to pass to DcsInt via LoadOptions
 	ZeroMem(&bootConfig, sizeof(bootConfig));
 	bootConfig.Size = sizeof(DCS_BOOT_CONFIG);
-	bootConfig.ConfigFileName = gConfigFileName;
+	bootConfig.Magic = DCS_BOOT_CONFIG_MAGIC;
+	bootConfig.Version = DCS_BOOT_CONFIG_VERSION;
 	bootConfig.ConfigBuffer = gConfigBuffer;
 	bootConfig.ConfigBufferSize = gConfigBufferSize;
 	CopyGuid(&bootConfig.ExecPartGuid, &ImagePartGuid);
@@ -387,6 +409,8 @@ DcsBootMain(
 			res = ExecMSWindowsLoader();
 			if (EFI_ERROR(res)) {
 				ERR_PRINT(L"Failed to execute Windows loader: %r\n", res);
+				if (!EFI_ERROR(ExecDcsRecovery()))
+					return EFI_SUCCESS;
 				res = EFI_DCS_SHUTDOWN_REQUESTED;
 			}
 		}
@@ -417,7 +441,18 @@ DcsBootMain(
 	InitFS();
 
 	// Boot menu lock via DcsOwner protocol (skip in extern/PXE mode)
-	bmeEnabled = ConfigReadInt("BootMenuLock", 1);
+	// from DcsProp when it loaded, else DcsOwner's EFI variable (absent = on)
+	if (gConfigBuffer != NULL) {
+		bmeEnabled = ConfigReadInt(DCSOWNER_CFG_BML, 1);
+	} else {
+		VOID   *bmlVal = NULL;
+		UINTN  bmlSize = 0;
+		bmeEnabled = 1;
+		if (!EFI_ERROR(EfiGetVar(DCSOWNER_VAR_BML, &gEfiDcsOwnerGuid, &bmlVal, &bmlSize, NULL)) && bmlVal != NULL) {
+			if (bmlSize >= 1) bmeEnabled = ((UINT8 *)bmlVal)[0] != 0;
+			MEM_FREE(bmlVal);
+		}
+	}
 	if (bmeEnabled && !(gExternMode || IsPxeBoot())) {
 		if (Owner != NULL) {
 			lockFlags = (UINT32)ConfigReadInt("BootMenuLockFlags", DCSOWNER_LOCK_BOOT_VARS | DCSOWNER_SET_BOOTNEXT | DCSOWNER_UPDATE_BOOTORDER);
@@ -427,7 +462,8 @@ DcsBootMain(
 		}
 	}
 
-	if (res == EFI_DCS_INPUT_REQUIRED) {
+	// the boot menu can start any file with the volumes mounted: only after an interactive unlock
+	if (res == EFI_DCS_INPUT_REQUIRED && bootConfig.UnlockInteractive) {
 		res = BootMenuShow();
 		if(EFI_ERROR(res))
 			return EFI_ABORTED;
@@ -453,7 +489,8 @@ DcsBootMain(
 		OUT_PRINT(L"\n");
 	}
 
-	pEfiExecPartBackup = gEfiExecPartGuid;
+	// gEfiExecPartGuid points at bootConfig.ExecPartGuid, which the ESP search overwrites
+	CopyGuid(&execPartBackup, gEfiExecPartGuid);
 
 	searchOnESP = CompareGuid(gEfiExecPartGuid, &ImagePartGuid) && EFI_ERROR(FileExist(NULL, gEfiExecCmd));
 	searchMsOnESP = CompareGuid(gEfiExecPartGuid, &ImagePartGuid) && EFI_ERROR(FileExist(NULL, gEfiExecCmdMS));
@@ -473,15 +510,18 @@ DcsBootMain(
 					if (!EFI_ERROR(res = GptReadHeader(bio, 1, &gptHdr)) &&
 						!EFI_ERROR(res = GptReadEntryArray(bio, gptHdr, &gptEntry))) {
 						UINT32 i;
+						res = EFI_NOT_FOUND;
 						for (i = 0; i < gptHdr->NumberOfPartitionEntries; ++i) {
-							if (CompareGuid(&gptEntry[i].PartitionTypeGUID, &gEfiPartTypeSystemPartGuid)) {
+							if (CompareGuid(&GPT_ENTRY(gptEntry, gptHdr, i)->PartitionTypeGUID, &gEfiPartTypeSystemPartGuid)) {
 								// select ESP GUID
-								CopyGuid(gEfiExecPartGuid, &gptEntry[i].UniquePartitionGUID);
+								CopyGuid(gEfiExecPartGuid, &GPT_ENTRY(gptEntry, gptHdr, i)->UniquePartitionGUID);
 								res = DoExecCmd();
-								if(EFI_ERROR(res)) continue;
+								if (!EFI_ERROR(res)) break;
 							}
 						}
 					}
+					MEM_FREE(gptEntry);
+					MEM_FREE(gptHdr);
 				}
 			}
 		}	else {
@@ -494,7 +534,7 @@ DcsBootMain(
 			{
 				gEfiExecCmd = gEfiExecCmdMS;
 				searchOnESP = searchMsOnESP;
-				gEfiExecPartGuid = pEfiExecPartBackup;
+				CopyGuid(gEfiExecPartGuid, &execPartBackup);
 			}
 			else
 				break;
@@ -504,6 +544,12 @@ DcsBootMain(
 	}
 
 	ERR_PRINT(L"%a\nStatus -  %r", gDoExecCmdMsg, res);
+
+	// No configured loader started: the recovery menu is the last thing to try. It runs with the
+	// volumes mounted, so only after an interactive unlock; otherwise shut down.
+	if (EFI_ERROR(res) && bootConfig.UnlockInteractive && !EFI_ERROR(ExecDcsRecovery()))
+		return EFI_SUCCESS;
+
 	KeyWait(L"Shutdown in %02d s\r", 10, 0, 0);
 	gST->RuntimeServices->ResetSystem(EfiResetShutdown, EFI_SUCCESS, 0, NULL);
 	return EFI_INVALID_PARAMETER;

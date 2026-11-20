@@ -124,8 +124,9 @@ FilePickerCanEnumerateVolume(
 	status = root->Read(root, &bufSize, buf);
 	FileClose(root);
 
-	// If read succeeded (even with 0 bytes for empty dir), volume is accessible
-	return !EFI_ERROR(status);
+	// If read succeeded (even with 0 bytes for empty dir), volume is accessible;
+	// EFI_BUFFER_TOO_SMALL only means the first entry has a long name
+	return !EFI_ERROR(status) || status == EFI_BUFFER_TOO_SMALL;
 }
 
 /**
@@ -512,6 +513,19 @@ FilePickerBuildFileList(
 		readSize = bufSize;
 		res = DirFile->Read(DirFile, &readSize, info);
 
+		// Entry larger than buffer: grow buffer and re-read the same entry
+		if (res == EFI_BUFFER_TOO_SMALL && readSize > bufSize) {
+			MEM_FREE(infoBuf);
+			bufSize = readSize;
+			infoBuf = MEM_ALLOC(bufSize);
+			if (infoBuf == NULL) {
+				MEM_FREE(list);
+				return EFI_OUT_OF_RESOURCES;
+			}
+			info = (EFI_FILE_INFO *)infoBuf;
+			continue;
+		}
+
 		if (EFI_ERROR(res) || readSize == 0) {
 			break;
 		}
@@ -519,6 +533,11 @@ FilePickerBuildFileList(
 		// Skip "." and ".."
 		if (StrCmp(info->FileName, L".") == 0 ||
 			StrCmp(info->FileName, L"..") == 0) {
+			continue;
+		}
+
+		// Skip names that do not fit the entry name buffer
+		if (StrLen(info->FileName) >= ARRAY_SIZE(list[0].Name)) {
 			continue;
 		}
 
@@ -702,14 +721,17 @@ FilePickerBrowseFiles(
 					break; // Rebuild list
 				}
 				else if (sel->Type == FILE_PICKER_ENTRY_DIRECTORY) {
-					// Enter subdirectory
-					if (StrCmp(currentPath, L"\\") == 0) {
-						UnicodeSPrint(newPath, sizeof(newPath), L"\\%s", sel->Name);
+					// Enter subdirectory (refuse paths that would be truncated)
+					if (StrLen(currentPath) + 1 + StrLen(sel->Name) >= ARRAY_SIZE(newPath)) {
+						res = EFI_BUFFER_TOO_SMALL;
 					} else {
-						UnicodeSPrint(newPath, sizeof(newPath), L"%s\\%s", currentPath, sel->Name);
+						if (StrCmp(currentPath, L"\\") == 0) {
+							UnicodeSPrint(newPath, sizeof(newPath), L"\\%s", sel->Name);
+						} else {
+							UnicodeSPrint(newPath, sizeof(newPath), L"%s\\%s", currentPath, sel->Name);
+						}
+						res = FileOpen(root, newPath, &newDir, EFI_FILE_MODE_READ, 0);
 					}
-
-					res = FileOpen(root, newPath, &newDir, EFI_FILE_MODE_READ, 0);
 					if (!EFI_ERROR(res)) {
 						if (currentDir != root) {
 							FileClose(currentDir);
@@ -720,8 +742,11 @@ FilePickerBrowseFiles(
 					}
 				}
 				else if (sel->Type == FILE_PICKER_ENTRY_FILE) {
-					// Select file
-					fullPath = MEM_ALLOC(512 * sizeof(CHAR16));
+					// Select file (refuse paths that would be truncated)
+					fullPath = NULL;
+					if (StrLen(currentPath) + 1 + StrLen(sel->Name) < 512) {
+						fullPath = MEM_ALLOC(512 * sizeof(CHAR16));
+					}
 					if (fullPath != NULL) {
 						if (StrCmp(currentPath, L"\\") == 0) {
 							UnicodeSPrint(fullPath, 512 * sizeof(CHAR16), L"\\%s", sel->Name);

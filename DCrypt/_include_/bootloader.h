@@ -16,7 +16,7 @@
 #define LDR_ET_EXIT_TO_BIOS 8            // exit to bios
 #define LDR_ET_RETRY        16           // retry authentication again
 #define LDR_ET_MBR_BOOT     32           // load boot disk MBR
-//#define LDR_ET_		    64
+#define LDR_ET_CUSTOM       64           // EFI loader only: an ActionFailed / AuthorizeRetry set by hand, left as they are
 //#define LDR_ET_		    128
 
 #define LDR_BT_MBR_BOOT    1             // load boot disk MBR
@@ -30,6 +30,14 @@
 #define LDR_KB_QWERTZ 1                  // QWERTZ keyboard layout
 #define LDR_KB_AZERTY 2			         // AZERTY keyboard layout
 //#define LDR_KB_MAX  255
+
+// authorization timeout action - EFI loader only (DcsProp "ActionTimeout"), the MBR loader ignores it
+#define LDR_TA_SHUTDOWN  0               // shut down (the DCS default)
+#define LDR_TA_HALT      1               // halt system
+#define LDR_TA_REBOOT    2               // reboot system
+#define LDR_TA_EXIT      3               // exit to firmware
+#define LDR_TA_CONTINUE  4               // load boot disk (boot without unlocking a volume)
+#define LDR_TA_CUSTOM    255             // an ActionTimeout set by hand: left as it is
 
 #define LDR_OP_EXTERNAL     0x0001       // this option indicate external bootloader usage
 #define LDR_OP_EPS_TMO      0x0002       // set time limit for password entering
@@ -91,8 +99,9 @@ typedef struct _ldr_config {
 	char aok_msg[128];                   // message text of the authorization successful
 	long header_kdf;                     // default KDF for header decryption
 	long keyfile_mixer;                  // default keyfile mixing mode for header decryption
-	
-	char reserved[2974];
+	unsigned char tmo_action;            // authorization timeout action (constants LDR_TA_x, EFI loader only)
+
+	char reserved[2973];
 } ldr_config; // 4096
 
 static_assert(sizeof(ldr_config) == 4096, "ldr_config size should be 4096 bytes");

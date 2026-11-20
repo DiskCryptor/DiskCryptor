@@ -365,7 +365,7 @@ TimeToSeconds (
     Days += (Year - 2000 + 3) / 4;  // Leap years (simplified)
 
     // Add days from months
-    for (INT64 i = 0; i < Month - 1; i++) {
+    for (INT64 i = 0; i < Month - 1 && i < 12; i++) {
         Days += DaysInMonth[i];
     }
 
@@ -840,7 +840,7 @@ ValidateCertificate (
     INT64           CertDateSec, CheckDateSec, BuildDateSec, CurrentTimeSec;
     INT64           ExpirationDateSec = 0;
     BOOLEAN         IsSubscription;
-    BOOLEAN         SoftwareOK = FALSE;
+    //BOOLEAN         SoftwareOK = FALSE;
 
     gVerifyCertInfo.State = 0;
 
@@ -999,10 +999,10 @@ ValidateCertificate (
         else if (StrCmpI(Name, L"AMOUNT") == 0) {
             Amount = (INT32)StrDecimalToUintn(Value);
         }
-        else if (StrCmpI(Name, L"SOFTWARE") == 0) {
-            if (StrCmpI(Value, SOFTWARE_NAME) == 0)
-                SoftwareOK = TRUE;
-        }
+        //else if (StrCmpI(Name, L"SOFTWARE") == 0) {
+        //    if (StrCmpI(Value, SOFTWARE_NAME) == 0)
+        //        SoftwareOK = TRUE;
+        //}
         else if (StrCmpI(Name, L"HWID") == 0) {
             NodeLock = TRUE;
             if (StrCmpI(Value, gUuidStr) == 0) {
@@ -1034,10 +1034,10 @@ ValidateCertificate (
         goto CleanupExit;
     }
 
-    if (!SoftwareOK) {
-        Status = EFI_INCOMPATIBLE_VERSION;
-        goto CleanupExit;
-    }
+    //if (!SoftwareOK) {
+    //    Status = EFI_INCOMPATIBLE_VERSION;
+    //    goto CleanupExit;
+    //}
 
     Status = VerifyEcdsaSignature(Hash, SHA256_HASH_SIZE, Signature, SignatureSize);
 
@@ -1144,7 +1144,9 @@ ValidateCertificate (
     // Calculate expiration
     //
     BuildDate = GetBuildDate();
-    gRT->GetTime(&CurrentTime, NULL);
+    if (EFI_ERROR(gRT->GetTime(&CurrentTime, NULL))) {
+        CurrentTime = BuildDate;  // RTC unreadable: use build date
+    }
 
     CertDateSec = TimeToSeconds(&CertDate);
     CheckDateSec = CheckDate.Year ? TimeToSeconds(&CheckDate) : CertDateSec;

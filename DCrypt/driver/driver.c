@@ -44,6 +44,7 @@
 #include "crypto_functions.h"
 #include "bootloader.h"
 #include "verify.h"
+#include "safe_log.h"
 
 /* function types declaration */
 DRIVER_INITIALIZE DriverEntry;
@@ -159,6 +160,15 @@ static void dc_reinit_routine(PDRIVER_OBJECT drv_obj, void *context, u32 count)
 	} else {
 		dc_clear_secrets(FALSE);
 	}
+}
+
+/* runs once all boot drivers are initialized: the DriverEntry certificate check can fail
+ * before KSecDD (BCrypt) is up, see dc_verify_cert */
+static void dc_boot_reinit_routine(PDRIVER_OBJECT drv_obj, void *context, u32 count)
+{
+	UNREFERENCED_PARAMETER(drv_obj); UNREFERENCED_PARAMETER(context); UNREFERENCED_PARAMETER(count);
+	DbgMsg("dc_boot_reinit_routine\n");
+	dc_verify_cert();
 }
 
 static void dc_load_config(PUNICODE_STRING reg_path)
@@ -336,7 +346,9 @@ NTSTATUS
 	dc_init_encryption();
 	dc_init_devhook(); 
 	dc_init_mount();
+	dc_init_power_irp();
 	io_init();
+	dc_slog_init();
 	dc_get_boot_pass();
 #ifndef _M_ARM64
 	if ((dc_load_flags & DST_UEFI_BOOT) == 0)
@@ -385,6 +397,7 @@ NTSTATUS
 	
 	// register reinit routine for complete automounting and to clear cached passwords	
 	IoRegisterDriverReinitialization(DriverObject, dc_reinit_routine, NULL);
+	IoRegisterBootDriverReinitialization(DriverObject, dc_boot_reinit_routine, NULL);
 	
 	// secondary reseed PRNG after all operations
 	cp_rand_reseed();

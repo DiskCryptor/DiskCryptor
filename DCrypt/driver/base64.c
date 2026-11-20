@@ -55,27 +55,37 @@ int b64_encode(const unsigned char *in, size_t inlen, wchar_t *out, size_t outle
 	return 1;
 }
 
+/*
+ * Only well-formed input gets a size: the length must be a multiple of 4 and at most 2 '='
+ * may pad the end. Anything else returns 0, and b64_decode rejects the same input, so the
+ * size is never below what b64_decode writes (verify.c sizes a buffer by it).
+ */
 size_t b64_decoded_size(const wchar_t *in)
 {
 	size_t len;
 	size_t ret;
+	size_t pad;
 	size_t i;
 
 	if (in == NULL)
 		return 0;
 
 	len = wcslen(in);
+	if (len % 4 != 0)
+		return 0;
 	ret = len / 4 * 3;
 
-	for (i=len; i-->0; ) {
+	for (i=len, pad=0; i-->0; ) {
 		if (in[i] == L'=') {
-			ret--;
+			pad++;
 		} else {
 			break;
 		}
 	}
+	if (pad > 2)
+		return 0;
 
-	return ret;
+	return ret - pad;
 }
 
 //static void b64_generate_decode_table()
@@ -120,11 +130,18 @@ int b64_decode(const wchar_t *in, unsigned char *out, size_t outlen)
 		return 0;
 
 	len = wcslen(in);
-	if (outlen < b64_decoded_size(in) || len % 4 != 0)
+	if (len == 0 || len % 4 != 0 || outlen < b64_decoded_size(in))
 		return 0;
 
+	/*
+	 * '=' is only valid as padding: in the last position, or in the last
+	 * two (otherwise the loop below could write past b64_decoded_size).
+	 */
 	for (i=0; i<len; i++) {
 		if (!b64_isvalidchar(in[i])) {
+			return 0;
+		}
+		if (in[i] == L'=' && !(i == len - 1 || (i == len - 2 && in[len - 1] == L'='))) {
 			return 0;
 		}
 	}
@@ -135,11 +152,20 @@ int b64_decode(const wchar_t *in, unsigned char *out, size_t outlen)
 		v = in[i+2]=='=' ? v << 6 : (v << 6) | b64_invs[in[i+2]-43];
 		v = in[i+3]=='=' ? v << 6 : (v << 6) | b64_invs[in[i+3]-43];
 
+		/* never write past outlen, whatever the input looked like */
+		if (j >= outlen)
+			return 0;
 		out[j] = (v >> 16) & 0xFF;
-		if (in[i+2] != '=')
+		if (in[i+2] != '=') {
+			if (j + 1 >= outlen)
+				return 0;
 			out[j+1] = (v >> 8) & 0xFF;
-		if (in[i+3] != '=')
+		}
+		if (in[i+3] != '=') {
+			if (j + 2 >= outlen)
+				return 0;
 			out[j+2] = v & 0xFF;
+		}
 	}
 
 	return 1;

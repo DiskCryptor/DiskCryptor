@@ -62,6 +62,7 @@
   volume_lib/dc_status.h
   volume_lib/crypto_head.h
   volume_lib/header_io.h
+  volume_lib/journal.h
   volume_lib/keyfile_mix.h
   include/dc_keyfiles.h
   include/dc_io.h
@@ -79,9 +80,11 @@
   volume_lib/dc_host.c
   volume_lib/crypto_head.c
   volume_lib/header_io.c
+  volume_lib/journal.c
   volume_lib/keyfile_mix.c
   dc_host_efi.c
   dc_io.c
+  dc_safe_efi.c
   crypto_lib/crc32.c
   crypto_lib/Argon2/argon2.c
   crypto_lib/Argon2/argon2_mt.c

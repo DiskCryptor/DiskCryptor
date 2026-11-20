@@ -637,7 +637,7 @@ wchar_t *dc_get_status_str(int resl)
 	case ST_INV_SECT:			return L"device has unsupported sector size";
 	case ST_CLUS_USED:			return L"shrinking error, last clusters are used";
 	case ST_NF_PT_SPACE:		return L"not enough free space in partition to continue encrypting";
-	case ST_MEDIA_CHANGED:		return L"removable media changed";
+	case ST_MEDIA_CHANGED:		return L"removable media changed or volume header does not match the volume";
 	case ST_NO_MEDIA:			return L"no removable media in device";
 	case ST_DEVICE_BUSY:		return L"device is busy";
 	case ST_INV_MEDIA_TYPE:		return L"media type not supported";
@@ -681,6 +681,11 @@ wchar_t *dc_get_status_str(int resl)
 	case ST_GPT_INVALID:		return L"invalid GPT partition table";
 	case ST_NO_FREE_SPACE:		return L"no free space on disk";
 	case ST_PART_TOO_SMALL:		return L"partition too small";
+	case ST_LEGACY_BOOT:		return L"this option is not supported for the system volume of a legacy (MBR / BIOS) boot";
+	case ST_LOG_CREATE:			return L"the power-loss protection journal ($dclog$) could not be created; turn power-loss protection off to continue without it";
+	case ST_LOG_CONFLICT:		return L"the power-loss protection journal contradicts the volume header";
+	case ST_LOG_PENDING:		return L"a journaled block could not be completed because the disk refuses writes; the rest of the volume works";
+	case ST_HDR_DAMAGED:		return L"the password is right but the volume header is damaged (checksum mismatch) and could not be repaired; restore an exported header, try the backup header (mount from backup header; after a password change with the previous password), or mount it read-only with dccon -mount ... -ignore_crc to copy the data";
 	case ST_NOT_PRO:			return L"Not Pro";
 	default: return NULL;
 	}

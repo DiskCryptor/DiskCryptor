@@ -23,7 +23,7 @@ typedef struct _EFI_DCS_TPM_PROTOCOL EFI_DCS_TPM_PROTOCOL;
 
 //
 // Get TPM Status
-// NvIndex: TPM NV index to check status for (0 = default)
+// NvIndex: TPM NV index to check status for (0 = default index 0x0DC5C)
 // Status: Returns DCS_TPM_STATUS_* flags
 // PcrMask: Returns PCR mask used for sealing (NULL = don't retrieve)
 // Flags: Returns DC_TPM_FLAG_* flags (NULL = don't retrieve)
@@ -46,6 +46,7 @@ EFI_STATUS
 #define DCS_TPM_STATUS_CONFIGURED   0x01
 #define DCS_TPM_STATUS_LOCKED       0x02
 #define DCS_TPM_STATUS_PIN_REQUIRED 0x04
+#define DCS_TPM_STATUS_OWNER_READ   0x08 // sealed by an older build, readable with owner auth alone - reseal
 
 #define DCS_SECRET_DATA_MAX       480 // see DC_TPM_SEALED_DATA Password
 #define DCS_TPM_INFO_MAX_SIZE     512 // Maximum size of plaintext info data

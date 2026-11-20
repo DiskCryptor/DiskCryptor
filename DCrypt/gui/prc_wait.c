@@ -23,6 +23,7 @@
 #include "main.h"
 #include "prc_wait.h"
 #include "dc_header.h"
+#include "shadow.h"
 
 /* Timer IDs */
 #define TIMER_SHOW_DELAY    1  /* 500ms delay before showing dialog */
@@ -106,6 +107,12 @@ typedef struct _start_re_encrypt_params {
 	dc_pass    *password;
 	crypt_info *crypt;
 } start_re_encrypt_params;
+
+/* delete shadow copies params */
+typedef struct _delete_shadows_params {
+	const wchar_t *w32_device;
+	int           *remaining;
+} delete_shadows_params;
 
 /* Start format operation params */
 typedef struct _start_format_params {
@@ -209,6 +216,12 @@ static DWORD WINAPI _worker_start_encrypt(LPVOID param)
 {
 	start_encrypt_params *p = (start_encrypt_params*)param;
 	return (DWORD)dc_start_encrypt(p->device, p->password, p->crypt, p->flags, &g_wait.abort);
+}
+
+static DWORD WINAPI _worker_delete_shadows(LPVOID param)
+{
+	delete_shadows_params *p = (delete_shadows_params*)param;
+	return (DWORD)dc_delete_shadows(p->w32_device, p->remaining, &g_wait.abort);
 }
 
 static DWORD WINAPI _worker_start_decrypt(LPVOID param)
@@ -519,6 +532,26 @@ int _wait_dc_mount_volume(
 	return _run_wait_dialog(parent, description, &ctx);
 }
 
+int _wait_dc_mount_volume_ex(
+	HWND parent,
+	wchar_t *device,
+	dc_pass *password,
+	int flags,
+	const wchar_t *description,
+	int *aborted
+)
+{
+	wait_op_ctx ctx = { 0 };
+	mount_params params = { device, password, flags };
+	int rlt;
+
+	ctx.params = &params;
+	ctx.worker = _worker_mount_volume;
+	rlt = _run_wait_dialog(parent, description, &ctx);
+	if (aborted != NULL) *aborted = (ctx.abort != 0);
+	return rlt;
+}
+
 int _wait_dc_mount_all(
 	HWND parent,
 	dc_pass *password,
@@ -591,6 +624,20 @@ int _wait_dc_start_decrypt(
 	start_decrypt_params params = { device, password, crypt };
 	ctx.params = &params;
 	ctx.worker = _worker_start_decrypt;
+	return _run_wait_dialog(parent, description, &ctx);
+}
+
+int _wait_dc_delete_shadows(
+	HWND parent,
+	const wchar_t *w32_device,
+	int *remaining,
+	const wchar_t *description
+)
+{
+	wait_op_ctx ctx = { 0 };
+	delete_shadows_params params = { w32_device, remaining };
+	ctx.params = &params;
+	ctx.worker = _worker_delete_shadows;
 	return _run_wait_dialog(parent, description, &ctx);
 }
 

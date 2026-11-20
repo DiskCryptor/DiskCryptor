@@ -274,6 +274,7 @@ FileLoad(
    EFI_FILE*      file;
    EFI_STATUS     res;
    UINTN          sz;
+   UINTN          allocSz;
    if (!data) { 
       return EFI_INVALID_PARAMETER; 
    }
@@ -284,7 +285,13 @@ FileLoad(
       FileClose(file);
       return res;
    }
-   *data = MEM_ALLOC(sz);
+   if (sz > MAX_UINTN - sizeof(CHAR16)) {
+      FileClose(file);
+      return EFI_BAD_BUFFER_SIZE;
+   }
+   // Zeroed extra bytes keep text callers (config XML) NUL-terminated; *size stays the file size
+   allocSz = sz + sizeof(CHAR16);
+   *data = MEM_ALLOC(allocSz);
    if (*data == NULL) {
       FileClose(file);
       return EFI_BUFFER_TOO_SMALL;
@@ -292,7 +299,9 @@ FileLoad(
    res = FileRead(file, *data, &sz, NULL);
    if (EFI_ERROR(res)) {
       FileClose(file);
+      MEM_BURN(*data, allocSz);
       MEM_FREE(*data);
+      *data = NULL;
       return res;
    }
    FileClose(file);

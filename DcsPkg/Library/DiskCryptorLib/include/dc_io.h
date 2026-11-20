@@ -22,6 +22,13 @@ typedef struct _mount_inf {
 	u32        disk_id;
 	u8         disk_guid[16];
 
+	// the block a power loss interrupted in a protected transcryption session (dc_journal_recover):
+	// read from pend_img (the block as the driver will complete it), never written. pend_img NULL:
+	// the block could not be rebuilt, I/O to it fails.
+	u64        pend_off; // in sectors
+	u64        pend_len; // in sectors, 0: no pending block
+	u8        *pend_img; // pend_len * bps bytes
+
 } mount_inf;
 
 #define MOUNT_MAX 32
@@ -48,5 +55,25 @@ int dc_direct_io(mount_inf *mount, void *buff, u16 sectors, u64 start, int read)
 // mount: mounted partition info
 // start: sector offset relative to partition start
 int dc_mount_io(mount_inf *mount, void *buff, u16 sectors, u64 start, int read);
+
+// The boundary of a power-loss protected transcryption session from its journal
+// (dc_safe_efi.c). Called with the mount entry filled from header (tmp_size from the header,
+// keys set). Read-only: nothing is written, the driver completes the session at its mount.
+#define DCS_JR_NONE        0  // not a protected session: the header's boundary
+#define DCS_JR_EXACT       1  // journal empty: the header's boundary is exact
+#define DCS_JR_RECOVERED   2  // tmp_size taken from the newest committed record
+#define DCS_JR_PENDING     3  // as RECOVERED, plus a pending block rebuilt in pend_img (*lost: torn units, zeros)
+#define DCS_JR_QUARANTINE  4  // as RECOVERED, but the pending block could not be rebuilt: I/O to it fails
+#define DCS_JR_NO_JOURNAL  5  // unusable or unreadable journal, or no memory: the header's boundary (as before the journal)
+#define DCS_JR_CONFLICT   -1  // the journal contradicts the header: do not mount (the driver refuses it too)
+// from_bak: header is the backup header (dc_header_recover_efi returned DCS_HR_BACKUP)
+int dc_journal_recover(mount_inf *mount, dc_header *header, int from_bak, u32 *lost);
+
+// A damaged primary header (dc_decrypt_header_ex: signature right, CRC wrong), repaired
+// in memory as the driver does (dc_safe_efi.c). block_io: the partition's EFI_BLOCK_IO_PROTOCOL.
+#define DCS_HR_DAMAGED   0  // not repairable: do not mount (the password was right - not a password error)
+#define DCS_HR_REPAIRED  1  // the torn save's tmp_size restored in header
+#define DCS_HR_BACKUP    2  // header holds the backup header's fields (the primary's salt kept)
+int dc_header_recover_efi(void *block_io, u64 part_sectors, u32 bps, dc_header *header, int hdr_size, dc_pass *password);
 
 #endif

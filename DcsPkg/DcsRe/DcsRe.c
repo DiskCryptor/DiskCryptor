@@ -60,22 +60,66 @@ PMENU_ITEM gMenu = NULL;
 UINTN        EfiBootVolumeIndex = 0;
 EFI_FILE     *EfiBootVolume = NULL;
 
+// DcsRe runs from a rescue medium (USB stick, CD) or, started by DcsBoot, from the
+// system ESP. Only a rescue medium is not the system disk.
+STATIC
+BOOLEAN
+RootIsRescueMedia(VOID)
+{
+	EFI_BLOCK_IO_PROTOCOL     *bio = NULL;
+	EFI_DEVICE_PATH_PROTOCOL  *dp;
+
+	if (gFileRootHandle == NULL) return FALSE;
+	if (!EFI_ERROR(gBS->HandleProtocol(gFileRootHandle, &gEfiBlockIoProtocolGuid, (VOID **)&bio)) &&
+		bio != NULL && bio->Media != NULL && bio->Media->RemovableMedia) {
+		return TRUE;
+	}
+	for (dp = DevicePathFromHandle(gFileRootHandle); dp != NULL && !IsDevicePathEnd(dp); dp = NextDevicePathNode(dp)) {
+		if (DevicePathType(dp) == MESSAGING_DEVICE_PATH &&
+			(DevicePathSubType(dp) == MSG_USB_DP || DevicePathSubType(dp) == MSG_USB_CLASS_DP ||
+			 DevicePathSubType(dp) == MSG_USB_WWID_DP)) {
+			return TRUE;
+		}
+		if (DevicePathType(dp) == MEDIA_DEVICE_PATH && DevicePathSubType(dp) == MEDIA_CDROM_DP) {
+			return TRUE;
+		}
+	}
+	return FALSE;
+}
+
+// A restore onto the volume DcsRe runs from would copy each file onto itself (and delete it)
+STATIC
+BOOLEAN
+RestoreTargetIsSource(VOID)
+{
+	if (IsPxeBoot() || gFSHandles[EfiBootVolumeIndex] != gFileRootHandle) return FALSE;
+	ERR_PRINT(L"The selected volume is the one DcsRe runs from, nothing to restore\n");
+	return TRUE;
+}
+
 VOID
 SelectEfiVolume(UINTN *efiBootVolumeIndex, EFI_FILE **efiBootVolume, BOOLEAN win_only)
 {
 	UINTN        i;
+	UINTN        sel;
 	EFI_STATUS   res;
 	EFI_FILE     *file;
 	EFI_FILE     **efiVolumes;
 	UINTN        efiVolumesCount = 0;
 	BOOLEAN      fallback = FALSE;
+	BOOLEAN      skipRoot = RootIsRescueMedia();
+	UINTN        rootIndex = gFSCount;
 
 	efiVolumes = MEM_ALLOC(sizeof(EFI_FILE*) * gFSCount);
+	if (efiVolumes == NULL) return;
 
 retry:
 	for (i = 0; i < gFSCount; ++i) {
-		if (gFSHandles[i] == gFileRootHandle)
-			continue;
+		if (gFSHandles[i] == gFileRootHandle) {
+			if (skipRoot)
+				continue;
+			rootIndex = i;
+		}
 		res = FileOpenRoot(gFSHandles[i], &file);
 		if(EFI_ERROR(res)) { ERR_PRINT(L"FileOpenRoot %r\n", res); continue;}
 
@@ -99,6 +143,19 @@ retry:
 		goto retry;
 	}
 
+	// Started from the system ESP, that ESP is the system disk: no other volume (e.g. a USB
+	// stick that also holds DCS) is offered in its place
+	if (efiVolumesCount > 1 && !win_only && rootIndex < gFSCount && efiVolumes[rootIndex] != NULL) {
+		for (i = 0; i < gFSCount; ++i) {
+			if (efiVolumes[i] != NULL && i != rootIndex) {
+				FileClose(efiVolumes[i]);
+			}
+		}
+		*efiBootVolumeIndex = rootIndex;
+		*efiBootVolume = efiVolumes[rootIndex];
+		efiVolumesCount = 1;
+	}
+
 	if (efiVolumesCount > 1)
 	{
 		for (i = 0; i < gFSCount; ++i) {
@@ -110,11 +167,12 @@ retry:
 			OUT_PRINT(L"\n");
 		}
 
+		// update index and volume only once an in-range boot volume is chosen
 		do {
-			*efiBootVolumeIndex = AskUINTN("Select EFI boot volume:", *efiBootVolumeIndex);
-			if (*efiBootVolumeIndex >= gFSCount) continue;
-			*efiBootVolume = efiVolumes[*efiBootVolumeIndex];
-		} while (*efiBootVolume == NULL);
+			sel = AskUINTN("Select EFI boot volume:", *efiBootVolumeIndex);
+		} while (sel >= gFSCount || efiVolumes[sel] == NULL);
+		*efiBootVolumeIndex = sel;
+		*efiBootVolume = efiVolumes[sel];
 		
 		/* free unused descriptors */
 		for (i = 0; i < gFSCount; ++i) {
@@ -148,6 +206,15 @@ ActionToggleSB(IN VOID* ctx) {
 		res = DcsLdrSetMokSBState(sbState);
 		if (!EFI_ERROR(res)) {
 			OUT_PRINT(L"Secure Boot enforcement is %S\n", sbState ? L"Disabled" : L"Enabled");
+		}
+		// Off needs credentials entered in this boot, and is measured into the TPM
+		else if (res == EFI_ACCESS_DENIED) {
+			ERR_PRINT(L"Not allowed before a volume is unlocked with its password or TPM PIN in this boot.\n"
+			          L"Use 'b' (loader from system disk) and unlock: if no Windows loader starts, this menu\n"
+			          L"opens again with the option available (or pick DcsRe in the boot menu, boot mode 6).\n");
+		}
+		else if (res == EFI_SECURITY_VIOLATION) {
+			ERR_PRINT(L"Could not record the change in the TPM, enforcement stays on.\n");
 		}
 	}
 	return res;
@@ -233,6 +300,7 @@ ActionRestoreDcsLoader(IN VOID* ctx) {
 	EFI_STATUS res = EFI_NOT_READY;
 	UINTN i, errors = 0;
 	if (EfiBootVolume == NULL) return EFI_NOT_READY;
+	if (RestoreTargetIsSource()) return EFI_ACCESS_DENIED;
 
 	DirectoryCreate(EfiBootVolume, L"EFI\\" DCS_DIRECTORY);
 
@@ -300,6 +368,7 @@ Copy DcsProp from rescue disk to EFI boot volume
 EFI_STATUS
 ActionRestoreDcsProp(IN VOID* ctx) {
 	if (EfiBootVolume == NULL) return EFI_NOT_READY;
+	if (RestoreTargetIsSource()) return EFI_ACCESS_DENIED;
   if (IsPxeBoot()) {
     return PxeFileCopy(L"EFI\\" DCS_DIRECTORY L"\\DcsProp", EfiBootVolume, L"EFI\\" DCS_DIRECTORY L"\\DcsProp");
   } else {
@@ -323,6 +392,7 @@ ActionRestoreShim(IN VOID* ctx) {
 	EFI_STATUS res = EFI_NOT_READY;
 	UINTN i, errors = 0;
 	if (EfiBootVolume == NULL) return EFI_NOT_READY;
+	if (RestoreTargetIsSource()) return EFI_ACCESS_DENIED;
 
 	DirectoryCreate(EfiBootVolume, L"EFI\\Boot");
 
@@ -479,8 +549,12 @@ DcsReMain(
 			item = DcsMenuAppend(item, L"Boot Windows PE from rescue disk", 'w', ActionBootWinPE, NULL);
 		}
 
-		if (IsSecureBootEnabled) {
-			item = DcsMenuAppend(item, L"Toggle Secure Boot Enforcement", 't', ActionToggleSB, NULL);
+		{
+			UINT8 sbState = 0;
+			// offered while enforcement is on, and while it is off so it can be switched back on
+			if (IsSecureBootEnabled() || (!EFI_ERROR(DcsLdrGetMokSBState(&sbState)) && sbState != 0)) {
+				item = DcsMenuAppend(item, L"Toggle Secure Boot Enforcement", 't', ActionToggleSB, NULL);
+			}
 		}
 		if (UefiFileExistsPath(L"EFI\\Shell\\Shell.efi")) {
 			item = DcsMenuAppend(item, L"Start EFI Shell", 's', ActionShell, NULL);
@@ -526,6 +600,7 @@ DcsReMain(
 	else
 	{
 		/* No DCS folder. Boot directly from the hard drive */
+		SelectEfiVolume(&EfiBootVolumeIndex, &EfiBootVolume, FALSE);
 		res = ActionDcsBoot (NULL);
 		if (EFI_ERROR(res)) {
 			ERR_PRINT(L"%r\n", res);

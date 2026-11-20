@@ -320,16 +320,30 @@ exit:
 //////////////////////////////////////////////////////////////////////////
 // Exit boot loader event
 //////////////////////////////////////////////////////////////////////////
-EFI_EVENT             mVirtualAddrChangeEvent;
+// The keys are wiped at ExitBootServices (signalled while this image is still intact); the
+// filters refuse I/O once the keys are gone
+EFI_EVENT             mExitBootServicesEvent;
 VOID
 EFIAPI
-VirtualNotifyEvent(
+ExitBootServicesNotifyEvent(
 	IN EFI_EVENT        Event,
 	IN VOID             *Context
 	)
 {
-	// Clean all sensible info and keys before transfer to OS, except BDB
+	// Clean all sensible info and keys before transfer to OS, except BDB.
+	// No memory services here (ExitBootServices notification): the wipe only overwrites.
 	CleanSensitiveData(FALSE);
+}
+
+// An error return unloads this image, so the notify function must not stay registered
+STATIC
+VOID
+CloseExitBootServicesEvent(VOID)
+{
+	if (mExitBootServicesEvent != NULL) {
+		gBS->CloseEvent(mExitBootServicesEvent);
+		mExitBootServicesEvent = NULL;
+	}
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -477,16 +491,20 @@ UefiMain(
 
 	// Get boot config from LoadOptions (passed by DcsBoot)
 	res = gBS->HandleProtocol(ImageHandle, &gEfiLoadedImageProtocolGuid, (VOID**)&LoadedImage);
+	// LoadOptions are DcsBoot's boot config only with its magic (others are ignored); one of
+	// another build (version or size) is refused
 	if (!EFI_ERROR(res) && LoadedImage != NULL &&
 		LoadedImage->LoadOptions != NULL &&
-		LoadedImage->LoadOptionsSize >= sizeof(DCS_BOOT_CONFIG))
+		LoadedImage->LoadOptionsSize >= OFFSET_OF(DCS_BOOT_CONFIG, Version) + sizeof(UINT32) &&
+		((DCS_BOOT_CONFIG*)LoadedImage->LoadOptions)->Magic == DCS_BOOT_CONFIG_MAGIC)
 	{
 		BootConfig = (DCS_BOOT_CONFIG*)LoadedImage->LoadOptions;
-		
-		// Use config from DcsBoot (avoids re-reading config file)
-		if (!InitConfigFromBootConfig(BootConfig)) {
-			ERR_PRINT(L"InitConfigFromBootConfig failed\n");
-			BootConfig = NULL;
+		if (LoadedImage->LoadOptionsSize < sizeof(DCS_BOOT_CONFIG) || !InitConfigFromBootConfig(BootConfig)) {
+			ERR_PRINT(L"DcsBoot and DcsInt are from different DCS versions (boot config version %d, expected %d).\n"
+				L"Reinstall DCS so that all its files are from the same version.\n",
+				(int)BootConfig->Version, (int)DCS_BOOT_CONFIG_VERSION);
+			KeyWait(L"Press any key to continue (%2d)\r", 30, 0, 0);
+			return EFI_INCOMPATIBLE_VERSION;
 		}
 	}
 #ifdef DEBUG_BUILD
@@ -515,23 +533,25 @@ UefiMain(
 		OUT_PRINT(L"DcsInt done, ret:  %r\n", res);
 	}
 	
+	// The wipe at the handoff is registered whatever the result: an exit action can turn a failed
+	// unlock into a boot (the error path below closes it again and wipes at once)
+	if (EFI_ERROR(gBS->CreateEventEx(
+		EVT_NOTIFY_SIGNAL,
+		TPL_NOTIFY,
+		ExitBootServicesNotifyEvent,
+		NULL,
+		&gEfiEventExitBootServicesGuid,
+		&mExitBootServicesEvent
+	))) {
+		ERR_PRINT(L"Failed to setup ExitBootServices event to Clean Sensitive Data from RAM after boot!\n");
+	}
+
 	if (!EFI_ERROR(res)) 
 	{
-		if (EFI_ERROR(gBS->CreateEventEx(
-			EVT_NOTIFY_SIGNAL,
-			TPL_NOTIFY,
-			VirtualNotifyEvent,
-			NULL,
-			&gEfiEventVirtualAddressChangeGuid,
-			&mVirtualAddrChangeEvent
-		))) {
-			ERR_PRINT(L"Failed to setup VirtualAddrChangeEvent to Clean Sensitive Data from RAM after boot!\n");
-		}
-
 		if (res != EFI_DCS_INPUT_REQUIRED)
 			res = OnExit(OnExitSuccess, res);
 	} 
-	else if (!gExternMode) // in rescue mode, return orriginal error code
+	else if (!gExternMode && res != EFI_DCS_SHUTDOWN_REQUESTED) // in rescue mode, return orriginal error code; the block mode refusal is not an auth failure
 	{
 		if (res == EFI_DCS_USER_TIMEOUT)
 			res = OnExit(OnExitAuthTimeout, res);
@@ -545,6 +565,7 @@ UefiMain(
 
 	// clear all sensitive data on failure
 	if (EFI_ERROR(res)) {
+		CloseExitBootServicesEvent();
 		CleanSensitiveData(TRUE);
 		return res;
 	}
@@ -552,6 +573,8 @@ UefiMain(
 	// Caution: installing hooks but returning error will cause ConnectAllEfi to randomly crash!
 	if (EFI_ERROR(DscInstallHook(ImageHandle, SystemTable))) {
 		ERR_PRINT(L"Failed to install EFI Hooks!\n");
+		CloseExitBootServicesEvent();
+		CleanSensitiveData(TRUE); // the machine is shut down, nothing here is needed any more
 		return EFI_DCS_SHUTDOWN_REQUESTED;
 	}
 	return res;

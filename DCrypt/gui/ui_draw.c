@@ -173,6 +173,11 @@ void _draw_listview(
 				{
 					text_color = GetSysColor( COLOR_GRAYTEXT );
 				}
+				if ( (k == COL_STATUS) && (itst->hwndItem == __lists[HMAIN_DRIVES]) && _is_locked_item(lvitem.lParam) )
+				{
+					/* locked volume: keys erased at hibernation */
+					text_color = CL_WARNING;
+				}
 				SetTextColor( itst->hDC, text_color );
 
 				if ( k >= 4 )

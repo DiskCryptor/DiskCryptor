@@ -33,6 +33,7 @@
 #include "misc_mem.h"
 #include "boot_pass.h"
 #include "crypto_functions.h"
+#include "dump_helpers.h"
 
 typedef struct _pw_irp_ctx {
 	WORK_QUEUE_ITEM  wrk_item;
@@ -40,6 +41,33 @@ typedef struct _pw_irp_ctx {
 	PIRP             irp;
 
 } pw_irp_ctx;
+
+/*
+ * Resume generation: a resume unlock thread still retrying when the system hibernates and
+ * resumes again must not wipe the boot keys the newer S0 IRP has fetched. Each S0 of the
+ * boot partition bumps resume_gen and fetches the boot keys under resume_lock; secrets are
+ * cleared under resume_lock only while the clearer's generation is still current.
+ * A KMUTEX (not a FAST_MUTEX): stays at PASSIVE_LEVEL, dc_clean_boot_keys tests the IRQL.
+ */
+static KMUTEX        resume_lock;
+static volatile LONG resume_gen;
+
+void dc_init_power_irp()
+{
+	KeInitializeMutex(&resume_lock, 0);
+	resume_gen = 0;
+}
+
+static void dc_resume_clear_secrets(LONG gen)
+{
+	wait_object_infinity(&resume_lock);
+
+	// clean password cache if CONF_CACHE_PASSWORD is not set - not if a newer resume runs
+	if (resume_gen == gen) {
+		dc_clear_secrets(FALSE);
+	}
+	KeReleaseMutex(&resume_lock, FALSE);
+}
 
 /* function types declaration */
 IO_COMPLETION_ROUTINE dc_sync_complete;
@@ -126,98 +154,18 @@ NTSTATUS dc_create_close_irp(PDEVICE_OBJECT dev_obj, PIRP irp)
 }
 
 /*
-* Erase encryption keys for all F_NO_HIBER volumes before hibernation.
-* This prevents key material from being written to the hibernation file.                                                                    
-*/
-static void dc_prepare_hiber_erase_unmount(dev_hook *hook)
-{
-	DbgMsg("erasing keys for hibernation, dev=%ws\n", hook->dev_name);
-
-	// Block I/O and mark for post-resume cleanup
-	hook->flags |= (F_DISABLE | F_HIBER_ERASE);
-
-	// Securely erase all encryption keys
-	if (hook->dsk_key != NULL) {
-		RtlSecureZeroMemory(hook->dsk_key, sizeof(xts_key));
-	}
-	if (hook->tmp_key != NULL) {
-		RtlSecureZeroMemory(hook->tmp_key, sizeof(xts_key));
-	}
-	if (hook->hdr_key != NULL) {
-		RtlSecureZeroMemory(hook->hdr_key, sizeof(xts_key));
-	}
-	if (hook->bak_key != NULL) {
-		RtlSecureZeroMemory(hook->bak_key, sizeof(xts_key));
-	}
-
-	// Flush CPU caches to ensure keys not recoverable
-	__wbinvd();
-}
-
-/*
- * Complete unmount and attempt auto-remount for a single F_HIBER_ERASE volume.
- * Called after resume from hibernation with busy_lock NOT held.
+ * Resume from hibernation: unlock the volumes locked at S4 with the cached passwords / boot
+ * keys, then drop the secrets that must not stay cached. A system thread, not the S0 power
+ * IRP: the KDF may take seconds per volume and the disks may still be powering up.
  */
-static void dc_complete_hiber_erase_unmount(dev_hook *hook)
+static void dc_resume_unlock_thread(void *param)
 {
-	DbgMsg("attempting auto-remount after resume, dev=%ws\n", hook->dev_name);
+	/* with retries: the disks may still be powering up */
+	dc_unlock_locked_volumes(TRUE);
 
-	wait_object_infinity(&hook->busy_lock);
+	dc_resume_clear_secrets((LONG)(LONG_PTR)param);
 
-	// Complete the unmount (free zeroed key structures)
-	hook->flags &= ~(F_CLEAR_ON_UNMOUNT | F_DISABLE);
-	hook->flags |= F_FS_RAW;
-
-	if (hook->dsk_key != NULL) {
-		mm_secure_free(hook->dsk_key);
-		hook->dsk_key = NULL;
-	}
-	if (hook->tmp_key != NULL) {
-		mm_secure_free(hook->tmp_key);
-		hook->tmp_key = NULL;
-	}
-	if (hook->hdr_key != NULL) {
-		mm_secure_free(hook->hdr_key);
-		hook->hdr_key = NULL;
-	}
-	if (hook->bak_key != NULL) {
-		mm_secure_free(hook->bak_key);
-		hook->bak_key = NULL;
-	}
-
-	hook->use_size = hook->dsk_size;
-	hook->tmp_size = 0;
-	lock_inc(&hook->chg_mount);
-
-	KeReleaseMutex(&hook->busy_lock, FALSE);
-
-	// Attempt auto-remount using cached passwords/boot keys
-	// dc_mount_device acquires busy_lock internally, so we must release it first
-	if (dc_mount_device(hook->dev_name, NULL, MF_NO_HIBER, NULL) == ST_OK)
-	{
-		DbgMsg("auto-remount successful, dev=%ws\n", hook->dev_name);
-	}
-	else
-	{
-		DbgMsg("auto-remount failed (no cached password), dev=%ws\n", hook->dev_name);
-	}
-}
-
-/*
- * Complete unmount for all F_HIBER_ERASE volumes after resume from hibernation.
- * Must be called with NO busy_lock held.
- */
-static void dc_complete_pending_unmounts()
-{
-	dev_hook *hook;
-
-	for (hook = dc_first_hook(); hook != NULL; hook = dc_next_hook(hook))
-	{
-		if (hook->flags & F_HIBER_ERASE)
-		{
-			dc_complete_hiber_erase_unmount(hook);
-		}
-	}
+	PsTerminateSystemThread(STATUS_SUCCESS);
 }
 
 static
@@ -225,36 +173,106 @@ NTSTATUS dc_process_power_irp(dev_hook *hook, PIRP irp)
 {
 	NTSTATUS           status;
 	PIO_STACK_LOCATION irp_sp;
-	int                do_critical_unmounts = 0;
+	int                do_resume_unlock = 0;
+	LONG               gen = 0;
 
 	irp_sp = IoGetCurrentIrpStackLocation(irp);
 
+	/* Veto hibernation (also hybrid sleep / Fast Startup) when the image could not be written
+	 * safely; same policy as dc_dump_start. Best effort: critical actions send no query - then
+	 * the S4 SET_POWER below locks the volumes that keep the image unsafe, and the DumpStart
+	 * refusal remains for volumes that cannot be locked. With CONF_HIBER_LOCK only a volume
+	 * that cannot be locked vetoes (the S4 SET_POWER below locks the others). */
+	if ( irp_sp->MinorFunction == IRP_MN_QUERY_POWER && irp_sp->Parameters.Power.Type == SystemPowerState &&
+		 irp_sp->Parameters.Power.State.SystemState == PowerSystemHibernate &&
+		 dc_dump_helpers.dump_is_hibernation_allowed((dc_conf_flags & CONF_HIBER_LOCK) != 0) == FALSE )
+	{
+		DbgMsg("hibernation vetoed: memory holds keys that the hibernation image could not protect\n");
+		PoStartNextPowerIrp(irp);
+		return dc_release_irp(hook, irp, STATUS_UNSUCCESSFUL);
+	}
+
 	if ( irp_sp->MinorFunction == IRP_MN_SET_POWER && irp_sp->Parameters.Power.Type == SystemPowerState )
 	{
-		wait_object_infinity(&hook->busy_lock);
+		BOOLEAN image_allowed = TRUE;   /* image safe with the predicted locks (no lockable volume locked) */
+		BOOLEAN locked_allowed = TRUE;  /* image safe if every lockable volume is locked as well */
 
 		if (irp_sp->Parameters.Power.State.SystemState == PowerSystemHibernate)
 		{
+			/* from the first S4 SET_POWER until the S0 SET_POWER no volume may be mounted or
+			 * unlocked - it would reach the image with live keys after its S4 IRP was handled */
+			dc_set_s4_transition(TRUE);
+
+			/* flush a mount / unlock / encryption start of THIS volume that passed its
+			 * s4_transition test before the flag was set: they hold busy_lock from the test
+			 * until the keys are installed, so after this acquire / release the policy below
+			 * sees their result. Counted: this IRP holds a remove-lock reference. */
+			dc_wait_busy_lock_rl(hook);
+			KeReleaseMutex(&hook->busy_lock, FALSE);
+
+			/* evaluate the dump policy BEFORE taking busy_lock: it takes hooks_sync_resource,
+			 * other paths hold that and then wait on a busy_lock (lock order). Only locks of
+			 * other volumes can change the result now; the dump-time check is the final word. */
+			if ( (image_allowed = dc_dump_helpers.dump_is_hibernation_allowed(FALSE)) == FALSE ) {
+				locked_allowed = dc_dump_helpers.dump_is_hibernation_allowed(TRUE);
+			}
+		}
+		else if (irp_sp->Parameters.Power.State.SystemState == PowerSystemWorking)
+		{
+			/* resumed (or the hibernation was aborted): mounts / unlocks allowed again,
+			 * before the resume unlock below runs */
+			dc_set_s4_transition(FALSE);
+		}
+
+		/* counted: this IRP holds a remove-lock reference, an unmount holding busy_lock
+		 * drains without waiting for it. After such an unmount the volume is not F_ENABLED,
+		 * so nothing below locks it. */
+		dc_wait_busy_lock_rl(hook);
+
+		if (irp_sp->Parameters.Power.State.SystemState == PowerSystemHibernate)
+		{
+			int save_failed = 0;
+
 			// prevent device encryption to sync device and memory state
-			hook->flags |= F_PREVENT_ENC;
+			dc_hook_set_flags(hook, F_PREVENT_ENC);
 #ifdef DC_CONCURRENT_TRANSCRYPT
 			if (hook->flags & F_SYNC) {
 				/* Wait for any in-progress transcryption to complete.
 				 * dc_transcrypt_step checks F_PREVENT_ENC and will exit early,
 				 * but we need to wait for any step that's already past that check. */
 				dc_wait_for_transcrypt(hook);
-				/* Save current progress */
-				dc_save_enc_state(hook, SYNC_STEP_UPDATE);
+				/* Save current progress; a lock records a failed save */
+				save_failed = (dc_save_enc_state(hook, SYNC_STEP_UPDATE) != ST_OK);
 			}
 #else
 			dc_send_sync_packet(hook->dev_name, S_OP_SYNC, 0);
 #endif
 
-			// Erase keys for THIS F_NO_HIBER volume BEFORE hibernation
-			// Each device receives its own power IRP, so we only handle this hook
-			if ((hook->flags & F_ENABLED) && (hook->flags & F_NO_HIBER))
+			/* lock THIS volume before the image is written (each device gets its own power IRP):
+			 *  - a no-hibernation volume (DC_WILL_HIBER_ERASE excludes the boot / image / dump
+			 *    volume), and
+			 *  - any other lockable volume while the image could not be protected (locking makes
+			 *    it safe instead of a bugcheck in DumpStart); locked volumes are skipped by the
+			 *    policy, so they are locked one by one until the image is safe.
+			 * A failed lock leaves the keys live and is marked, so the dump policy refuses the
+			 * image. */
 			{
-				dc_prepare_hiber_erase_unmount(hook);
+				BOOLEAN lock = DC_WILL_HIBER_ERASE(hook);
+
+				if (lock == FALSE && DC_HIBER_LOCKABLE(hook) && image_allowed == FALSE) {
+					if (locked_allowed != FALSE) {
+						DbgMsg("hibernation goes ahead although the image could not be protected: locking %ws\n", hook->dev_name);
+						lock = TRUE;
+					} else {
+						/* the image would be refused even with every lockable volume
+						 * locked - do not lock this volume for nothing */
+						DbgMsg("hibernation image refused anyway, %ws not locked\n", hook->dev_name);
+					}
+				}
+				if (lock != FALSE && dc_lock_volume(hook, save_failed) != ST_OK) {
+					DbgMsg("lock on hibernate failed, keys stay live, dev=%ws\n", hook->dev_name);
+					InterlockedExchange(&hook->lock_failed, 1);
+				}
 			}
 		}
 
@@ -262,29 +280,43 @@ NTSTATUS dc_process_power_irp(dev_hook *hook, PIRP irp)
 		{
 			if (hook->pdo_dev->Flags & DO_SYSTEM_BOOT_PARTITION)
 			{
-				// search bootloader password in memory after hibernation
+				// search bootloader password in memory after hibernation; new resume
+				// generation, so that an older resume thread keeps these keys
+				wait_object_infinity(&resume_lock);
+				gen = InterlockedIncrement(&resume_gen);
 				dc_get_boot_pass();
+				KeReleaseMutex(&resume_lock, FALSE);
 
 				// initialize encryption again, because CPU capabilities may be changed
 				dc_init_encryption();
 
-				// Mark that we need to do critical unmounts after releasing busy_lock
-				do_critical_unmounts = 1;
+				// unlock the locked volumes after releasing busy_lock
+				do_resume_unlock = 1;
 			}
-			// allow encryption requests
-			hook->flags &= ~F_PREVENT_ENC;
+			/* the S4 lock attempt is over (resumed or hibernation aborted) */
+			InterlockedExchange(&hook->lock_failed, 0);
+
+			/* allow encryption requests - not on a locked volume: the unlock re-initialises
+			 * its session and then clears F_PREVENT_ENC itself */
+			if ((hook->flags & F_HIBER_ERASE) == 0) {
+				dc_hook_clear_flags(hook, F_PREVENT_ENC);
+			}
 		}
 
 		KeReleaseMutex(&hook->busy_lock, FALSE);
 
-		// Complete unmount and attempt auto-remount for F_NO_HIBER volumes
-		// This must be done AFTER releasing busy_lock to avoid deadlock with dc_mount_device
-		if (do_critical_unmounts)
+		/* auto-unlock the volumes locked at S4, AFTER releasing busy_lock (dc_mount_device
+		 * takes each volume's busy_lock); see dc_resume_unlock_thread. Inline when there is
+		 * nothing to unlock or the thread cannot be created. */
+		if (do_resume_unlock)
 		{
-			dc_complete_pending_unmounts();
+			if (dc_num_locked() == 0 || start_system_thread(dc_resume_unlock_thread, (void*)(LONG_PTR)gen, NULL) != ST_OK)
+			{
+				/* inline: no retries, they would hold up this power IRP for seconds */
+				dc_unlock_locked_volumes(FALSE);
 
-			// clean password cache if CONF_CACHE_PASSWORD is not set
-			dc_clear_secrets(FALSE);
+				dc_resume_clear_secrets(gen);
+			}
 		}
 	}
 

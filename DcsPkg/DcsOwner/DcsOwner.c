@@ -119,6 +119,15 @@ DCSOWNER_VAR_MAP gVarMap[] = {
             EFI_VARIABLE_RUNTIME_ACCESS,
         NULL
     },
+    {
+        L"PrivacyDeveloper",
+        L"PrivacyDeveloper_RT",
+        L"PrivacyDeveloper_BS",
+        &gEfiDcsOwnerGuid,
+        EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS |
+        EFI_VARIABLE_RUNTIME_ACCESS,
+    NULL
+    },
 };
 
 #define VAR_MAP_COUNT  (sizeof(gVarMap) / sizeof(gVarMap[0]))
@@ -172,6 +181,25 @@ STATIC VOID    DcsOwnerInstallHooks (IN UINT8 EffSb);   // called lazily from Bo
 // Small variable helpers (all under gEfiDcsOwnerGuid)
 //////////////////////////////////////////////////////////////////////////
 
+// A committed "*_BS" store is trusted only with exactly DCSOWNER_ATTR_PRIVATE.
+// One carrying other attributes (e.g. RUNTIME_ACCESS) was planted from the OS:
+// delete it (Attributes 0 deletes despite the mismatch) and treat it as absent.
+STATIC
+BOOLEAN
+CfgRejectPlanted (
+    IN CHAR16    *Name,
+    IN UINT32    Attr
+    )
+{
+    UINTN Len = StrLen(Name);
+
+    if (Len < 3 || StrCmp(Name + Len - 3, L"_BS") != 0 || Attr == DCSOWNER_ATTR_PRIVATE) {
+        return FALSE;
+    }
+    EfiSetVar(Name, &gEfiDcsOwnerGuid, NULL, 0, 0);
+    return TRUE;
+}
+
 UINT8
 CfgGetU8 (
     IN  CHAR16    *Name,
@@ -186,6 +214,10 @@ CfgGetU8 (
 
     if (Present) *Present = FALSE;
     Status = EfiGetVar(Name, &gEfiDcsOwnerGuid, &Val, &Size, &Attr);
+    if (!EFI_ERROR(Status) && Val != NULL && CfgRejectPlanted(Name, Attr)) {
+        MEM_FREE(Val);
+        return 0;
+    }
     if (!EFI_ERROR(Status) && Val != NULL) {
         if (Size >= 1) {
             Result = ((UINT8 *)Val)[0];
@@ -209,7 +241,7 @@ CfgGetBytes (
 
     *Size = 0;
     Status = EfiGetVar(Name, &gEfiDcsOwnerGuid, &Val, &Sz, &Attr);
-    if (!EFI_ERROR(Status) && Val != NULL && Sz > 0) {
+    if (!EFI_ERROR(Status) && Val != NULL && Sz > 0 && !CfgRejectPlanted(Name, Attr)) {
         *Size = Sz;
         return Val;
     }
@@ -227,7 +259,7 @@ CfgSetU8 (
     )
 {
     if (Value == 0) {
-        EfiSetVar(Name, &gEfiDcsOwnerGuid, NULL, 0, Attr);
+        EfiSetVar(Name, &gEfiDcsOwnerGuid, NULL, 0, 0);
     } else {
         EfiSetVar(Name, &gEfiDcsOwnerGuid, &Value, sizeof(Value), Attr);
     }
@@ -248,7 +280,7 @@ CfgSetBytes(
     if (Data != NULL && Size > 0) {
         EfiSetVar(Name, &gEfiDcsOwnerGuid, Data, Size, Attr);
     } else {
-        EfiSetVar(Name, &gEfiDcsOwnerGuid, NULL, 0, Attr);
+        EfiSetVar(Name, &gEfiDcsOwnerGuid, NULL, 0, 0);
     }
 }
 
@@ -262,7 +294,7 @@ DcsOwnerGetVerboseDebug (
     )
 {
     if (gUseConfigFile)
-        return (BOOLEAN)(ConfigReadInt(DCSOWNER_CFG_DEBUG, 0) != 0);
+        return (BOOLEAN)(ConfigReadInt(DCSOWNER_CFG_DEBUG, DCS_VERBOSE_DEBUG_DEFAULT) != 0);   // the same default as DcsInt
     return (BOOLEAN)(CfgGetU8(DCSOWNER_VAR_DEBUG, NULL) != 0);
 }
 
@@ -274,6 +306,22 @@ DcsOwnerGetTpmKillMode (
     if (gUseConfigFile)
         return (UINT8)ConfigReadInt(DCSOWNER_CFG_TPMKILL, 0);
     return CfgGetU8(DCSOWNER_VAR_TPMKILL, NULL);
+}
+
+// Like TpmKill/VerboseDebug: the EFI variable when there is no DcsProp, so saving the lock
+// does not create a one-key DcsProp that moves the other settings to the file
+BOOLEAN
+DcsOwnerGetBootMenuLock (
+    VOID
+    )
+{
+    BOOLEAN Present = FALSE;
+    UINT8   Value;
+
+    if (gUseConfigFile)
+        return (BOOLEAN)(ConfigReadInt(DCSOWNER_CFG_BML, 1) != 0);
+    Value = CfgGetU8(DCSOWNER_VAR_BML, &Present);
+    return Present ? (BOOLEAN)(Value != 0) : TRUE;   // absent: on, the DcsProp default
 }
 
 BOOLEAN
@@ -369,6 +417,88 @@ DcsOwnerMeasurePcr (
 #endif
 
 //////////////////////////////////////////////////////////////////////////
+// Virtual "<Name>Original" shadow variables
+//////////////////////////////////////////////////////////////////////////
+//
+// For every variable DcsOwner can override we expose a read-only companion
+// named "<Name>Original" that reports the firmware's genuine value - so the OS
+// or a tool can see what the live value was replaced with. The companion is
+// purely computed: nothing is stored for it, writes to it are refused, and
+// resolving it simply strips the suffix and asks the firmware (gOrgGetVariable)
+// for the real name. It is reachable by name at runtime once the hooks are
+// active; it is deliberately not injected into variable enumeration.
+//
+#define DCSOWNER_ORIG_SUFFIX  L"Original"
+
+//
+// TRUE if the first BaseLen characters of VariableName equal Candidate and
+// Candidate is exactly BaseLen characters long. Avoids the deprecated StrnCmp.
+//
+STATIC
+BOOLEAN
+DcsOwnerBaseMatches (
+    IN CONST CHAR16  *VariableName,
+    IN UINTN         BaseLen,
+    IN CONST CHAR16  *Candidate
+    )
+{
+    UINTN  k;
+
+    if (StrLen(Candidate) != BaseLen) {
+        return FALSE;
+    }
+    for (k = 0; k < BaseLen; k++) {
+        if (VariableName[k] != Candidate[k]) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
+//
+// If VariableName is "<Base>Original" and <Base>/VendorGuid names a variable we
+// shadow (a gVarMap entry, or the SecureBoot/SetupMode special pair), return the
+// real base name to forward to the firmware; otherwise NULL.
+//
+STATIC
+CONST CHAR16 *
+DcsOwnerMatchOriginal (
+    IN CHAR16    *VariableName,
+    IN EFI_GUID  *VendorGuid
+    )
+{
+    UINTN  NameLen = StrLen(VariableName);
+    UINTN  SufLen  = StrLen(DCSOWNER_ORIG_SUFFIX);
+    UINTN  BaseLen;
+    UINTN  i;
+
+    if (NameLen <= SufLen ||
+        StrCmp(VariableName + (NameLen - SufLen), DCSOWNER_ORIG_SUFFIX) != 0) {
+        return NULL;
+    }
+    BaseLen = NameLen - SufLen;
+
+    // SecureBoot / SetupMode are overridden as a special case, not via gVarMap.
+    if (CompareGuid(VendorGuid, &gEfiGlobalVariableGuid)) {
+        if (DcsOwnerBaseMatches(VariableName, BaseLen, EFI_SECURE_BOOT_MODE_NAME)) {
+            return EFI_SECURE_BOOT_MODE_NAME;
+        }
+        if (DcsOwnerBaseMatches(VariableName, BaseLen, EFI_SETUP_MODE_NAME)) {
+            return EFI_SETUP_MODE_NAME;
+        }
+    }
+
+    for (i = 0; i < VAR_MAP_COUNT; i++) {
+        if (CompareGuid(VendorGuid, gVarMap[i].Guid) &&
+            DcsOwnerBaseMatches(VariableName, BaseLen, gVarMap[i].Name)) {
+            return gVarMap[i].Name;
+        }
+    }
+
+    return NULL;
+}
+
+//////////////////////////////////////////////////////////////////////////
 // Hooked GetVariable (runtime)
 //////////////////////////////////////////////////////////////////////////
 
@@ -391,6 +521,22 @@ DcsOwnerGetVariable (
 
     if (!mActive || VariableName == NULL || VendorGuid == NULL || DataSize == NULL) {
         return gOrgGetVariable(VariableName, VendorGuid, Attributes, DataSize, Data);
+    }
+
+    // Virtual "<Name>Original": report the firmware's genuine value for a
+    // shadowed variable so the OS can see what the override replaced. Read-only
+    // passthrough - we forward the real name to the firmware's own GetVariable
+    // (not our hook), so a synthetic override returns EFI_NOT_FOUND here, which
+    // correctly means "no original existed".
+    {
+        CONST CHAR16 *RealName = DcsOwnerMatchOriginal(VariableName, VendorGuid);
+        if (RealName != NULL) {
+            EFI_STATUS Status = gOrgGetVariable((CHAR16 *)RealName, VendorGuid, Attributes, DataSize, Data);
+            if (!EFI_ERROR(Status) && Attributes) {
+                *Attributes |= DCSOWNER_ATTR_VIRTUAL;
+            }
+            return Status;
+        }
     }
 
     // Special: SecureBoot and SetupMode (driven by MySecureBoot)
@@ -448,6 +594,35 @@ DcsOwnerGetVariable (
 // Hooked SetVariable (runtime) - blocks writes to overridden variables
 //////////////////////////////////////////////////////////////////////////
 
+// The boot manager's variables the boot menu lock covers: BootOrder, BootNext and Boot####
+// (four hex digits) in the global variable GUID, exact names only
+STATIC
+BOOLEAN
+IsBootManagerVar (
+    IN CHAR16    *VariableName,
+    IN EFI_GUID  *VendorGuid
+    )
+{
+    UINTN k;
+
+    if (!CompareGuid(VendorGuid, &gEfiGlobalVariableGuid)) {
+        return FALSE;
+    }
+    if (StrCmp(VariableName, L"BootOrder") == 0 || StrCmp(VariableName, L"BootNext") == 0) {
+        return TRUE;
+    }
+    if (StrnCmp(VariableName, L"Boot", 4) != 0 || StrLen(VariableName) != 8) {
+        return FALSE;
+    }
+    for (k = 4; k < 8; k++) {
+        CHAR16 c = VariableName[k];
+        if (!((c >= L'0' && c <= L'9') || (c >= L'A' && c <= L'F') || (c >= L'a' && c <= L'f'))) {
+            return FALSE;
+        }
+    }
+    return TRUE;
+}
+
 STATIC
 EFI_STATUS
 EFIAPI
@@ -465,21 +640,27 @@ DcsOwnerSetVariable (
         return gOrgSetVariable(VariableName, VendorGuid, Attributes, DataSize, Data);
     }
 
-    // Allow DcsBoot to unlock by deleting BootDC5B
-    if (mBootMenuLocked &&
-        StrStr(VariableName, L"BootDC5B") == VariableName && DataSize == 0) {
+    // Deleting DCS's own boot entry (Boot DC5B) is the intended way to lift the lock (e.g. when
+    // DCS is removed) - only that exact variable, not any name with the prefix.
+    if (mBootMenuLocked && DataSize == 0 && IsBootManagerVar(VariableName, VendorGuid) &&
+        StrCmp(VariableName, L"BootDC5B") == 0) {
         mBootMenuLocked = FALSE;
     }
 
-    // Boot menu lock: block all Boot* variable writes
-    if (mBootMenuLocked) {
-        if (StrStr(VariableName, L"Boot") == VariableName) {
-            return EFI_SUCCESS;
-        }
+    // Boot menu lock: writes to BootOrder, BootNext and Boot#### are dropped, reporting success
+    // on purpose (Windows updates must not see an error).
+    if (mBootMenuLocked && IsBootManagerVar(VariableName, VendorGuid)) {
+        return EFI_SUCCESS;
     }
 
     if (!mActive) {
         return gOrgSetVariable(VariableName, VendorGuid, Attributes, DataSize, Data);
+    }
+
+    // The virtual "<Name>Original" shadows are read-only: refuse writes so the
+    // OS cannot plant a real variable that would mask the computed original.
+    if (DcsOwnerMatchOriginal(VariableName, VendorGuid) != NULL) {
+        return EFI_WRITE_PROTECTED;
     }
 
     // Block writes to overridden variables
@@ -504,8 +685,154 @@ DcsOwnerSetVariable (
 }
 
 //////////////////////////////////////////////////////////////////////////
-// Hooked GetNextVariableName (runtime) - injects synthetic entries
+// Hooked GetNextVariableName (runtime) - injects our virtual entries
 //////////////////////////////////////////////////////////////////////////
+//
+// Two kinds of virtual entry are appended after the firmware's own variables,
+// in a fixed order so the enumeration can resume from any point:
+//   1. Synthetic overrides - a variable we override that the firmware does not
+//      have, so it would otherwise be invisible.
+//   2. "<Name>Original" shadows - for every override that shadows a REAL
+//      firmware variable (and the SecureBoot/SetupMode pair), so a tool can
+//      discover the companion that exposes the pre-override value. Synthetic
+//      overrides get no "Original" entry: there is no original to read.
+//
+
+//
+// Resolve the virtual entry at ordinal Index. Returns FALSE once Index is past
+// the last entry. Base is the real variable name; when IsOriginal is TRUE the
+// enumerated name is Base followed by the "Original" suffix.
+//
+STATIC
+BOOLEAN
+DcsOwnerVirtualAt (
+    IN  UINTN         Index,
+    OUT CONST CHAR16  **Base,
+    OUT EFI_GUID      **Guid,
+    OUT BOOLEAN       *IsOriginal
+    )
+{
+    UINTN  pos = 0;
+    UINTN  i;
+
+    // 1. Synthetic overrides (the variable itself, no suffix).
+    for (i = 0; i < VAR_MAP_COUNT; i++) {
+        if (mVarState[i].Synthetic && mVarState[i].Data != NULL) {
+            if (pos == Index) {
+                *Base = gVarMap[i].Name; *Guid = gVarMap[i].Guid; *IsOriginal = FALSE;
+                return TRUE;
+            }
+            pos++;
+        }
+    }
+
+    // 2. "<Name>Original" for overrides that shadow a real firmware variable.
+    for (i = 0; i < VAR_MAP_COUNT; i++) {
+        if (mVarState[i].Data != NULL && !mVarState[i].Synthetic) {
+            if (pos == Index) {
+                *Base = gVarMap[i].Name; *Guid = gVarMap[i].Guid; *IsOriginal = TRUE;
+                return TRUE;
+            }
+            pos++;
+        }
+    }
+
+    // 3. SecureBoot / SetupMode originals while the SB override is active.
+    if (mSbOverride) {
+        if (pos == Index) {
+            *Base = EFI_SECURE_BOOT_MODE_NAME; *Guid = &gEfiGlobalVariableGuid; *IsOriginal = TRUE;
+            return TRUE;
+        }
+        pos++;
+        if (pos == Index) {
+            *Base = EFI_SETUP_MODE_NAME; *Guid = &gEfiGlobalVariableGuid; *IsOriginal = TRUE;
+            return TRUE;
+        }
+        pos++;
+    }
+
+    return FALSE;
+}
+
+//
+// If (VariableName, VendorGuid) is one of our virtual entries, return its
+// ordinal in *Index.
+//
+STATIC
+BOOLEAN
+DcsOwnerVirtualFind (
+    IN  CHAR16    *VariableName,
+    IN  EFI_GUID  *VendorGuid,
+    OUT UINTN     *Index
+    )
+{
+    CONST CHAR16  *Base;
+    EFI_GUID      *Guid;
+    BOOLEAN       IsOriginal;
+    UINTN         idx = 0;
+
+    while (DcsOwnerVirtualAt(idx, &Base, &Guid, &IsOriginal)) {
+        if (CompareGuid(VendorGuid, Guid)) {
+            if (!IsOriginal) {
+                if (StrCmp(VariableName, Base) == 0) {
+                    *Index = idx;
+                    return TRUE;
+                }
+            } else {
+                UINTN BaseLen = StrLen(Base);
+                if (StrLen(VariableName) == BaseLen + StrLen(DCSOWNER_ORIG_SUFFIX) &&
+                    DcsOwnerBaseMatches(VariableName, BaseLen, Base) &&
+                    StrCmp(VariableName + BaseLen, DCSOWNER_ORIG_SUFFIX) == 0) {
+                    *Index = idx;
+                    return TRUE;
+                }
+            }
+        }
+        idx++;
+    }
+
+    return FALSE;
+}
+
+//
+// Emit the virtual entry at ordinal Index into the caller's buffers, following
+// the firmware convention (grow *VariableNameSize and return EFI_BUFFER_TOO_SMALL
+// if it does not fit). Returns EFI_NOT_FOUND when Index is past the last entry.
+//
+STATIC
+EFI_STATUS
+DcsOwnerVirtualEmit (
+    IN     UINTN     Index,
+    IN OUT UINTN     *VariableNameSize,
+    OUT    CHAR16    *VariableName,
+    OUT    EFI_GUID  *VendorGuid
+    )
+{
+    CONST CHAR16  *Base;
+    EFI_GUID      *Guid;
+    BOOLEAN       IsOriginal;
+    UINTN         RequiredSize;
+    UINTN         Chars;
+
+    if (!DcsOwnerVirtualAt(Index, &Base, &Guid, &IsOriginal)) {
+        return EFI_NOT_FOUND;
+    }
+
+    RequiredSize = (StrLen(Base) +
+                    (IsOriginal ? StrLen(DCSOWNER_ORIG_SUFFIX) : 0) + 1) * sizeof(CHAR16);
+    if (*VariableNameSize < RequiredSize) {
+        *VariableNameSize = RequiredSize;
+        return EFI_BUFFER_TOO_SMALL;
+    }
+
+    Chars = *VariableNameSize / sizeof(CHAR16);
+    StrCpyS(VariableName, Chars, Base);
+    if (IsOriginal) {
+        StrCatS(VariableName, Chars, DCSOWNER_ORIG_SUFFIX);
+    }
+    CopyMem(VendorGuid, Guid, sizeof(EFI_GUID));
+    return EFI_SUCCESS;
+}
 
 STATIC
 EFI_STATUS
@@ -517,72 +844,26 @@ DcsOwnerGetNextVariableName (
     )
 {
     EFI_STATUS  Status;
-    UINTN       i;
-    UINTN       RequiredSize;
-    BOOLEAN     CurrentIsSynthetic;
-    UINTN       CurrentIndex;
+    UINTN       Index;
 
     if (!mActive || !mEnumHooked ||
         VariableNameSize == NULL || VariableName == NULL || VendorGuid == NULL) {
         return gOrgGetNextVariableName(VariableNameSize, VariableName, VendorGuid);
     }
 
-    // Determine if the current variable is one of our synthetic entries
-    CurrentIsSynthetic = FALSE;
-    CurrentIndex = VAR_MAP_COUNT;
-    if (VariableName[0] != L'\0') {
-        for (i = 0; i < VAR_MAP_COUNT; i++) {
-            if (mVarState[i].Synthetic && mVarState[i].Data != NULL &&
-                CompareGuid(VendorGuid, gVarMap[i].Guid) &&
-                StrCmp(VariableName, gVarMap[i].Name) == 0) {
-                CurrentIsSynthetic = TRUE;
-                CurrentIndex = i;
-                break;
-            }
-        }
+    // If the current variable is one of ours, continue from the next entry.
+    if (VariableName[0] != L'\0' &&
+        DcsOwnerVirtualFind(VariableName, VendorGuid, &Index)) {
+        return DcsOwnerVirtualEmit(Index + 1, VariableNameSize, VariableName, VendorGuid);
     }
 
-    if (!CurrentIsSynthetic) {
-        // Try firmware enumeration first
-        Status = gOrgGetNextVariableName(VariableNameSize, VariableName, VendorGuid);
-        if (!EFI_ERROR(Status)) {
-            return Status;
-        }
-
-        // Firmware exhausted — append synthetic entries starting from first
-        if (Status == EFI_NOT_FOUND) {
-            for (i = 0; i < VAR_MAP_COUNT; i++) {
-                if (mVarState[i].Synthetic && mVarState[i].Data != NULL) {
-                    RequiredSize = (StrLen(gVarMap[i].Name) + 1) * sizeof(CHAR16);
-                    if (*VariableNameSize < RequiredSize) {
-                        *VariableNameSize = RequiredSize;
-                        return EFI_BUFFER_TOO_SMALL;
-                    }
-                    StrCpyS(VariableName, *VariableNameSize / sizeof(CHAR16), gVarMap[i].Name);
-                    CopyMem(VendorGuid, gVarMap[i].Guid, sizeof(EFI_GUID));
-                    return EFI_SUCCESS;
-                }
-            }
-            return EFI_NOT_FOUND;
-        }
-        return Status;
+    // Otherwise let the firmware enumerate; when it is exhausted, append ours
+    // starting from the first virtual entry.
+    Status = gOrgGetNextVariableName(VariableNameSize, VariableName, VendorGuid);
+    if (Status == EFI_NOT_FOUND) {
+        return DcsOwnerVirtualEmit(0, VariableNameSize, VariableName, VendorGuid);
     }
-
-    // Current is synthetic — find the next synthetic entry after CurrentIndex
-    for (i = CurrentIndex + 1; i < VAR_MAP_COUNT; i++) {
-        if (mVarState[i].Synthetic && mVarState[i].Data != NULL) {
-            RequiredSize = (StrLen(gVarMap[i].Name) + 1) * sizeof(CHAR16);
-            if (*VariableNameSize < RequiredSize) {
-                *VariableNameSize = RequiredSize;
-                return EFI_BUFFER_TOO_SMALL;
-            }
-            StrCpyS(VariableName, *VariableNameSize / sizeof(CHAR16), gVarMap[i].Name);
-            CopyMem(VendorGuid, gVarMap[i].Guid, sizeof(EFI_GUID));
-            return EFI_SUCCESS;
-        }
-    }
-
-    return EFI_NOT_FOUND;
+    return Status;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -625,10 +906,6 @@ DcsOwnerExitBootServices (
     }
 
     if (MatExecAddrExecutable((EFI_PHYSICAL_ADDRESS)(UINTN)DcsOwnerGetVariable, &mp, TRUE)) {
-        if (gDcsVerboseDebug) {
-            OUT_PRINT(L"DcsOwner: ExitBootServices - MAT flip held, keeping the hook\n");
-            gBS->Stall(3 * 1000 * 1000);   // 3s so the line is readable before Windows takes the screen
-        }
         return;                     // our flip held; keep the hook
     }
 
@@ -643,11 +920,6 @@ DcsOwnerExitBootServices (
 
     mUnhooked = TRUE;
     mActive   = FALSE;
-
-    if (gDcsVerboseDebug) {
-        OUT_PRINT(L"DcsOwner: ExitBootServices - firmware reverted our MAT flip, unhooked to boot safely (override OFF)\n");
-        gBS->Stall(5 * 1000 * 1000);       // 5s so you can read it before the handoff
-    }
 }
 
 STATIC
@@ -926,6 +1198,8 @@ DcsOwnerShowBootPrompt (
     VOID   *KeyData = CfgGetBytes(L"UserPubKey_BS", &KeySize);
     if (KeyData != NULL) {
 
+        UINT8 Val = CfgGetU8(L"PrivacyDeveloper_BS", NULL);
+
         //gST->ConOut->ClearScreen(gST->ConOut);
 
         OUT_PRINT(L"\n");
@@ -943,8 +1217,13 @@ DcsOwnerShowBootPrompt (
         OUT_PRINT(L"                      ###               ###\n");
         OUT_PRINT(L"                        #####       #####\n");
         OUT_PRINT(L"                            #########\n");
-        OUT_PRINT(L"\n");
-        OUT_PRINT(L"                   M A J O R   P R I V A C Y\n");
+        OUT_PRINT(L"\n");                         //#
+        OUT_PRINT(L"                    M A J O R   P R I V A C Y\n");
+        if (Val & 0x02) {                         //#
+        RED_PRINT(L"                     !!! > DEBUG MODE < !!!\n");
+        } else if (Val & 0x01) {                  //#
+        ERR_PRINT(L"                     >>> DEVELOPER MODE <<<\n");
+        }
         OUT_PRINT(L"\n");
         // 18
 
@@ -973,6 +1252,7 @@ DcsOwnerShowBootPrompt (
     
     key = KeyWait(L"Boot in %2d sec\r", 3, 0, 0);
     if ((key.UnicodeChar != CHAR_CARRIAGE_RETURN) && (key.ScanCode != 0 || key.UnicodeChar != 0)) {
+        gBS->SetWatchdogTimer(0, 0, 0, NULL); // interactive menu may wait indefinitely
         do {
             OUT_PRINT(L"[Enter] resume Boot  [F12] open Config\n");
             key = GetKey();
@@ -1008,7 +1288,6 @@ DcsOwnerInstallHooks (
 {
     EFI_STATUS  Status;
     BOOLEAN     HaveVarOverride = FALSE;
-    BOOLEAN     HaveSynthetic = FALSE;
     BOOLEAN     MatPresent = FALSE;
     UINTN       i;
     UINTN       TempSize;
@@ -1031,7 +1310,6 @@ DcsOwnerInstallHooks (
                          NULL, &TempSize, NULL);
             if (Status == EFI_NOT_FOUND) {
                 mVarState[i].Synthetic = TRUE;
-                HaveSynthetic = TRUE;
             }
         }
     }
@@ -1103,8 +1381,11 @@ DcsOwnerInstallHooks (
         mActive = TRUE;
     }
 
-    // Only hook enumeration when at least one override has no real variable
-    if (HaveSynthetic) {
+    // Hook enumeration whenever any override is active: a synthetic override
+    // must be injected because the firmware does not list it, and every
+    // non-synthetic override contributes a "<Name>Original" entry. Both are
+    // produced by DcsOwnerGetNextVariableName.
+    if (HaveVarOverride) {
         gOrgGetNextVariableName = gST->RuntimeServices->GetNextVariableName;
         gST->RuntimeServices->GetNextVariableName = DcsOwnerGetNextVariableName;
         mEnumHooked = TRUE;
@@ -1344,7 +1625,7 @@ DcsOwnerMain (
     //
     if (AnyPending) {
         BOOLEAN    SbAccepted = FALSE;
-        BOOLEAN    *VarAccepted = AllocateZeroPool(VAR_MAP_COUNT * sizeof(BOOLEAN));
+        BOOLEAN    VarAccepted[VAR_MAP_COUNT] = {0};
         EFI_STATUS ConfirmResult;
 
         ConfirmResult = DcsOwnerConfirmChanges(
@@ -1375,8 +1656,6 @@ DcsOwnerMain (
             }
         }
         // EFI_ABORTED (Esc): no action — pending changes stay for next boot
-
-        if (VarAccepted != NULL) FreePool(VarAccepted);
     } else {
         // No pending changes — ensure RT mirror exists so OS tool can read current state
         if (!RtSbPresent) {

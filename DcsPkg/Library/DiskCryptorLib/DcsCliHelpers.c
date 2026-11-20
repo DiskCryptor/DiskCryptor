@@ -14,10 +14,15 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/UefiBootServicesTableLib.h>
 #include <Library/PrintLib.h>
 #include <Library/BaseMemoryLib.h>
+#include <Library/BaseLib.h>
 
 #include <Library/CommonLib.h>
 #include <Library/ConsoleLib.h>
 #include <Library/PasswordLib.h>
+
+#ifndef ARRAY_SIZE
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+#endif
 
 // SET_VAR_CHAR and GET_VAR_CHAR macros are defined in PasswordLib.h
 
@@ -68,6 +73,21 @@ PrintConsolePwd(
     }
 }
 
+/**
+  Print DCS's own text (a prompt, the status line) on the current console with its
+  colour codes applied - see AttrEscapeText. Never for user data.
+**/
+VOID
+DcsPrintText(
+    IN CONST CHAR16 *Text
+    )
+{
+    CHAR16 escaped[512];
+
+    AttrEscapeText(Text, escaped, ARRAY_SIZE(escaped));
+    g_Con->Print(escaped);
+}
+
 STATIC VOID
 PrintStatusLine(
     IN CHAR16 *statusStr,
@@ -81,8 +101,8 @@ PrintStatusLine(
     // Move to status line
     g_Con->SetCursor(0, statusRow);
 
-    // Print status
-    g_Con->Print(L"%s", statusStr);
+    // Print status (DCS's own text with colour codes)
+    DcsPrintText(statusStr);
 
     // Return to original position
     g_Con->SetCursor(curCol, curRow);
@@ -131,6 +151,8 @@ DcsAskConsolePwd(
         g_Con->Print(L"%a", Msg);
     }
 
+    KbResetState();   // no dead key from before the prompt
+
     if (*Length > 0) {
         count = *Length;
         if (Wide)
@@ -153,14 +175,15 @@ DcsAskConsolePwd(
         EFI_EVENT InputEvents[2];
         UINTN EventIndex = 0;
         InputEvents[0] = gST->ConIn->WaitForKey;
-        gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
-        gBS->SetTimer(InputEvents[1], TimerRelative, 10000000 * gPasswordTimeout);
-        gBS->WaitForEvent(2, InputEvents, &EventIndex);
-        gBS->SetTimer(InputEvents[1], TimerCancel, 0);
-        gBS->CloseEvent(InputEvents[1]);
-        if (EventIndex == 1) {
-            *RetCode = AskPwdRetTimeout;
-            return;
+        if (!EFI_ERROR(gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]))) {
+            gBS->SetTimer(InputEvents[1], TimerRelative, MultU64x32(10000000ULL, (UINT32)gPasswordTimeout));
+            gBS->WaitForEvent(2, InputEvents, &EventIndex);
+            gBS->SetTimer(InputEvents[1], TimerCancel, 0);
+            gBS->CloseEvent(InputEvents[1]);
+            if (EventIndex == 1) {
+                *RetCode = AskPwdRetTimeout;
+                return;
+            }
         }
     }
 
@@ -296,12 +319,14 @@ DcsAskConsolePwd(
         }
 
         if (key.ScanCode == SCAN_INSERT) {
-            if (pos < count && (pos < lineMax - 1)) {
-                count++;
-                for (i = count; i >= pos; i--) {
-                    SET_VAR_CHAR(Buffer, Wide, i + 1, GET_VAR_CHAR(Buffer, Wide, i));
+            if (pos < count && (count < lineMax - 1)) {
+                // i > pos: unsigned index must not wrap when pos == 0
+                for (i = count; i > pos; i--) {
+                    SET_VAR_CHAR(Buffer, Wide, i, GET_VAR_CHAR(Buffer, Wide, i - 1));
                 }
                 SET_VAR_CHAR(Buffer, Wide, pos, ' ');
+                count++;
+                SET_VAR_CHAR(Buffer, Wide, count, '\0');
 
                 PrintConsolePwd(Buffer, count, pos, show, Wide);
             }
@@ -345,7 +370,7 @@ DcsAskConsolePwd(
             }
             // Save char
             if (Buffer != NULL) {
-                SET_VAR_CHAR(Buffer, Wide, pos++, (CHAR8)key.UnicodeChar);
+                SET_VAR_CHAR(Buffer, Wide, pos++, key.UnicodeChar);
                 if (pos > count)
                     SET_VAR_CHAR(Buffer, Wide, (count = pos), '\0');
             }
@@ -408,7 +433,7 @@ DcsAskYesNo(
 {
     EFI_INPUT_KEY key;
 
-    g_Con->Print(L"%s", Prompt);
+    DcsPrintText(Prompt);   // constant prompts with colour codes
 
     for (;;) {
         key = g_Con->GetKey();

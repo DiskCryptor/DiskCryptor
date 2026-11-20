@@ -24,6 +24,15 @@
 #include "cert_utils.h"
 #include "misc.h"
 #include "dcconst.h"
+#include "drv_ioctl.h"
+
+/* the driver checks the certificate at load and on DC_CTL_CHECK_CERT only (DC_CTL_GET_FLAGS
+ * returns that result): tell it after the registry value changed. A driver that does not know
+ * the request (older version) re-checks on DC_CTL_GET_FLAGS with DC_FLAGS2 instead. */
+static void dc_notify_cert_changed(void)
+{
+    dc_device_control(DC_CTL_CHECK_CERT, NULL, 0, NULL, 0);
+}
 
 /* SMBIOS structures for UUID retrieval */
 #pragma pack(push, 1)
@@ -393,6 +402,7 @@ int dc_save_certificate(const WCHAR* certificate)
     {
         RegDeleteValueW(hKey, L"Certificate");
         RegCloseKey(hKey);
+        dc_notify_cert_changed();
         return ST_OK;
     }
 
@@ -444,7 +454,10 @@ int dc_save_certificate(const WCHAR* certificate)
     free(multi_sz);
     RegCloseKey(hKey);
 
-    return (status == ERROR_SUCCESS) ? ST_OK : ST_REG_ERROR;
+    if (status != ERROR_SUCCESS)
+        return ST_REG_ERROR;
+    dc_notify_cert_changed();
+    return ST_OK;
 }
 
 /*

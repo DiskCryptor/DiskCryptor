@@ -819,6 +819,17 @@ TouchKbdDrawAllKeys(VOID)
 	}
 }
 
+// The touch font draws printable ASCII only - an accented character from the AZERTY
+// layout (e-acute ...) is shown as '?', so the length and the cursor stay right
+STATIC
+CHAR8
+PwdDisplayChar(
+	IN UINT32 c
+	)
+{
+	return (c >= 32 && c < 127) ? (CHAR8)c : '?';
+}
+
 STATIC
 VOID
 TouchKbdDrawPasswordZone(
@@ -872,7 +883,7 @@ TouchKbdDrawPasswordZone(
 		UINTN displayLen = 0;
 
 		for (i = 0; i < charCount && displayLen < 250; i++) {
-			CHAR8 ch = (CHAR8)GET_VAR_CHAR(pwd, wide, i);
+			CHAR8 ch = PwdDisplayChar((UINT32)(wide ? GET_VAR_CHAR(pwd, wide, i) : (UINT8)GET_VAR_CHAR(pwd, wide, i)));
 			if (i == pwdPos) {
 				displayBuf[displayLen++] = '[';
 				displayBuf[displayLen++] = ch;
@@ -896,7 +907,7 @@ TouchKbdDrawPasswordZone(
 		for (i = 0; i < charCount && displayLen < 250; i++) {
 			if (i == pwdPos) {
 				// Show the actual character at cursor position for editing
-				CHAR8 ch = (CHAR8)GET_VAR_CHAR(pwd, wide, i);
+				CHAR8 ch = PwdDisplayChar((UINT32)(wide ? GET_VAR_CHAR(pwd, wide, i) : (UINT8)GET_VAR_CHAR(pwd, wide, i)));
 				displayBuf[displayLen++] = '[';
 				displayBuf[displayLen++] = ch;
 				displayBuf[displayLen++] = ']';
@@ -1054,7 +1065,7 @@ AskTouchPwdEx(
 			InputEvents[2] = gTouchPointer->WaitForInput;
 		}
 		gBS->CreateEvent(EVT_TIMER, 0, (EFI_EVENT_NOTIFY)NULL, NULL, &InputEvents[1]);
-		gBS->SetTimer(InputEvents[1], TimerPeriodic, 10000000 * gPasswordTimeout);
+		gBS->SetTimer(InputEvents[1], TimerPeriodic, MultU64x32(10000000ULL, (UINT32)gPasswordTimeout));
 		gBS->WaitForEvent(eventsCount, InputEvents, &EventIndex);
 		gPasswordTimeout = 0;
 		gBS->CloseEvent(InputEvents[1]);
@@ -1074,7 +1085,11 @@ AskTouchPwdEx(
 
 	// Get screen size and create screen buffer
 	if (gTouchKbdScreen != NULL) MEM_FREE(gTouchKbdScreen);
-	ScreenSaveBlt(&gTouchKbdScreen);
+	if (EFI_ERROR(ScreenSaveBlt(&gTouchKbdScreen)) || gTouchKbdScreen == NULL) {
+		ERR_PRINT(L"Cannot save screen\n");
+		*retCode = AskPwdRetCancel;
+		return;
+	}
 	gTouchKbdWidth = gTouchKbdScreen->Width;
 	gTouchKbdHeight = gTouchKbdScreen->Height;
 
@@ -1139,16 +1154,26 @@ AskTouchPwdEx(
 	while (gBS->CheckEvent(InputEvents[0]) == EFI_SUCCESS) {
 		gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
 	}
+	KbResetState();   // no dead key from before the prompt
 
 	// Main input loop
 	do {
 		ZeroMem(&key, sizeof(key));
-		res = gBS->WaitForEvent(eventsCount, InputEvents, &EventIndex);
+		// physical keys through the shared mapper (layout, AltGr, dead keys). A key it
+		// already holds (the one after a dead key) is not signalled by WaitForKey: take it first.
+		if (!EFI_ERROR(KbReadKey(&key))) {
+			EventIndex = 0;
+			res = EFI_SUCCESS;
+		} else {
+			res = gBS->WaitForEvent(eventsCount, InputEvents, &EventIndex);
+			if (EventIndex == 0) {
+				res = KbReadKey(&key);
+				if (EFI_ERROR(res)) continue;   // nothing, or a dead key waiting for the next key
+			}
+		}
 
 		// Handle keyboard input (for physical keyboard fallback)
 		if (EventIndex == 0) {
-			res = gST->ConIn->ReadKeyStroke(gST->ConIn, &key);
-			if (EFI_ERROR(res)) continue;
 
 			FlushInputDelay(100000);
 
@@ -1254,14 +1279,17 @@ AskTouchPwdEx(
 				TouchKbdDrawPasswordZone(pwd, pwdIdx, pwdPos, lineMax, visible, wide);
 			}
 
-			if (key.UnicodeChar >= 32 && key.UnicodeChar < 127) {
+			// printable ASCII and, as on the text console, the Latin-1 characters of the
+			// AZERTY layout (e-acute, u-grave ...); beyond Latin-1 (the euro sign) only in a wide buffer
+			if ((key.UnicodeChar >= 32 && key.UnicodeChar < 127) ||
+				(key.UnicodeChar >= 0xA0 && (wide || key.UnicodeChar <= 0xFF))) {
 				if (pwdPos < pwdIdx) {
 					// Replace mode: overwrite char at cursor
-					SET_VAR_CHAR(pwd, wide, pwdPos, (CHAR8)key.UnicodeChar);
+					SET_VAR_CHAR(pwd, wide, pwdPos, key.UnicodeChar);
 					pwdPos++;
 				} else if (pwdIdx < lineMax - 1) {
 					// Append mode: add at end
-					SET_VAR_CHAR(pwd, wide, pwdIdx++, (CHAR8)key.UnicodeChar);
+					SET_VAR_CHAR(pwd, wide, pwdIdx++, key.UnicodeChar);
 					SET_VAR_CHAR(pwd, wide, pwdIdx, '\0');
 					pwdPos = pwdIdx;
 				}
@@ -1285,6 +1313,7 @@ AskTouchPwdEx(
 		// Handle touch input - get current state
 		BOOLEAN gotTouchState = FALSE;
 		if (EventIndex == 2) {
+			KbResetState();   // a physical dead key does not carry over to touch input
 			res = gTouchPointer->GetState(gTouchPointer, &aps);
 			if (!EFI_ERROR(res)) {
 				gotTouchState = TRUE;

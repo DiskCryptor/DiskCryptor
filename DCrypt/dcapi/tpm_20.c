@@ -1511,12 +1511,14 @@ int dc_tpm_20_create_nv_entry(
     } else if (pin_required) {
         // PCR + PIN: Combined policy (PolicyPCR + PolicyPassword)
         // Both PCRs and PIN are TPM-enforced via policy
-        nv_attrs |= TPMA_NV_OWNERREAD;     // Owner can read (but needs policy)
+        // no TPMA_NV_OWNERREAD: an owner-authorized NV_Read does not evaluate authPolicy and would
+        // bypass the PCRs and the PIN with the (usually empty) owner auth. Policy is the only read
+        // path; DCS reseals older entries that still have OWNERREAD.
         nv_attrs |= TPMA_NV_POLICYREAD;    // Read requires policy
         // NO_DA = 0: ENABLE dictionary attack protection (PIN can be brute forced)
     } else {
         // PCR only: Use policy for read - no PIN to brute force
-        nv_attrs |= TPMA_NV_OWNERREAD;     // Owner can read (but needs policy)
+        // no TPMA_NV_OWNERREAD (see above)
         nv_attrs |= TPMA_NV_POLICYREAD;    // Read requires policy
         nv_attrs |= TPMA_NV_NO_DA;         // No PIN, DA protection not needed
     }

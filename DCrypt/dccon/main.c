@@ -39,6 +39,7 @@
 #include "console.h"
 #include "w10.h"
 #include "benchmark.h"
+#include "shadow.h"
 #include "dc_header.h"
 #include "cert_utils.h"
 #include <shlwapi.h>
@@ -103,13 +104,16 @@ static void print_usage(int subject)
 		L" -clean                          Wipe cached passwords in memory\n"
 		L"________________________________________________________________________________\n"
 		L"\n"
-		L" -mount [dev] [param]            Mount encrypted device\n"
+		L" -mount [dev] [param]            Mount encrypted device, or unlock a locked one\n"
 		L"    -mp [mount point]            Add volume mount point\n"
 		L"    -p  [password]               Get password from command line\n"
 		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
 		L"    -ro						   Mount volume read-only\n"
-		L"    -no_hiber 				   Force unmount on hibernation\n"
+		L"    -no_hiber 				   Lock on hibernation (erase keys, unlock on resume)\n"
+		L"    -ignore_crc                  Header damaged (checksum error) and not repairable from\n"
+		L"                                 the backup header: mount it as it is, read-only, to\n"
+		L"                                 copy the data (no header write, no transcryption)\n"
 		L" -mountall [param]               Mount all encrypted devices\n"
 		L"    -p  [password]               Get password from command line\n"
 		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
@@ -137,11 +141,22 @@ static void print_usage(int subject)
 		L"    -dod                         US DoD 5220.22-M (8-306./E, C and E) (7 passes)\n"
 		L"    -g                           Gutmann mode                         (35 passes)\n"
 		L"    -skip                        Skip unused sectors (experimental)\n"
+		L"    -delshadows                  Skipping unused sectors (-skip, or resuming such an operation):\n"
+		L"                                 delete the volume's shadow copies without asking\n"
+		L"    -keepshadows                 ... keep them without asking (they may become corrupt);\n"
+		L"                                 without either option dccon asks on the console\n"
+		L"             ======  Power-loss protection:  ======\n"
+		L"    -safefast                    Journal checksums (default): fast; a sector torn by a\n"
+		L"                                 power loss is detected, not repaired (reads as zeros)\n"
+		L"    -safe                        Journal a copy of every block, slower; repairs it\n"
+		L"    -nosafe                      No power-loss protection\n"
+		L"                                 (v2 headers only, not for -format / -enciso)\n"
 		L" -encrypt2                       Start prepared system volume encryption\n"
 		L" -decrypt [dev] [param]          Decrypt volume device\n"
 		L"    -p  [password]               Get password from command line\n"
 		L"    -kdf [key derivation]        KDF type: 0 - PBKDF2, 1-10 - Argon2id\n"
 		L"    -kf [keyfiles path]          Use keyfiles\n"
+		L"    -safefast / -safe / -nosafe  Power-loss protection: checksums (default) / copies / off\n"
 		L" -reencrypt [dev] [param]        Re-encrypt device with new parameters,\n"
 		L"                                 parameters are equal to -encrypt\n"
 		L" -format [dev] [param]           Format volume device with encryption,\n"
@@ -266,9 +281,9 @@ static void print_usage(int subject)
 		L"       -pass [password]          PFX password (will prompt if not provided)\n"
 		L"       -append                   Append to existing variable instead of replace\n"
 		L"  Secure Boot overrides (DcsOwner EFI module):\n"
-		L"    -sb_override <none|off|on>   Overwrite SecureBoot status reported to windows"
-		L"    -sb_set_pk [path]            Overwrite PK with own Platform Key"
-		L"    -sb_clear_pk                 Clear own Platform Key"
+		L"    -sb_override <none|off|on>   Overwrite SecureBoot status reported to windows\n"
+		L"    -sb_set_pk [path]            Overwrite PK with own Platform Key\n"
+		L"    -sb_clear_pk                 Clear own Platform Key\n"
 		L"________________________________________________________________________________\n"
 		L"\n");
 	if (subject & 0x08) wprintf(
@@ -331,7 +346,10 @@ static void make_dev_status(vol_inf *inf, wchar_t *status)
 {
 	wcscpy(status, L"unmounted");
 
-	if (inf->status.flags & F_ENABLED) {
+	if (DC_IS_LOCKED(inf->status.flags)) {
+		/* keys erased at hibernation, I/O fails until unlocked (-mount) or unmounted */
+		wcscpy(status, L"locked");
+	} else if (inf->status.flags & F_ENABLED) {
 		wcscpy(status, L"mounted");
 	}
 
@@ -346,6 +364,76 @@ static void make_dev_status(vol_inf *inf, wchar_t *status)
 	if (inf->status.flags & F_SYSTEM) {
 		wcscat(status, L", system");
 	}
+}
+
+/*
+   a locked volume (keys erased at hibernation, F_LOCKED) can only be unlocked (-mount)
+   or unmounted (-unmount [-f]), the driver rejects every other operation
+*/
+static int is_locked_msg(vol_inf *inf, wchar_t *dev)
+{
+	if (DC_IS_LOCKED(inf->status.flags) == 0) {
+		return 0;
+	}
+	wprintf(
+		L"This device is locked, its keys were erased at hibernation.\n"
+		L"Unlock it with \"dccon -mount %s\" or unmount it with \"dccon -unmount %s [-f]\"\n", dev, dev);
+	return 1;
+}
+
+/* an ST_CANCEL step without a visible reason is retried for this many seconds */
+#define CANCEL_RETRY_SECS 5
+
+typedef struct _lock_wait {
+	int notified; /* the "locked" message was printed */
+	int relocked; /* the volume was locked - a skip-unused session lost its bitmap */
+	int retries;  /* seconds of ST_CANCEL retries without a visible reason */
+} lock_wait;
+
+/*
+   transcryption steps return ST_CANCEL while the volume is locked, while a lock or unmount is
+   in progress and right after an unlock / resume (F_ENABLED | F_PREVENT_ENC): keep waiting. An
+   ST_CANCEL without a visible reason (e.g. F_PREVENT_ENC cleared before the status query) is
+   retried for CANCEL_RETRY_SECS seconds.
+   Returns 1 to retry the step (after a 1 s wait), 0 to report the error.
+*/
+static int wait_if_locked(vol_inf *inf, lock_wait *lw)
+{
+	dc_status status;
+	int       have_status = (dc_get_device_status(inf->device, &status) == ST_OK);
+
+	if ( have_status && DC_IS_LOCKED(status.flags) )
+	{
+		if (lw->notified == 0) {
+			wprintf(
+				L"\nThe volume is locked (keys erased at hibernation), waiting for an unlock (dccon -mount)\n"
+				L"Press ESC to stop waiting\n");
+			lw->notified = 1;
+		}
+		lw->relocked = 1;
+		lw->retries = 0;
+		Sleep(1000);
+		return 1;
+	}
+	if ( have_status && ((status.flags & (F_ENABLED | F_PREVENT_ENC)) == (F_ENABLED | F_PREVENT_ENC)) )
+	{
+		/* lock / unmount in progress or just unlocked: transient */
+		lw->retries = 0;
+		Sleep(1000);
+		return 1;
+	}
+	if (lw->retries < CANCEL_RETRY_SECS) {
+		lw->retries++;
+		Sleep(1000);
+		return 1;
+	}
+	return 0;
+}
+
+static void lock_wait_reset(lock_wait *lw)
+{
+	lw->notified = 0;
+	lw->retries  = 0;
 }
 
 static void print_devices()
@@ -495,6 +583,30 @@ int dc_get_password(int confirm, dc_pass *pass)
 	return succs;
 }
 
+/* steps that returned ST_RW_ERR passed a block with bad sectors */
+static void print_bad_blocks(int bad_blocks)
+{
+	if (bad_blocks != 0) {
+		wprintf(
+			L"Warning: %d block(s) contained sectors that could not be read or written (bad sectors).\n"
+			L"The contents of these sectors are lost: unreadable sectors now read as zeros.\n"
+			L"Check the disk for errors and restore the affected files from a backup.\n", bad_blocks);
+	}
+}
+
+static int check_shadows(vol_inf *inf, int wp_mode);
+
+/* after an unlock, before the first step: a lock freed the allocation bitmap of a
+   skip-unused session, the step would load it again. 1: go on, 0: stop (session paused) */
+static int unlock_check_shadows(vol_inf *inf, lock_wait *lw, dc_status *status)
+{
+	if (lw->relocked == 0 || DC_IS_LOCKED(status->flags)) return 1;
+	lw->relocked = 0;
+	if (check_shadows(inf, status->crypt.wp_mode) == ST_OK) return 1;
+	dc_sync_enc_state(inf->device);
+	return 0;
+}
+
 static int dc_encrypt_loop(vol_inf *inf, int wp_mode)
 {
 	dc_status status;
@@ -502,6 +614,9 @@ static int dc_encrypt_loop(vol_inf *inf, int wp_mode)
 	wchar_t  *wp_str;
 	char      ch;
 	int       resl;
+	int       ret = ST_OK;
+	int       bad_blocks = 0;
+	lock_wait lw = { 0, 0 };
 
 bgn_loop:;
 	cls_console();
@@ -553,7 +668,7 @@ bgn_loop:;
 		}
 
 		if (i-- == 0) {
-			dc_sync_enc_state(inf->device); i = 20;
+			dc_sync_enc_state(inf->device); i = DC_SYNC_EVERY_STEPS - 1;
 		}
 
 		dc_get_device_status(
@@ -563,18 +678,33 @@ bgn_loop:;
 			L"\r%-.3f %%", 
 			(double)(status.tmp_size) / (double)(status.dsk_size) * 100);
 
+		if (unlock_check_shadows(inf, &lw, &status) == 0) break;
+
 		resl = dc_enc_step(inf->device, wp_mode);
+
+		if (resl == ST_RW_ERR) bad_blocks++;
 
 		if (resl == ST_FINISHED) {
 			wprintf(L"\nEncryption finished\n"); break;
 		}
 
+		if (resl == ST_CANCEL) {
+			if (wait_if_locked(inf, &lw) != 0) continue;
+		} else {
+			lock_wait_reset(&lw);
+		}
+
 		if ( (resl != ST_OK) && (resl != ST_RW_ERR) ) {
-			wprintf(L"\nEncryption error %d\n", resl); break;
+			/* e.g. the step stays refused (device still locked / busy): fail the command */
+			wprintf(L"\nEncryption error %d\n", resl);
+			/* save the progress the driver holds (as the GUI does on an error) */
+			dc_sync_enc_state(inf->device);
+			ret = resl; break;
 		}
 	} while (1);
 
-	return ST_OK;
+	print_bad_blocks(bad_blocks);
+	return ret;
 }
 
 static int dc_format_loop(vol_inf *inf, int wp_mode)
@@ -662,9 +792,12 @@ static int dc_decrypt_loop(vol_inf *inf)
 	dc_status status;
 	int       i = 0;
 	int       resl;
+	int       ret = ST_OK;
+	int       bad_blocks = 0;
+	lock_wait lw = { 0, 0 };
 
 	cls_console();
-	
+
 	wprintf(
 		L"Decrypting progress...\n"
 		L"Press ESC to cancel decrypting\n");
@@ -677,7 +810,7 @@ static int dc_decrypt_loop(vol_inf *inf)
 		}
 
 		if (i-- == 0) {
-			dc_sync_enc_state(inf->device); i = 20;					
+			dc_sync_enc_state(inf->device); i = DC_SYNC_EVERY_STEPS - 1;					
 		}
 
 		dc_get_device_status(inf->device, &status);
@@ -686,18 +819,33 @@ static int dc_decrypt_loop(vol_inf *inf)
 			L"\r%-.3f %%", 
 			100 - ((double)(status.tmp_size) / (double)(status.dsk_size) * 100));
 
+		if (unlock_check_shadows(inf, &lw, &status) == 0) break;
+
 		resl = dc_dec_step(inf->device);
+
+		if (resl == ST_RW_ERR) bad_blocks++;
 
 		if (resl == ST_FINISHED) {
 			wprintf(L"\nDecryption finished\n"); break;
 		}
 
+		if (resl == ST_CANCEL) {
+			if (wait_if_locked(inf, &lw) != 0) continue;
+		} else {
+			lock_wait_reset(&lw);
+		}
+
 		if ( (resl != ST_OK) && (resl != ST_RW_ERR) ) {
-			wprintf(L"\nDecryption error %d\n", resl); break;
+			/* e.g. the step stays refused (device still locked / busy): fail the command */
+			wprintf(L"\nDecryption error %d\n", resl);
+			/* save the progress the driver holds (as the GUI does on an error) */
+			dc_sync_enc_state(inf->device);
+			ret = resl; break;
 		}
 	} while (1);
 
-	return ST_OK;
+	print_bad_blocks(bad_blocks);
+	return ret;
 }
 
 static BOOL dc_cd_callback(ULONGLONG isosize, ULONGLONG encsize, PVOID param)
@@ -965,6 +1113,66 @@ static void get_crypt_info(crypt_info *crypt)
 	}
 }
 
+/* power-loss protection (journaled transcryption, v2 headers), as the GUI: checksums by
+ * default (-safefast), -safe journals a copy of every block, -nosafe turns it off; only a new
+ * session takes it (a resumed one keeps the mode it was started with) */
+static void get_safe_flag(crypt_info *crypt)
+{
+	if (is_param(L"-nosafe") != 0) {
+		return;
+	}
+	crypt->flags |= (is_param(L"-safe") != 0 && is_param(L"-safefast") == 0) ? EF_SAFE_TRANSCRYPT : EF_SAFE_TRANSCRYPT_FAST;
+}
+
+/* before a skip-unused start or resume: existing shadow copies would become corrupt (see dcapi
+ * shadow.h). -delshadows deletes them without asking, -keepshadows goes on with them, else the
+ * console asks. A failed deletion is reported and the operation goes on.
+ * ST_OK: go on, ST_CANCEL: stop. */
+static int check_shadows(vol_inf *inf, int wp_mode)
+{
+	int count = 0, left = -1, resl;
+
+	if (wp_mode != WP_SKIP_UNUSED) return ST_OK;
+
+	if ( (resl = dc_count_shadows(inf->w32_device, &count)) == ST_OK ) {
+		if (count == 0) return ST_OK;
+		wprintf(L"\nVolume %s has %d shadow copies (System Restore points, Previous Versions or backup snapshots).\n",
+			inf->status.mnt_point, count);
+	} else {
+		wprintf(L"\nThe shadow copies of volume %s could not be checked (error %d).\n", inf->status.mnt_point, resl);
+	}
+	wprintf(
+		L"\"Skip unused sectors\" does not process sectors that are unused now, but older shadow copies\n"
+		L"may still keep data in them. Those shadow copies would become corrupt.\n");
+
+	if (is_param(L"-keepshadows") != 0) {
+		wprintf(L"Shadow copies kept (-keepshadows): they may become unusable.\n");
+		return ST_OK;
+	}
+	if (is_param(L"-delshadows") == 0)
+	{
+		wprintf(
+			L"\n"
+			L"1 - Delete all shadow copies of this volume (recommended)\n"
+			L"2 - Keep them (they may become unusable)\n"
+			L"3 - Cancel\n");
+		switch (getchr('1', '3'))
+		{
+			case '2': wprintf(L"Shadow copies kept.\n"); return ST_OK;
+			case '3': wprintf(L"Cancelled. A started operation stays paused, run the same command to resume it.\n"); return ST_CANCEL;
+		}
+	}
+	wprintf(L"Deleting the shadow copies...\n");
+	if ( (resl = dc_delete_shadows(inf->w32_device, &left, NULL)) == ST_OK ) {
+		wprintf(L"Shadow copies deleted.\n");
+	} else if (left > 0) {
+		wprintf(L"%d shadow copies could not be deleted; the operation continues, they may become unusable.\n", left);
+	} else {
+		wprintf(L"The shadow copies could not be deleted (error %d); the operation continues, they may become unusable.\n", resl);
+	}
+	return ST_OK;
+}
+
 static int dc_bench_cmp(const bench_item *arg1, const bench_item *arg2)
 {
 	if (arg1->speed > arg2->speed) {
@@ -1170,11 +1378,22 @@ int wmain(int argc, wchar_t *argv[])
 				inf->device, inf->w32_device, inf->status.mnt_point,
 				size, stat);
 
+			if (DC_IS_LOCKED(inf->status.flags))
+			{
+				wprintf(
+					L"                   keys erased at hibernation, I/O fails until the device is\n"
+					L"                   unlocked (-mount) or unmounted (-unmount [-f])\n");
+			}
+
 			if (inf->status.flags & F_ENABLED)
 			{
 				double portion;
 
-				if (inf->status.flags & F_SYNC) 
+				if (DC_IS_LOCKED(inf->status.flags))
+				{
+					/* the lock tore down the transcryption session, F_SYNC is not reported */
+					portion = -1;
+				} else if (inf->status.flags & F_SYNC)
 				{
 					portion = (double)(inf->status.tmp_size) / 
 						(double)(inf->status.dsk_size) * 100;
@@ -1186,12 +1405,16 @@ int wmain(int argc, wchar_t *argv[])
 					L"Cipher:            %s (XTS Mode)\n"
 					//L"Encryption mode:   XTS\n"
 					L"Header KDF:        %s\n"
-					L"Header Format:     %s\n"
-					L"Encrypted portion: %-.3f%%\n",
+					L"Header Format:     %s\n",
 					dc_get_cipher_name(inf->status.crypt.cipher_id),
 					inf->status.crypt.head_kdf > 0 ? L"Argon2id v1.3" : L"Pkcs5.2 SHA-512",
-					inf->status.crypt.version == DC_HDR_VERSION_2 ? L"2" : L"1",
-					portion);
+					inf->status.crypt.version == DC_HDR_VERSION_2 ? L"2" : L"1");
+
+				if (portion < 0) {
+					wprintf(L"Encrypted portion: n/a (locked)\n");
+				} else {
+					wprintf(L"Encrypted portion: %-.3f%%\n", portion);
+				}
 			}
 
 			resl = ST_OK; break;
@@ -1211,6 +1434,67 @@ int wmain(int argc, wchar_t *argv[])
 				resl = ST_NF_DEVICE; break;
 			}
 
+			if (DC_IS_LOCKED(inf->status.flags))
+			{
+				/*
+				   unlock in place: the driver keeps the original mount flags (only
+				   MF_USE_BACKUP applies) and also tries the cached passwords / boot keys
+				*/
+				if ( (get_param(L"-mp") != NULL) || (is_param(L"-ro") != 0) || (is_param(L"-no_hiber") != 0) ) {
+					wprintf(L"Unlocking a locked device, its mount options are kept (-mp, -ro, -no_hiber ignored)\n");
+				}
+
+				if ( (pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0)) == NULL ) {
+					resl = ST_OK; break;
+				}
+				if ( (slot = get_param(L"-slot")) != NULL ) {
+					pass->slot = _wtoi(slot);
+				}
+
+				/* a volume mounted from its backup header is unlocked from it by default
+				   (the driver ORs it in as well) */
+				if ( (is_param(L"-use_backup") != 0) || (inf->status.mnt_flags & MF_USE_BACKUP) ) {
+					flags |= MF_USE_BACKUP;
+				}
+
+				InterlockedExchange(&g_abort_operation, 0);
+				resl = dc_mount_volume(inf->device, pass, flags, &g_abort_operation);
+				if (resl == ST_DEVICE_BUSY) {
+					/* locked again (or another volume) while the header was probed: once more */
+					resl = dc_mount_volume(inf->device, pass, flags, &g_abort_operation);
+				}
+
+				secure_free(pass);
+
+				switch (resl)
+				{
+					case ST_OK:
+						wprintf(L"device %s unlocked\n", argv[2]);
+					break;
+					case ST_CANCEL:
+						if (g_abort_operation == 0) {
+							/* refused by the driver, not aborted by the user */
+							wprintf(L"The device cannot be unlocked while the system is entering hibernation, try again after the resume\n");
+						}
+					break;
+					case ST_ALR_MOUNT:
+						wprintf(L"This device is already mounted and not locked\n");
+						resl = ST_OK;
+					break;
+					case ST_MEDIA_CHANGED:
+						wprintf(
+							L"The volume header does not match the locked volume, the device stays locked.\n"
+							L"Unmount it instead (dccon -unmount %s [-f])\n", argv[2]);
+					break;
+					case ST_ERROR:
+						wprintf(
+							L"The device cannot be unlocked in its current state (e.g. its decryption has just finished).\n"
+							L"Unmount it instead (dccon -unmount %s [-f])\n", argv[2]);
+					break;
+				}
+				break;
+			}
+
 			if (inf->status.flags & F_ENABLED) {
 				wprintf(L"This device is already mounted\n");
 				resl = ST_OK; break;
@@ -1223,12 +1507,12 @@ int wmain(int argc, wchar_t *argv[])
 
 			pass = dc_load_pass_and_keyfiles(NULL, NULL, NULL, NULL, 0);
 			mp_c = get_param(L"-mp");
-			if (slot = get_param(L"-slot")) {
-				pass->slot = _wtoi(slot);
-			}
 
 			if (pass == NULL) {
 				resl = ST_OK; break;
+			}
+			if (slot = get_param(L"-slot")) {
+				pass->slot = _wtoi(slot);
 			}
 
 			if ( (mp_c != NULL) && (inf->status.mnt_point[0] == L'\\') ) {
@@ -1247,14 +1531,23 @@ int wmain(int argc, wchar_t *argv[])
 				flags |= MF_USE_BACKUP;
 			}
 
+			/* the driver repairs a torn header itself (backup header, tmp_size); only a header it
+			   cannot repair is taken as it is - read-only, nothing is written to the volume */
+			if (is_param(L"-ignore_crc") != 0) {
+				flags |= MF_IGNORE_CRC;
+			}
+
 			InterlockedExchange(&g_abort_operation, 0);
 			resl = dc_mount_volume(inf->device, pass, flags, &g_abort_operation);
 
 			if ( (resl == ST_OK) && (mp_c != NULL) )
 			{
 				if (inf->status.mnt_point[0] != L'\\') {
-					wprintf(L"device %s already have mount point\n", argv[2]);						
-				} else 
+					wprintf(L"device %s already have mount point\n", argv[2]);
+				} else if (wcsncmp(inf->w32_device, L"\\\\?\\Volume{", 11) != 0) {
+					/* listed by its device name (the Windows 7 EFI system partition): no volume GUID name */
+					wprintf(L"device %s has no volume name, a mount point cannot be set\n", argv[2]);
+				} else
 				{
 					_snwprintf(
 						vol_n, countof(vol_n), L"%s\\", inf->w32_device);
@@ -1271,7 +1564,24 @@ int wmain(int argc, wchar_t *argv[])
 			}
 
 			if (resl == ST_OK) {
+				dc_status st;
+
 				wprintf(L"device %s mounted\n", argv[2]);
+				if ( dc_get_device_status(inf->device, &st) == ST_OK && (st.mnt_flags & MF_IGNORE_CRC) ) {
+					wprintf(
+						L"The volume header is damaged and was taken as it is: the volume is mounted read-only,\n"
+						L"nothing is written to it and a transcryption cannot continue. Copy the data off.\n");
+					if (st.flags & F_SYNC) {
+						wprintf(L"The volume is partly encrypted: data near the encryption boundary may read wrong.\n");
+					}
+				}
+			} else if (resl == ST_HDR_DAMAGED) {
+				wprintf(
+					L"The password is right but the volume header is damaged (checksum error) and could not be\n"
+					L"repaired. Restore an exported header, or try the backup header (-use_backup; after a\n"
+					L"password change with the previous password), or mount it read-only with\n"
+					L"  dccon -mount %s -ignore_crc\n"
+					L"to copy the data.\n", argv[2]);
 			}
 
 			secure_free(pass);
@@ -1288,7 +1598,8 @@ int wmain(int argc, wchar_t *argv[])
 			resl = dc_mount_all(pass, &n_mount, 0, &g_abort_operation);
 
 			if (resl == ST_OK) {
-				wprintf(L"%d devices mounted\n", n_mount);
+				/* locked devices unlocked with this password are counted as well */
+				wprintf(L"%d devices mounted or unlocked\n", n_mount);
 			}
 
 			if (pass != NULL) {
@@ -1320,6 +1631,17 @@ int wmain(int argc, wchar_t *argv[])
 
 			resl = dc_unmount_volume(inf->device, flags);
 
+			if ( (resl == ST_LOCK_ERR) && DC_IS_LOCKED(inf->status.flags) )
+			{
+				/* the FS cannot flush its cache, every write to a locked volume fails */
+				wprintf(
+					L"The file system of this locked volume cannot be flushed.\n"
+					L"Would you like to force an unmount on this volume? Data not yet written is lost. (Y/N)\n");
+
+				if (tolower(_getch()) == 'y') {
+					resl = dc_unmount_volume(inf->device, flags | MF_FORCE);
+				}
+			} else
 			if (resl == ST_LOCK_ERR)
 			{
 				wprintf(
@@ -1389,6 +1711,10 @@ int wmain(int argc, wchar_t *argv[])
 				resl = ST_NF_DEVICE; break;
 			}
 
+			if (is_locked_msg(inf, argv[2]) != 0) {
+				resl = ST_DEVICE_BUSY; break;
+			}
+
 			is_efi = dc_efi_check();
 
 			/* set default params */
@@ -1396,6 +1722,7 @@ int wmain(int argc, wchar_t *argv[])
 			crypt.wp_mode   = WP_NONE;
 
 			get_crypt_info(&crypt);
+			get_safe_flag(&crypt);
 
 			if (is_param(L"-backup_header")) {
 				flags |= VF_BACKUP_HEADER;
@@ -1413,6 +1740,8 @@ int wmain(int argc, wchar_t *argv[])
 				if (crypt.wp_mode == WP_NONE) {
 					crypt.wp_mode = inf->status.crypt.wp_mode;
 				}
+				/* the session keeps its own mode */
+				if (check_shadows(inf, inf->status.crypt.wp_mode) != ST_OK) { resl = ST_OK; break; }
 				resl = dc_encrypt_loop(inf, crypt.wp_mode);
 				break;
 			}
@@ -1512,7 +1841,8 @@ int wmain(int argc, wchar_t *argv[])
 
 				secure_free(pass);
 
-				if (resl == ST_OK) {
+				/* cancelled = the session stays paused at its start */
+				if (resl == ST_OK && check_shadows(inf, crypt.wp_mode) == ST_OK) {
 					resl = dc_encrypt_loop(inf, crypt.wp_mode);
 				}
 			}
@@ -1562,8 +1892,13 @@ int wmain(int argc, wchar_t *argv[])
 				resl = dc_start_encrypt2(info.device, path);
 			}
 			
+			/* cancelled = the session stays paused at its start (resumed with -encrypt); an
+			   unknown status asks */
 			if (resl == ST_OK) {
-				resl = dc_encrypt_loop(&info, info.status.crypt.wp_mode);
+				int wp = dc_get_device_status(info.device, &info.status) == ST_OK ? info.status.crypt.wp_mode : WP_SKIP_UNUSED;
+				if (check_shadows(&info, wp) == ST_OK) {
+					resl = dc_encrypt_loop(&info, info.status.crypt.wp_mode);
+				}
 			}
 
 			break;
@@ -1579,12 +1914,18 @@ int wmain(int argc, wchar_t *argv[])
 			crypt.wp_mode   = WP_NONE;
 
 			get_crypt_info(&crypt);
+			get_safe_flag(&crypt);
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
 			}
 
+			if (is_locked_msg(inf, argv[2]) != 0) {
+				resl = ST_DEVICE_BUSY; break;
+			}
+
 			if (inf->status.flags & F_SYNC) {
+				if (check_shadows(inf, inf->status.crypt.wp_mode) != ST_OK) { resl = ST_OK; break; }
 				resl = dc_decrypt_loop(inf);
 				break;
 			}
@@ -1616,7 +1957,7 @@ int wmain(int argc, wchar_t *argv[])
 
 			secure_free(pass);
 
-			if (resl == ST_OK) {
+			if (resl == ST_OK && check_shadows(inf, crypt.wp_mode) == ST_OK) {
 				resl = dc_decrypt_loop(inf);
 			}
 			break;
@@ -1631,8 +1972,13 @@ int wmain(int argc, wchar_t *argv[])
 				resl = ST_NF_DEVICE; break;
 			}
 
+			if (is_locked_msg(inf, argv[2]) != 0) {
+				resl = ST_DEVICE_BUSY; break;
+			}
+
 			crypt = inf->status.crypt;
 			get_crypt_info(&crypt);
+			get_safe_flag(&crypt);
 
 			if ( !(inf->status.flags & F_ENABLED) ) {
 				wprintf(L"This device is not mounted\n");
@@ -1648,6 +1994,7 @@ int wmain(int argc, wchar_t *argv[])
 			{
 				if (inf->status.flags & F_REENCRYPT)
 				{
+					if (check_shadows(inf, inf->status.crypt.wp_mode) != ST_OK) { resl = ST_OK; break; }
 					resl = dc_encrypt_loop(inf, crypt.wp_mode);
 					break;
 				} else 
@@ -1668,7 +2015,7 @@ int wmain(int argc, wchar_t *argv[])
 
 			secure_free(pass);
 
-			if (resl == ST_OK) {
+			if (resl == ST_OK && check_shadows(inf, crypt.wp_mode) == ST_OK) {
 				resl = dc_encrypt_loop(inf, crypt.wp_mode);
 			}
 			break;
@@ -1682,6 +2029,10 @@ int wmain(int argc, wchar_t *argv[])
 			
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
+			}
+
+			if (is_locked_msg(inf, argv[2]) != 0) {
+				resl = ST_DEVICE_BUSY; break;
 			}
 
 			if ( !(inf->status.flags & F_ENABLED) ) {
@@ -1747,6 +2098,10 @@ int wmain(int argc, wchar_t *argv[])
 
 			if ( (inf = find_device(argv[2])) == NULL ) {
 				resl = ST_NF_DEVICE; break;
+			}
+
+			if (is_locked_msg(inf, argv[2]) != 0) {
+				resl = ST_DEVICE_BUSY; break;
 			}
 
 			crypt = inf->status.crypt;
@@ -1903,6 +2258,10 @@ int wmain(int argc, wchar_t *argv[])
 				resl = ST_NF_DEVICE; break;
 			}
 
+			if (is_locked_msg(inf, argv[2]) != 0) {
+				resl = ST_DEVICE_BUSY; break;
+			}
+
 			if (inf->status.flags & F_SYNC) {
 				wprintf(L"This device is not complete encrypted\n");
 				resl = ST_OK; break;
@@ -2008,6 +2367,7 @@ int wmain(int argc, wchar_t *argv[])
 					L"8 - On/Off Deny access to unencrypted CD-ROM (%s)\n"
 					L"--------------------------------------------------\n"
 					L"9 - On/Off Protect unmounted volumes from formatting (%s)\n"
+					L"h - On/Off Allow hibernation by locking encrypted volumes, system not encrypted (%s)\n"
 					L"--------------------------------------------------\n"
 					L"x - Save changes and exit\n\n",
 					on_off(dc_conf.conf_flags & CONF_CACHE_PASSWORD),
@@ -2021,13 +2381,14 @@ int wmain(int argc, wchar_t *argv[])
 					(inf != NULL && IS_BLOCK_UNENC_HDDS_DISABLED(inf->status.flags) == 0) ?
 					    on_off(dc_conf.conf_flags & CONF_BLOCK_UNENC_HDDS) : L"non permitted",
 					on_off(dc_conf.conf_flags & CONF_BLOCK_UNENC_CDROM),
-					on_off(dc_conf.conf_flags & CONF_PROTECT_RAW_VOLUMES)
+					on_off(dc_conf.conf_flags & CONF_PROTECT_RAW_VOLUMES),
+					on_off(dc_conf.conf_flags & CONF_HIBER_LOCK)
 					);
 
 				do {
 					ch = _getch();
 					ch = tolower(ch);
-				} while (!((ch >= '0' && ch <= '9') || ch == 'x'));
+				} while (!((ch >= '0' && ch <= '9') || ch == 'h' || ch == 'x'));
 
 				if (ch == 'x') {
 					break;
@@ -2054,6 +2415,16 @@ int wmain(int argc, wchar_t *argv[])
 					case '8': set_flag(dc_conf.conf_flags, CONF_BLOCK_UNENC_CDROM, onoff); break;
 					/**/
 					case '9': set_flag(dc_conf.conf_flags, CONF_PROTECT_RAW_VOLUMES, onoff); break;
+					case 'h':
+						set_flag(dc_conf.conf_flags, CONF_HIBER_LOCK, onoff);
+						if (onoff) {
+							wprintf(
+								L"Note: at hibernation the encrypted volumes are locked - their keys are erased, after\n"
+								L"the resume each must be unlocked with its password. NOT protected: file contents and\n"
+								L"file system data of these volumes held in memory go to the unencrypted hibernation\n"
+								L"file. Fast Startup and hybrid sleep lock the volumes too.\n\n");
+						}
+						break;
 				}
 			} while (1);
 
@@ -2153,7 +2524,13 @@ int wmain(int argc, wchar_t *argv[])
 					free(cert);
 
 					if (resl == ST_OK) {
+						DC_FLAGS2 flags2;
 						wprintf(L"Certificate applied to registry\n");
+						/* dc_save_certificate had the driver check the new certificate:
+						 * read the result */
+						if (dc_device_control(DC_CTL_GET_FLAGS, NULL, 0, &flags2, sizeof(flags2)) == NO_ERROR) {
+							wprintf(L"Certificate %s by the driver\n", (flags2.load_flags & DST_PRO_ENABLED) ? L"accepted" : L"NOT accepted");
+						}
 					}
 				}
 			}

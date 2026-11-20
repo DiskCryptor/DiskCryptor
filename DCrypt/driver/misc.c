@@ -129,7 +129,8 @@ void dc_query_object_name(void *object, wchar_t *buffer, u16 length)
 	status = ObQueryNameString(object, inf, sizeof(buf), &bytes);
 
 	if (NT_SUCCESS(status) != FALSE) {
-		bytes = min(length, inf->Name.Length);
+		/* leave room for the terminator (and keep a whole number of WCHARs) */
+		bytes = min((u32)(length - sizeof(wchar_t)), (u32)inf->Name.Length) & ~1u;
 		mincpy(buffer, inf->Name.Buffer, bytes);
 		buffer[bytes >> 1] = 0;
 	} else {

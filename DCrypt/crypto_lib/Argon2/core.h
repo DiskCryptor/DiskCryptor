@@ -100,6 +100,7 @@ typedef struct Argon2_position_t {
 typedef struct Argon2_thread_data {
     argon2_instance_t *instance_ptr;
     argon2_position_t pos;
+    int result; /* fill_segment's return: a cancelled segment must fail the hash */
 } argon2_thread_data;
 
 /*************************Argon2 core functions********************************/

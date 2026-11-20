@@ -5,6 +5,8 @@
 
 #define IDS_MOUNT			L"&Mount"
 #define IDS_UNMOUNT			L"&Unmount"
+#define IDS_UNLOCK			L"Un&lock"
+#define IDS_FORCE_UNMOUNT	L"&Force Unmount"
 #define IDS_ENCRYPT			L"&Encrypt"
 #define IDS_DECRYPT			L"&Decrypt"
 
@@ -366,6 +368,10 @@ BOOL _is_root_item(
 	);
 
 BOOL _is_enabled_item(
+		LPARAM lparam
+	);
+
+BOOL _is_locked_item(
 		LPARAM lparam
 	);
 

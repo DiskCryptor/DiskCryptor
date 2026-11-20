@@ -89,6 +89,8 @@ int dc_k_benchmark_kdf(int kdf, dc_kdf_bench_info *info)
 		test_salt[i] = (u8)(i % 256);
 
 	info->kdf = kdf;
+	/* fields not set by every branch below rely on the caller (DC_CTL_BENCHMARK_KDF)
+	 * zeroing the whole output structure */
 
 	/* query performance frequency */
 	KeQueryPerformanceCounter((PLARGE_INTEGER)&info->cpufreq);
@@ -105,8 +107,11 @@ int dc_k_benchmark_kdf(int kdf, dc_kdf_bench_info *info)
 	}
 	else if (kdf > 0) {
 		/* Argon2id - compute parameters from kdf */
-		u32 memory_cost, time_cost, parallelism;
-		argon2_mk_params(kdf, &memory_cost, &time_cost, &parallelism);
+		u32 memory_cost = 0, time_cost = 0, parallelism = 0;
+		/* reject an unknown cost value (kdf > 10), which leaves the parameters unset */
+		if (!argon2_mk_params(kdf, &memory_cost, &time_cost, &parallelism)) {
+			return ST_INVALID_PARAM;
+		}
 
 		info->memory_mib = memory_cost / 1024;
 		info->time_cost = time_cost;

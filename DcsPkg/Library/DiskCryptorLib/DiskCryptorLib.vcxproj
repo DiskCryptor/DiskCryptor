@@ -58,6 +58,7 @@
     <ClInclude Include="volume_lib\dc_internal.h" />
     <ClInclude Include="volume_lib\dc_status.h" />
     <ClInclude Include="volume_lib\header_io.h" />
+    <ClInclude Include="volume_lib\journal.h" />
   </ItemGroup>
   <ItemGroup>
     <None Include="crypto_lib\amd64\aes_amd64.nasm" />
@@ -86,6 +87,7 @@
     <ClCompile Include="crypto_lib\xts_twofish.c" />
     <ClCompile Include="dc_host_efi.c" />
     <ClCompile Include="dc_io.c" />
+    <ClCompile Include="dc_safe_efi.c" />
     <ClCompile Include="dc_keyfiles.c" />
     <ClCompile Include="DcsCliHelpers.c" />
     <ClCompile Include="DcsConfigMenu.c" />
@@ -95,6 +97,7 @@
     <ClCompile Include="volume_lib\crypto_head.c" />
     <ClCompile Include="volume_lib\dc_host.c" />
     <ClCompile Include="volume_lib\header_io.c" />
+    <ClCompile Include="volume_lib\journal.c" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>15.0</VCProjectVersion>

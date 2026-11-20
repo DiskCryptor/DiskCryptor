@@ -181,19 +181,26 @@ EfiGetPartDetails(
    EFI_DEVICE_PATH_PROTOCOL*  node;
    EFI_DEVICE_PATH_PROTOCOL*  dpVolume;
    EFI_DEVICE_PATH_PROTOCOL*  dpDisk;
+   EFI_DEVICE_PATH_PROTOCOL*  dpDiskOrg;
    EFI_STATUS                 res;
    dpVolume = DevicePathFromHandle(h);
-   dpDisk = DuplicateDevicePath(dpVolume);
+   if (dpVolume == NULL) return EFI_NOT_FOUND;
+   dpDiskOrg = DuplicateDevicePath(dpVolume);
+   if (dpDiskOrg == NULL) return EFI_OUT_OF_RESOURCES;
+   dpDisk = dpDiskOrg;
    node = (EFI_DEVICE_PATH_PROTOCOL *)dpDisk;
    while (!IsDevicePathEnd(node)) {
       if (node->Type == MEDIA_DEVICE_PATH && node->SubType == MEDIA_HARDDRIVE_DP) {
          CopyMem(dpVolme, node, sizeof(HARDDRIVE_DEVICE_PATH));
          SetDevicePathEndNode(node);
+         // LocateDevicePath advances dpDisk; free the original allocation
          res = gBS->LocateDevicePath(&gEfiBlockIoProtocolGuid, &dpDisk, hDisk);
+         FreePool(dpDiskOrg);
          return res;
       }
       node = NextDevicePathNode(node);
    }
+   FreePool(dpDiskOrg);
    return EFI_NOT_FOUND;
 }
 
@@ -210,7 +217,21 @@ EfiGetPartGUID(
 	while (!IsDevicePathEnd(node)) {
 		if (node->Type == MEDIA_DEVICE_PATH && node->SubType == MEDIA_HARDDRIVE_DP) {
 			HARDDRIVE_DEVICE_PATH* hdpNode = (HARDDRIVE_DEVICE_PATH*)node;
-			CopyMem(guid, hdpNode->Signature, sizeof(*guid));
+			if (hdpNode->SignatureType == SIGNATURE_TYPE_GUID) {
+				CopyMem(guid, hdpNode->Signature, sizeof(*guid));
+			} else {
+				// An MBR partition has no GUID - Signature holds the 4-byte disk signature
+				// (or nothing), the same for every partition of the disk. A stable ID unique per
+				// partition instead: disk signature, partition number, start LBA (16 bytes)
+				UINT32 diskSig = 0;
+				if (hdpNode->SignatureType == SIGNATURE_TYPE_MBR) {
+					CopyMem(&diskSig, hdpNode->Signature, sizeof(diskSig));
+				}
+				guid->Data1 = diskSig;
+				guid->Data2 = (UINT16)(hdpNode->PartitionNumber & 0xFFFF);
+				guid->Data3 = (UINT16)(hdpNode->PartitionNumber >> 16);
+				CopyMem(guid->Data4, &hdpNode->PartitionStart, sizeof(guid->Data4));
+			}
 			return EFI_SUCCESS;
 		}
 		node = NextDevicePathNode(node);

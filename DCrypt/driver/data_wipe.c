@@ -110,7 +110,8 @@ int dc_wipe_init(wipe_ctx *ctx, void *hook, int max_size, int method, int cipher
 	{
 		memset(ctx, 0, sizeof(wipe_ctx));
 		
-		if (method > sizeof(wipe_modes) / sizeof(wipe_mode)) {
+		/* bound by the element count of wipe_modes[] */
+		if (method < 0 || method >= (int)(sizeof(wipe_modes) / sizeof(wipe_modes[0]))) {
 			resl = ST_INV_WIPE_MODE; break;
 		}
 		ctx->mode = wipe_modes[method];

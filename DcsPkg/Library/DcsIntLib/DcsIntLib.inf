@@ -41,11 +41,13 @@
 
 [LibraryClasses]
   MemoryAllocationLib
+  DevicePathLib
   UefiLib
   RngLib
   BaseCryptLib
 
 [Protocols]
+  gEfiBlockIo2ProtocolGuid
 
 
 [BuildOptions.IA32]

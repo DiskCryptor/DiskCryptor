@@ -298,6 +298,7 @@
     <ClCompile Include="tpm_12.c" />
     <ClCompile Include="tpm_sup.c" />
     <ClCompile Include="w10.c" />
+    <ClCompile Include="shadow.c" />
     <ClCompile Include="dc_header.c" />
     <ClCompile Include="tpm_20.c" />
     <ClCompile Include="cert_utils.c" />
@@ -323,6 +324,7 @@
     <ClInclude Include="include\tpm_12.h" />
     <ClInclude Include="include\tpm_sup.h" />
     <ClInclude Include="include\w10.h" />
+    <ClInclude Include="include\shadow.h" />
     <ClInclude Include="include\dc_header.h" />
     <ClInclude Include="include\tpm_20.h" />
     <ClInclude Include="include\cert_utils.h" />

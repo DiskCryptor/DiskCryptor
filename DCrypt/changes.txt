@@ -1,5 +1,123 @@
 
 
+[06.11.2026] - 2.1.0/890.118.250
+  [*] Fixed race at encryption start and decryption finish that could shift concurrent I/O by the header length
+  [*] Fixed header could overwrite the restored boot sector when syncing, unmounting or hibernating during the final decryption step
+  [*] Fixed transcryption steps were accepted after decryption had finished
+  [*] Fixed removing the backup header lost the partition end sectors on volumes with a $dcsys$ storage file
+  [*] Fixed failed partition end restore was not retried, and the decryption finished anyway
+  [*] Fixed decrypt step was accepted during re-encryption
+  [*] Fixed volume resize, TRIM and crash dump handling during decryption finish
+  [*] Fixed stale partition end redirection could be carried over to a new encryption
+  [*] Fixed lost device flag updates between transcryption and unmount/power handling
+  [*] Fixed skip unused sectors could skip a block while a write to it was in flight, leaving the data under the wrong key
+  [*] Fixed use after free and double free of the allocation bitmap between loader, transcryption and unmount
+  [*] Fixed skip unused sectors on FAT/FAT32/exFAT: never detected, and its cluster mapping was off by the FAT area; now uses the file system's volume bitmap
+  [*] Fixed failed disk writes were reported as successful, and failed reads could be reported as successful
+  [*] Fixed I/O running into the last sectors of a volume with a backup header and $dcsys$ storage could hit the backup header
+  [*] Fixed growing the storage at the partition end could overlap the file system
+  [*] Fixed hibernation key erase left the master keys in memory during transcryption, and leaked the session after resume
+  [*] Fixed transcription with storage at the partition end overwrote the backup header
+  [*] Fixed boot sector writes could race the transcription of their storage copy and be lost
+  [*] Fixed header layout changes (resize, backup header, storage move) were not crash safe and left inconsistent headers on errors
+  [*] Fixed a failed encryption start could leave the volume unmountable
+  [*] Fixed "Unmount on hibernation" on the system volume wrote the hibernation image unencrypted; the option is now unavailable there
+  [*] Fixed crash dumps could contain the keys of volumes set to "Unmount on hibernation" in plaintext
+  [*] Hibernation is now refused up front instead of crashing when the hibernation image could not be protected
+  [*] Fixed "Unmount on hibernation" pulled the volume from under its mounted file system; it is now "Lock on hibernation": the keys are erased and the volume stays mounted but locked until it is unlocked
+  [*] Hibernation that cannot be refused now locks the volumes whose keys would reach the image instead of crashing
+  [+] Added unlocking of locked volumes: automatically on resume with cached passwords / boot keys, or with a password (GUI "Unlock", dccon -mount); locked volumes can be force unmounted
+  [*] Fixed the volume header could reach the disk before the data it describes (missing cache flushes)
+  [*] Fixed formatting overwrote the backup header, and header restore/update read the header tail from the wrong offset
+  [*] Fixed volume removal and surprise removal did not save the progress / freed keys still in use by I/O
+  [*] Fixed mount accepted headers with an impossible layout
+  [*] Fixed the storage file ($dcsys$) protection could be bypassed, and TRIM helper files were readable by all users
+  [*] Fixed defragmentation or a volume shrink could move the storage file ($dcsys$) and lose the volume's first sectors; the storage file is now never moved
+  [*] Fixed several buffer overflows when parsing headers and certificates
+  [*] Fixed a failed media check unmounted removable volumes
+  [*] Fixed CPUs above 32 were not used on ARM64
+  [*] Fixed large transfers in the EFI loader
+  [*] Fixed the EFI loader allowed writes into the storage area, and mounted no-redirect volumes with the wrong layout (now refused)
+  [*] Fixed a removable medium swapped during mounting could stay mounted with the previous medium's key
+  [*] Fixed resuming a re-encryption at mount could briefly read or write data without the old key
+  [*] Fixed file system I/O could fail for a moment when a decryption finished
+  [*] Fixed missing input validation in the control interface (password lengths, TRIM ranges, wipe modes, link resolution, string terminators) and password remnants in IOCTL buffers
+  [*] Fixed a failed mount could leave the previous layout settings on the device
+  [*] Fixed several small races and leaks (PRNG pool, device flags, paging notifications, minifilter teardown, KDF failures)
+  [*] Fixed "use slack" with a backup header shrank the file system unasked, and dccon -try_schrink did not shrink
+  [*] Fixed a failed format left automounting disabled for the volume, and format with "skip unused" failed to start
+  [*] Fixed directory listings of the volume root could end early when $dcsys$ was hidden
+  [*] Fixed downgrading a header with a backup header to v1 broke the volume layout; this is now refused, and volumes already downgraded this way mount without the backup header
+  [*] Fixed bad sector handling during encryption / decryption overwrote sectors that failed to read with stale data: failed reads are now retried, unreadable sectors are recovered sector by sector and otherwise set to zeros, failed writes are retried, and the GUI / dccon report the affected blocks; transcryption now stops when the device is removed or stops responding
+  [*] Fixed an I/O error at the end of a decryption was repeated in a tight loop instead of stopping with an error
+  [*] Fixed re-encrypting or changing the header layout of an encrypted ISO image written to a disk destroyed its data; this is now refused
+  [*] Fixed the device status query (dcapi) returned a random result code, so callers could treat a successful query as failed (e.g. dccon did not detect a locked volume)
+  [*] Fixed losing a removable medium in the middle of a block write left the written part to be encrypted / decrypted a second time on resume
+  [*] Fixed swapping the medium of a removable drive during encryption / decryption could write the old volume's header or encrypted data onto the new medium
+  [*] Fixed unmounting a volume while the system started to sleep or hibernate could hang the system
+  [*] Fixed resizing a volume with the relocation area at the partition end could fail and leave the volume unreadable (RAW) after the next reboot, or lose file system writes made during the resize
+  [*] Fixed a failed final header write at the end of an encryption / re-encryption was ignored: the volume was later resumed from an older position and parts were encrypted twice; the error is now reported and the finish retried
+  [*] Fixed a failed initial header write at the start of an encryption could make the volume unmountable, and at the start of a re-encryption left data encrypted with a key no header held; the start is now undone
+  [*] Fixed decrypting a volume with the relocation area in the slack left a valid backup header behind, which a later backup-header mount applied to the decrypted volume
+  [*] Fixed removing the backup header of a volume with a large header area could overrun a driver buffer
+  [*] Fixed a volume being encrypted with the relocation area in the slack reported the slack as part of its size until the next mount
+  [*] Fixed dccon did not save the encryption / decryption progress when a step failed
+  [*] Fixed hibernation / crash dump writes to the end of a volume with a backup header and a $dcsys$ storage file overwrote the backup header and were read back from a stale copy
+  [*] Fixed offloaded copies (ODX), write-zeroes and similar storage requests, disk-side data copies and BypassIO bypassed the encryption of encrypted volumes; they are now refused (copies fall back to normal copying, BypassIO is refused on all volumes DiskCryptor attaches to)
+  [*] Fixed the GUI kept only the last of the selected mount options (e.g. "read only" was lost when "use backup header" was also ticked)
+  [*] Fixed resizing a volume with the relocation area in the slack left the old backup header on disk, which the old password could still unlock
+  [*] Fixed the certificate check accepted lines that were not covered by the signature (unconvertible characters)
+  [*] Fixed mounting a partially encrypted volume from its backup header made the key slots of the primary header unusable
+  [*] Fixed removing the backup header destroyed it before the header without it was written
+  [*] Fixed encrypted volumes could stop working after waking from hybrid sleep or after a failed hibernation (keys were wiped after the hibernation image was written)
+  [*] Hardened the volume header checks at mount (misaligned relocation area, storage file overlapping the header area)
+  [*] Fixed shrinking a volume with a $dcsys$ storage file and a backup header to its minimum size overwrote the end of the storage file with the backup header; such a shrink is now refused (shrink slightly less)
+  [*] Fixed enlarging the header or adding a backup header on a volume with a $dcsys$ storage file could place the backup header inside the storage file; the storage file is recreated when it does not fit
+  [*] Fixed a volume whose $dcsys$ storage file overlaps the backup header area is mounted without the backup header instead of with a self-overlapping layout
+  [*] Fixed resizing a volume with a $dcsys$ storage file and a backup header during a paused encryption / decryption / re-encryption encrypted its last sectors with the wrong key
+  [*] Fixed a backup header that could not be read at mount or decryption start was rewritten with the key slots of the old backup, so its passwords no longer worked; it is now rewritten as a copy of the primary header
+  [*] Fixed every volume size notification rewrote the end sectors and backup header of a volume with a $dcsys$ storage file even when the size did not change
+  [*] Fixed a power loss or a failed write at the end of an encryption or re-encryption with a backup header could leave a backup header that still described the unfinished encryption; mounting from it later encrypted the end of the volume a second time. The finish now writes the headers in an order in which each one is always valid on its own, and is retried when the backup header cannot be written
+  [*] Fixed an encryption could be marked finished with its last part not encrypted when the volume was extended (or a decryption step was started by a second program) at the moment it finished
+  [*] Fixed a file system shrink of a volume with the relocation area at the partition end or a backup header could skip moving them while the driver was busy (a password change, a mount, a layout change), leaving the volume unreadable (RAW) after the next reboot; such a shrink now waits for the driver and is refused after 30 s instead
+  [*] Fixed a read or write (or a TRIM / offloaded write) still in progress when an encryption, decryption, re-encryption or layout change started could land on the first part being processed and corrupt a few sectors without an error; the start now waits until such requests have finished
+  [*] Fixed a crash during an encryption or decryption when another disk filter driver (some backup, snapshot or antivirus products) sent a request for the part being processed from its completion routine
+  [*] Fixed "Mount all" could hang the system when a volume was being formatted and a disk was added or removed at the same moment
+  [+] Added support for Windows 7 booted from UEFI: it was taken for a BIOS (MBR) system by the driver, the GUI, dccon and the installer, and the GUI did not list its EFI system partitions (neither Windows' nor a dedicated DCS partition)
+  [*] The MBR bootloader is no longer installed on a GPT disk (on a disk over 2 TiB it could overwrite the backup GPT and the end of the last partition)
+  [+] Added an authentication timeout action to the EFI bootloader settings (shutdown, halt, reboot, exit to firmware or load boot disk); it was always shutdown
+  [*] Fixed the EFI bootloader's invalid password action (halt, reboot, exit to firmware, load boot disk) never ran: the password was asked again without end; the action now follows the first wrong password, as in the MBR bootloader
+  [*] The EFI bootloader settings no longer overwrite an invalid password or timeout action set by hand in DcsProp; such a value is shown as "Custom" and kept
+  [*] Fixed a failed relocation of the relocation area during a small resize could damage the copy it rolled back to
+  [*] Extending a volume with the relocation area in the slack now also wipes the old copy of the partition start, and header writes record the current position of the relocation area
+  [*] Fixed hibernation could crash instead of being refused while a volume was being formatted
+  [*] Fixed a block interrupted by hibernation or a removed device lost its read retries after the resume
+  [*] Fixed raw volumes could stop being checked for an encrypted volume after many hibernation transitions
+  [*] Fixed a request to disable BypassIO was refused instead of passed on
+  [*] Fixed the GUI showed a hibernation error when an unlock was cancelled, and garbage in error messages when the device was gone
+  [*] Fixed the GUI reported an encryption error, or lost the bad block report, when a pause / resume or an unmount happened during the last step
+  [*] Fixed the GUI could start a second transcryption worker on a fast pause + resume
+  [*] Fixed the GUI showed an error after formatting a RAW volume
+  [*] Fixed dccon crashed with -slot when the password prompt was cancelled
+  [*] Fixed cancelling a password change, encryption start, re-encryption, format or header restore during the Argon2 key derivation could seal the volume header with a wrong key and still report success, leaving the volume unmountable after the next reboot
+  [*] Fixed changing the header password with the current KDF set to "Standard" or "Try all" destroyed every key slot password (in the primary and the backup header); key slots are no longer touched when a key cannot be derived
+  [*] Fixed the GUI password change sent "Standard" / "Try all" as the current KDF wrongly (the change failed with a password error)
+  [*] Fixed re-encryption and adding a backup header failed when the password was given with the KDF "Standard" / "Try all", and could re-key the header to a key slot password
+  [*] Fixed the boot password search mapped memory owned by Windows on every boot that did not come through the DCS loader (crash with Driver Verifier), leaked those mappings, and trusted the memory range named by any boot data block it found
+  [*] Fixed encrypting with "skip unused sectors" on Windows 7 used a memory pool type Windows 7 does not have
+  [*] Fixed the Pro certificate was not recognized after a reboot until the GUI was opened (the driver checked it before the system crypto provider was ready); dccon now reports whether the driver accepted an applied certificate
+  [*] Fixed extending a mounted encrypted volume: Disk Management failed with "invalid parameter" (mostly with a backup header) and Resize-Partition grew only the partition, not the file system
+  [+] Added power-loss protection for encryption, decryption and re-encryption (on by default, GUI checkbox, dccon -safe / -nosafe): every block is journaled in a hidden $dclog$ file, so a power loss or a removed disk during transcryption no longer corrupts data
+  [*] "Skip unused sectors" no longer silently corrupts existing shadow copies (System Restore points, Previous Versions, backup snapshots): before such an operation starts or resumes, the GUI and dccon offer to delete the volume's shadow copies (dccon -delshadows / -keepshadows)
+  [+] Power-loss protection has a faster level, "Checksums" (now the default; GUI Protection list, dccon -safefast): the journal holds a checksum per sector instead of a copy of each block - a sector torn by a power loss is detected and reads as zeros, "Full block copies" (dccon -safe) repairs it
+  [+] A volume header damaged by a power loss during encryption or decryption (the save torn between two sectors) is repaired at the mount by restoring the encryption position (a backup header decides which of the two saves is newer, and is used itself when nothing else fits); such a header is no longer reported as a wrong password. dccon -mount ... -ignore_crc mounts a damaged header that cannot be repaired read-only, to copy the data
+  [*] Faster encryption and decryption: 8 MiB blocks (1.25 MiB with wipe passes), each read and written as one request that the disk driver splits and runs in parallel - before, small pieces went to the disk one after another (the power-loss protection journal holds 8 MiB blocks too; the progress is saved every 4 steps, about 32 MiB)
+  [+] New setting "Allow Hibernation without System Encryption": hibernation with an unencrypted system volume locks the encrypted volumes (keys erased, unlocked with the password after the resume) instead of being refused (dccon -config h)
+  [*] Fixed OK in the Settings dialog turned off the "deny access to unencrypted devices" and "protect unmounted volumes" options
+  [*] Changed dccon -encrypt / -decrypt return the step error as their exit code
+  [*] Changed on a legacy BIOS (MBR) boot, options the BIOS bootloader cannot boot are refused for the system and boot volume: a header larger than 2 KiB, a backup header, a KDF other than PBKDF2 and the relocation area in the slack (DC_MBR_LEGACY_GUARD)
+
+
 [03.10.2026] - 2.0.2/888.118.242
   [+] Added Hardware Crypto Support to ARM64
   [*] Fixed default TPM PCR mask was incomplete

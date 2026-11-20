@@ -86,18 +86,6 @@ void InitFwUuid(void);
 // Validate certificate from file
 NTSTATUS KphValidateCertificate(void);
 
-// Verify signature of a buffer
-NTSTATUS KphVerifyBuffer(PUCHAR Buffer, ULONG BufferSize, PUCHAR Signature, ULONG SignatureSize);
-
-// Verify current process signature
-NTSTATUS KphVerifyCurrentProcess(void);
-
-// Hash a file
-NTSTATUS KphHashFile(PUNICODE_STRING FileName, PVOID *Hash, PULONG HashSize);
-
-// Verify a file against a signature
-NTSTATUS KphVerifyFile(PUNICODE_STRING FileName, PUCHAR Signature, ULONG SignatureSize);
-
 NTSTATUS dc_verify_cert();
 #endif
 

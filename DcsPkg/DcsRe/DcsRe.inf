@@ -42,6 +42,7 @@
   MemoryAllocationLib
   CommonLib
   MiscUtilsLib
+  DevicePathLib
 
 [Guids]
   gEfiGlobalVariableGuid

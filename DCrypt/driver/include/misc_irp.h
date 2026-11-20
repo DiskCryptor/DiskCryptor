@@ -10,5 +10,6 @@ NTSTATUS dc_release_irp(dev_hook *hook, PIRP irp, NTSTATUS status);
 NTSTATUS dc_create_close_irp(PDEVICE_OBJECT dev_obj, PIRP irp);
 
 NTSTATUS dc_power_irp(dev_hook *hook, PIRP irp);
+void     dc_init_power_irp();
 
 #endif

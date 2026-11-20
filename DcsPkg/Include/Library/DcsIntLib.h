@@ -17,6 +17,7 @@ https://opensource.org/licenses/LGPL-3.0
 
 #include <Uefi.h>
 #include <Protocol/BlockIo.h>
+#include <Protocol/BlockIo2.h>
 #include <Protocol/ComponentName2.h>
 #include <Protocol/ComponentName.h>
 #include <Protocol/DriverBinding.h>
@@ -56,8 +57,21 @@ typedef struct _DCSINT_BLOCK_IO {
    //UINT32                     IsReinstalled;
    VOID                       *FilterParams;
 
+   // the BlockIo2 of the same partition (NULL if it has none); its reads and writes are
+   // routed through the hooked BlockIo above
+   EFI_BLOCK_IO2_PROTOCOL     *BlockIo2;
+
    DCSINT_BLOCK_IO*           Next;
 } DCSINT_BLOCK_IO, *PDCSINT_BLOCK_IO;
+
+/**
+  Decision for a partition that has no mount entry when it is connected - one that
+  appears after the mounts were set up (fast boot, hot plug). With Add FALSE: return TRUE if the
+  partition is to be filtered (e.g. blocked). With Add TRUE: add its mount entry (AddCryptoMount)
+  and return TRUE on success. NULL: such partitions are left alone.
+**/
+typedef BOOLEAN (*DCSINT_LATE_PARTITION)(IN EFI_HANDLE Controller, IN BOOLEAN Add);
+extern DCSINT_LATE_PARTITION gDcsIntLatePartition;
 
 //
 // Functions for Driver Binding Protocol

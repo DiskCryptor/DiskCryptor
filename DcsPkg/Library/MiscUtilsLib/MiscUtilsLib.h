@@ -523,6 +523,12 @@ DcsLdrGetCertState(
     OUT UINT64* State
     );
 
+// After an interactive unlock - lets DcsLdr allow the Secure Boot enforcement override
+EFI_STATUS
+DcsLdrConfirmUser(
+    VOID
+    );
+
 BOOLEAN
 IsSecureBootEnabled(
     VOID

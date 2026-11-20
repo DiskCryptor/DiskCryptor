@@ -53,6 +53,9 @@
     <ClCompile Include="w10.c">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="shadow.c">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="sb_sup.c">
       <Filter>Source Files</Filter>
     </ClCompile>
@@ -142,6 +145,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\w10.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\shadow.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="misc\fs_sup.h">

@@ -245,7 +245,7 @@ void _load_diskdrives(
 					wcscat( s_boot, L"sys" );
 				}
 				/* Check if volume contains DCS bootloader files */
-				if ( __is_efi_boot )
+				if ( __is_efi_boot && !DC_IS_LOCKED(mnt->mnt.info.status.flags) )
 				{
 					wchar_t vol_root[MAX_PATH];
 					_snwprintf(vol_root, MAX_PATH, L"%s\\", mnt->mnt.info.w32_device);

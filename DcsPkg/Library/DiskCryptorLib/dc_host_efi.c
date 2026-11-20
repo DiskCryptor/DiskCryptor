@@ -137,14 +137,27 @@ int dcs_volume_lib_init(void)
 int dc_decrypt_header(dc_header *header, int hdr_len, dc_pass *password,
                       int *out_alg, u8 *out_key, int *out_kdf, int *out_slot)
 {
+    return dc_decrypt_header_ex(header, hdr_len, password, out_alg, out_key, out_kdf, out_slot, NULL);
+}
+
+/*
+ * damaged != NULL - a header whose signature decrypts but which does not validate
+ * (a save torn by a power loss) is returned too, with *damaged = 1, for the caller to repair
+ * (dc_header_recover_efi). A valid header is always preferred (cp_decrypt_header_ex).
+ */
+int dc_decrypt_header_ex(dc_header *header, int hdr_len, dc_pass *password,
+                         int *out_alg, u8 *out_key, int *out_kdf, int *out_slot, int *damaged)
+{
     xts_key *hdr_key;
     int      succs;
+
+    if (damaged != NULL) *damaged = 0;
 
     hdr_key = (xts_key*)dcs_secure_alloc(sizeof(xts_key));
     if (hdr_key == NULL) return 0;
 
-    succs = cp_decrypt_header(hdr_key, header, hdr_len, password,
-                              out_kdf, out_key, out_slot, NULL);
+    succs = cp_decrypt_header_ex(hdr_key, header, hdr_len, password,
+                                 out_kdf, out_key, out_slot, damaged, NULL);
 
     if (succs && out_alg != NULL) {
         *out_alg = header->alg_1;

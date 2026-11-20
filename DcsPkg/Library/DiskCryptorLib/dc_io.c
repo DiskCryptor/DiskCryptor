@@ -45,6 +45,43 @@ static u16 intersect(u64 *i_st, u64 start1, u32 size1, u64 start2, u64 size2)
 }
 
 /*
+ * dc_raw_io - dc_direct_io for the data regions, with the pending block of a power-loss
+ * protected session (dc_journal_recover)
+ *
+ * The pending block is data in the new state; its sectors come from pend_img (the block as the
+ * driver will complete it), not from the disk, where it may be half written. Writes into it fail
+ * (the driver's completion would undo them); with pend_img NULL reads fail too.
+ */
+static int dc_raw_io(mount_inf *mount, u8 *buff, u16 sectors, u64 start, int read)
+{
+	u64 p_start;
+	u16 p_sectors;
+
+	if (mount->pend_len != 0 &&
+		(p_sectors = intersect(&p_start, start, sectors, mount->pend_off, mount->pend_len)) != 0)
+	{
+		u16 pre  = (u16)(p_start - start);
+		u16 post = (u16)(sectors - pre - p_sectors);
+
+		if (read == 0 || mount->pend_img == NULL) {
+			return 0;
+		}
+		/* the disk only around the block: its own sectors may not read (torn, quarantined) */
+		if (pre != 0 && dc_direct_io(mount, buff, pre, start, 1) == 0) {
+			return 0;
+		}
+		if (post != 0 && dc_direct_io(mount, buff + (u32)(pre + p_sectors) * mount->bps, post, p_start + p_sectors, 1) == 0) {
+			return 0;
+		}
+		memcpy(buff + (p_start - start) * mount->bps,
+		       mount->pend_img + (p_start - mount->pend_off) * mount->bps,
+		       (u32)p_sectors * mount->bps);
+		return 1;
+	}
+	return dc_direct_io(mount, buff, sectors, start, read);
+}
+
+/*
  * dc_crypt_io - Perform encrypted I/O on a partition's data region
  *
  * This function handles transparent encryption/decryption for disk I/O operations.
@@ -74,10 +111,12 @@ static int dc_crypt_io(mount_inf *mount, u8 *buff, u16 sectors, u64 start, int r
 	if (read != 0)
 	{
 		/* read from partition - start is partition-relative */
-		succs = dc_direct_io(mount, buff, sectors, start, 1);
+		succs = dc_raw_io(mount, buff, sectors, start, 1);
 
-		/* decrypt buffer */
-		xts_decrypt(buff, buff, (sectors * mount->bps), (start * mount->bps), key);
+		/* decrypt buffer only if the read succeeded */
+		if (succs != 0) {
+			xts_decrypt(buff, buff, (sectors * mount->bps), (start * mount->bps), key);
+		}
 	}
 	else
 	{
@@ -85,7 +124,7 @@ static int dc_crypt_io(mount_inf *mount, u8 *buff, u16 sectors, u64 start, int r
 		xts_encrypt(buff, buff, (sectors * mount->bps), (start * mount->bps), key);
 
 		/* write buffer to partition - start is partition-relative */
-		succs = dc_direct_io(mount, buff, sectors, start, 0);
+		succs = dc_raw_io(mount, buff, sectors, start, 0);
 
 		/* decrypt buffer to keep it plaintext */
 		xts_decrypt(buff, buff, (sectors * mount->bps), (start * mount->bps), key);
@@ -153,58 +192,41 @@ int dc_mount_io(mount_inf *mount, u8 *buff, u16 sectors, u64 start, int read)
 	u8 *tail_region_buff;
 	u8 *backup_hdr_buff;
 
-	int result;
+	u64 head_len = mount->head_len;
+	u64 data_end;  /* end of the data area: the backup header area starts here */
+	u64 tmp_end;   /* end of the data in the current key (the transcription boundary) */
+
+	int result = 1;
 
 	/* Check if backup header redirection is enabled */
 	int has_backup_header = (mount->flags & VF_STORAGE_FILE) && (mount->flags & VF_BACKUP_HEADER);
 
-	/* Backup header starts at head_len sectors before partition end */
-	u64 backup_hdr_start = mount->size - mount->head_len;
-
-	/* Calculate intersection with primary header region [0, head_len) */
-	primary_hdr_sectors = intersect(&primary_hdr_offset, start, sectors, 0, mount->head_len);
-
+	/*
+	 * The mount setup validated the geometry (DcCheckMountGeometry). The regions tile the partition:
+	 *   [0, head_len)            primary header, redirected to the storage
+	 *   [head_len, tmp_end)      encrypted with the current key
+	 *   [tmp_end, data_end)      VF_TMP_MODE only: old key (reencrypt) or plaintext
+	 *   [data_end, size)         backup header, redirected to the storage end
+	 * A boundary outside the data area (a live shrink can leave it above the end) is clamped.
+	 */
+	data_end = has_backup_header ? mount->size - head_len : mount->size;
+	tmp_end = data_end;
 	if (mount->flags & VF_TMP_MODE) {
-		/*
-		 * Temporary/reencryption mode:
-		 * - Encrypted data uses current key from head_len to tmp_size
-		 * - Tail region uses old key (reencrypt) or is plaintext
-		 */
-		encrypted_data_sectors = intersect(&encrypted_data_offset, start, sectors,
-		                                   mount->head_len, (mount->tmp_size - mount->head_len));
-		if (has_backup_header) {
-			/* Tail region excludes the backup header at the end */
-			tail_region_sectors = intersect(&tail_region_offset, start, sectors,
-			                                mount->tmp_size, backup_hdr_start - mount->tmp_size);
-			backup_hdr_sectors = intersect(&backup_hdr_offset, start, sectors,
-			                               backup_hdr_start, mount->head_len);
-		} else {
-			tail_region_sectors = intersect(&tail_region_offset, start, sectors,
-			                                mount->tmp_size, mount->size - mount->tmp_size);
-			backup_hdr_sectors = 0;
-		}
-	} else {
-		if (has_backup_header) {
-			/*
-			 * Backup header mode:
-			 * - Encrypted data region is reduced to exclude backup header space
-			 * - Backup header at partition end is redirected to end of storage area
-			 */
-			encrypted_data_sectors = intersect(&encrypted_data_offset, start, sectors,
-			                                   mount->head_len, mount->size - 2 * mount->head_len);
-			backup_hdr_sectors = intersect(&backup_hdr_offset, start, sectors,
-			                               backup_hdr_start, mount->head_len);
-		} else {
-			/*
-			 * Normal mode:
-			 * - All data after header is encrypted
-			 * - No backup header
-			 */
-			encrypted_data_sectors = intersect(&encrypted_data_offset, start, sectors,
-			                                   mount->head_len, mount->size - mount->head_len);
-			backup_hdr_sectors = 0;
-		}
-		tail_region_sectors = 0;
+		tmp_end = mount->tmp_size;
+		if (tmp_end > data_end) tmp_end = data_end;
+		if (tmp_end < head_len) tmp_end = head_len;
+	}
+
+	primary_hdr_sectors = intersect(&primary_hdr_offset, start, sectors, 0, head_len);
+	encrypted_data_sectors = intersect(&encrypted_data_offset, start, sectors, head_len, tmp_end - head_len);
+	tail_region_sectors = (mount->flags & VF_TMP_MODE) ?
+	                      intersect(&tail_region_offset, start, sectors, tmp_end, data_end - tmp_end) : 0;
+	backup_hdr_sectors = has_backup_header ?
+	                     intersect(&backup_hdr_offset, start, sectors, data_end, head_len) : 0;
+
+	/* a request outside the partition does not split into the regions */
+	if ((u32)primary_hdr_sectors + encrypted_data_sectors + tail_region_sectors + backup_hdr_sectors != sectors) {
+		return 0;
 	}
 
 	/* Calculate buffer offsets for each region (regions are contiguous in buffer) */
@@ -240,8 +262,12 @@ int dc_mount_io(mount_inf *mount, u8 *buff, u16 sectors, u64 start, int read)
 				                     tail_region_offset, read, mount->o_key);
 			} else {
 				/* Plaintext region - direct I/O with partition-relative offset */
-				result = dc_direct_io(mount, tail_region_buff, tail_region_sectors,
+				result = dc_raw_io(mount, tail_region_buff, tail_region_sectors,
 				                tail_region_offset, read);
+			}
+			/* a failed tail I/O must not be hidden by a successful backup header I/O below */
+			if (result == 0) {
+				break;
 			}
 		}
 
@@ -252,7 +278,7 @@ int dc_mount_io(mount_inf *mount, u8 *buff, u16 sectors, u64 start, int read)
 			 * Map partition end to storage end:
 			 * [size - head_len ... size) -> [stor_off + stor_len - head_len ... stor_off + stor_len)
 			 */
-			u64 offset_within_backup = backup_hdr_offset - backup_hdr_start;
+			u64 offset_within_backup = backup_hdr_offset - data_end;
 			u64 storage_offset = mount->stor_off + mount->stor_len - mount->head_len + offset_within_backup;
 			if ((result = dc_mount_io(mount, backup_hdr_buff, backup_hdr_sectors, storage_offset, read)) == 0) {
 				break;

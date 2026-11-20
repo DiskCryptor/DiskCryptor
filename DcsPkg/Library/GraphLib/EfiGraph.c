@@ -128,9 +128,11 @@ ScreenSaveBlt(
 	EFI_STATUS	res;
 	BLT_HEADER*	blt;
 	if (!bltScreen) return EFI_INVALID_PARAMETER;
+	*bltScreen = NULL;
 	res = ScreenGetSize(&height, &width);
 	if (EFI_ERROR(res)) return res;
 	blt = (BLT_HEADER*)MEM_ALLOC(sizeof(BLT_HEADER) + height * width * sizeof(EFI_GRAPHICS_OUTPUT_BLT_PIXEL));
+	if (blt == NULL) return EFI_OUT_OF_RESOURCES;
 	blt->Height = (UINT32)height;
 	blt->Width = (UINT32)width;
 	*bltScreen = blt;

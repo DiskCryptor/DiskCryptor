@@ -118,6 +118,11 @@ TpmKillShutdown(
         (UINT8*)&Rsp
     );
 
+    // SubmitCommand succeeds even when the TPM rejects the command
+    if (!EFI_ERROR(res) && SwapBytes32(Rsp.Header.responseCode) != TPM_RC_SUCCESS) {
+        res = EFI_DEVICE_ERROR;
+    }
+
     if (!EFI_ERROR(res)) {
         Context->Tpm2Shutdown = TRUE;
     }
@@ -260,7 +265,7 @@ TpmKillPatchAcpi(
         }
     }
 
-    if (Rsdp == NULL) {
+    if (Rsdp == NULL || Rsdp->Signature != ACPI_RSDP_SIGNATURE) {
         return EFI_NOT_FOUND;
     }
 
@@ -268,7 +273,8 @@ TpmKillPatchAcpi(
     if (Rsdp->Revision >= 2 && Rsdp->XsdtAddress != 0) {
         Xsdt = (EFI_ACPI_DESCRIPTION_HEADER*)(UINTN)Rsdp->XsdtAddress;
 
-        if (Xsdt != NULL && Xsdt->Signature == SIGNATURE_32('X', 'S', 'D', 'T')) {
+        if (Xsdt != NULL && Xsdt->Signature == SIGNATURE_32('X', 'S', 'D', 'T') &&
+            Xsdt->Length >= sizeof(EFI_ACPI_DESCRIPTION_HEADER)) {
             EntryCount = (Xsdt->Length - sizeof(EFI_ACPI_DESCRIPTION_HEADER)) / sizeof(UINT64);
             XsdtEntries = (UINT64*)((UINT8*)Xsdt + sizeof(EFI_ACPI_DESCRIPTION_HEADER));
 
@@ -297,7 +303,8 @@ TpmKillPatchAcpi(
     if (Rsdp->RsdtAddress != 0) {
         Rsdt = (EFI_ACPI_DESCRIPTION_HEADER*)(UINTN)Rsdp->RsdtAddress;
 
-        if (Rsdt != NULL && Rsdt->Signature == SIGNATURE_32('R', 'S', 'D', 'T')) {
+        if (Rsdt != NULL && Rsdt->Signature == SIGNATURE_32('R', 'S', 'D', 'T') &&
+            Rsdt->Length >= sizeof(EFI_ACPI_DESCRIPTION_HEADER)) {
             EntryCount = (Rsdt->Length - sizeof(EFI_ACPI_DESCRIPTION_HEADER)) / sizeof(UINT32);
             RsdtEntries = (UINT32*)((UINT8*)Rsdt + sizeof(EFI_ACPI_DESCRIPTION_HEADER));
 

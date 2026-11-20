@@ -40,11 +40,19 @@ EfiGetVar(
    if (varGuid == NULL) varGuid = &gEfiDcsVariableGuid;
    Status = gST->RuntimeServices->GetVariable((CHAR16*)varName, varGuid, varAttr, varSize, varData);
    if (Status == EFI_BUFFER_TOO_SMALL) {
-      varData = MEM_ALLOC(*varSize);
+      // Extra zeroed CHAR16 (+1 byte for odd sizes) so string callers always see a terminator
+      if (*varSize > MAX_UINTN - sizeof(CHAR16) - 1) {
+         return EFI_BUFFER_TOO_SMALL;
+      }
+      varData = MEM_ALLOC(*varSize + sizeof(CHAR16) + 1);
       if (varData == NULL) {
          return EFI_BUFFER_TOO_SMALL;
       }
       Status = gST->RuntimeServices->GetVariable((CHAR16*)varName, varGuid, varAttr, varSize, varData);
+      if (EFI_ERROR(Status)) {
+         MEM_FREE(varData);
+         varData = NULL;
+      }
       *varValue = varData;
    }
    return Status;
@@ -80,14 +88,19 @@ BootOrderInsert(
 	UINTN     i;
 	UINTN     j;
 	res = EfiGetVar(OrderVarName, &gEfiGlobalVariableGuid, &varBootOrder, &varBootOrderSize, &varBootOrderAttr);
-	if (EFI_ERROR(res)) {
+	if (res == EFI_NOT_FOUND) {
 		res = EfiSetVar(OrderVarName, &gEfiGlobalVariableGuid, &value, 2,
 			EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS);
 		return res;
 	}
+	if (EFI_ERROR(res)) return res;
 	BootOrderCount = varBootOrderSize / sizeof(UINT16);
 	varBootOrderNew = MEM_ALLOC((BootOrderCount + 1) * sizeof(UINT16));
-	if (BootOrderCount < index) index = BootOrderCount - 1;
+	if (varBootOrderNew == NULL) {
+		MEM_FREE(varBootOrder);
+		return EFI_OUT_OF_RESOURCES;
+	}
+	if (BootOrderCount < index) index = BootOrderCount;
 	for (j = 0, i = 0; i < BootOrderCount; ++i) {
 		if (j == index) {
 			varBootOrderNew[j] = value;
@@ -98,6 +111,11 @@ BootOrderInsert(
 		}
 		varBootOrderNew[j] = varBootOrder[i];
 		++j;
+	}
+	// Not inserted inside the loop (index at or past the end): append
+	if (j <= index) {
+		varBootOrderNew[j] = value;
+		j++;
 	}
 	BootOrderCount = j;
 
@@ -127,6 +145,10 @@ BootOrderRemove(
 	if (EFI_ERROR(res)) return res;
 	BootOrderCount = varBootOrderSize / sizeof(UINT16);
 	varBootOrderNew = MEM_ALLOC((BootOrderCount + 1) * sizeof(UINT16));
+	if (varBootOrderNew == NULL) {
+		MEM_FREE(varBootOrder);
+		return EFI_OUT_OF_RESOURCES;
+	}
 	for (j = 0, i = 0; i < BootOrderCount; ++i) {
 		if (varBootOrder[i] == value) {
 			continue;
@@ -226,8 +248,14 @@ BootMenuItemCreate(
 	// append the file
 	//
 	FileNode = FileDevicePath(NULL, Path);
+	if (FileNode == NULL) {
+		return EFI_OUT_OF_RESOURCES;
+	}
 	FilePath = AppendDevicePath(DevicePath, FileNode);
 	FreePool(FileNode);
+	if (FilePath == NULL) {
+		return EFI_OUT_OF_RESOURCES;
+	}
 	//
 	// Add the option
 	//
@@ -252,9 +280,11 @@ BootMenuItemCreate(
 			EFI_VARIABLE_NON_VOLATILE | EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS);
 	}
 	else {
+		FreePool(FilePath);
 		return EFI_BUFFER_TOO_SMALL;
 	}
 
+	FreePool(FilePath);
 	MEM_FREE(varBoot);
 	return res;
 }

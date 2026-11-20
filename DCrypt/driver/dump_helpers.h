@@ -10,7 +10,8 @@ typedef NTSTATUS (*PDC_DUMP_ENCRYPT)(
 	__out   PUCHAR         EncryptedData
 	);
 
-typedef BOOLEAN (*PDC_DUMP_IS_HIBERNATION_ALLOWED)();
+/* lockable_skipped: evaluate as if every DC_HIBER_LOCKABLE volume were locked */
+typedef BOOLEAN (*PDC_DUMP_IS_HIBERNATION_ALLOWED)(__in BOOLEAN lockable_skipped);
 
 typedef struct {
 	PDC_DUMP_START                  dump_start;

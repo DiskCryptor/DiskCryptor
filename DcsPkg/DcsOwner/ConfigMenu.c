@@ -21,6 +21,8 @@ https://opensource.org/licenses/LGPL-3.0
 #include <Library/BaseMemoryLib.h>
 #include <Library/BaseCryptLib.h>
 #include <Protocol/DcsOwnerProto.h>
+#include <Guid/GlobalVariable.h>
+#include <Guid/ImageAuthentication.h>
 #include <DcsConfig.h>
 #include "common/Xml.h"
 
@@ -59,6 +61,12 @@ STATIC CFG_VALUE_NAME gTpmKillValues[] = {
     { TPM_KILL_MODE_DISABLED,     L"No" },
     { TPM_KILL_MODE_FULL,         L"Fully" },
     { TPM_KILL_MODE_CONSERVATIVE, L"Conservative (keep UID EK variable)" },
+};
+
+STATIC CFG_VALUE_NAME gDevMode[] = {
+    { 0x00,      L"No" },
+    { 0x01,      L"Allow User Signing" },
+    { 0x03,      L"Allow Signing & Debugging" },
 };
 
 static CFG_VALUE_NAME gBoolValues[] = {
@@ -142,7 +150,7 @@ CfgDrawItem (
 // at boot-services time. To add another DcsProp parameter, declare a menu item
 // with a ConfigKey - no other change is needed.
 //
-#define DCSOWNER_BOOTMENULOCK_KEY  "BootMenuLock"
+#define DCSOWNER_BOOTMENULOCK_KEY  DCSOWNER_CFG_BML
 
 
 /**
@@ -161,13 +169,12 @@ DcsOwnerSaveConfigItems (
     EFI_STATUS  Status;
     CFG_STRING  NewConfig;
     CHAR8      *ConfigContent = NULL;
-    CHAR8      *Xml;
-    CHAR8       Key[128];
-    CHAR8       Val[2048];
     INT32       i;
 
-    if (gConfigFileName == NULL) {
-        return EFI_NOT_READY;               // config never loaded - nothing to save into
+    // Only a DcsProp that was loaded is rewritten: never create one (the settings then live in
+    // EFI variables) and never overwrite one whose content is not known
+    if (gConfigFileName == NULL || !gUseConfigFile || gConfigBuffer == NULL) {
+        return EFI_NOT_READY;
     }
 
     Status = CfgStrInit(&NewConfig, 4096);
@@ -175,13 +182,14 @@ DcsOwnerSaveConfigItems (
         return Status;
     }
 
-    // Work on a copy of the current file so CfgMarkUpdated can flag our keys.
-    if (gConfigBuffer != NULL) {
-        ConfigContent = MEM_ALLOC(gConfigBufferSize + 1);
-        if (ConfigContent != NULL) {
-            CopyMem(ConfigContent, gConfigBuffer, gConfigBufferSize);
-            ConfigContent[gConfigBufferSize] = '\0';
-        }
+    // Work on the config as it is now - DcsInt (F6) may have saved into it in this boot - so
+    // CfgMarkUpdated can flag our keys. A file that cannot be read now is not rewritten.
+    Status = CfgLoadCurrent(&ConfigContent);
+    if (!EFI_ERROR(Status) && ConfigContent == NULL) {
+        Status = EFI_NOT_READY;
+    }
+    if (EFI_ERROR(Status)) {
+        goto cleanup;
     }
 
     Status = CfgWriteHeader(&NewConfig);
@@ -195,27 +203,9 @@ DcsOwnerSaveConfigItems (
         }
     }
 
-    // Copy every remaining (unmarked) key verbatim.
-    if (ConfigContent != NULL) {
-        Xml = ConfigContent;
-        while (Xml != NULL && (Xml = XmlFindElement(Xml, "config")) != NULL) {
-            XmlGetAttributeText(Xml, "key", Key, sizeof(Key));
-            XmlGetNodeText(Xml, Val, sizeof(Val));
-
-            Status = CfgStrAppend(&NewConfig, "\n\t\t<config key=\"");
-            if (EFI_ERROR(Status)) goto cleanup;
-            Status = CfgStrAppend(&NewConfig, Key);
-            if (EFI_ERROR(Status)) goto cleanup;
-            Status = CfgStrAppend(&NewConfig, "\">");
-            if (EFI_ERROR(Status)) goto cleanup;
-            Status = CfgStrAppend(&NewConfig, Val);
-            if (EFI_ERROR(Status)) goto cleanup;
-            Status = CfgStrAppend(&NewConfig, "</config>");
-            if (EFI_ERROR(Status)) goto cleanup;
-
-            Xml++;
-        }
-    }
+    // Copy every remaining (unmarked) key verbatim, byte for byte.
+    Status = CfgCopyUnmarked(&NewConfig, ConfigContent);
+    if (EFI_ERROR(Status)) goto cleanup;
 
     Status = CfgWriteFooter(&NewConfig);
     if (EFI_ERROR(Status)) goto cleanup;
@@ -236,6 +226,32 @@ cleanup:
 //
 #define DCSOWNER_USERKEY_NAME     L"UserPubKey"       // gVarMap Name (protocol clears BS+RT+runtime)
 #define DCSOWNER_USERKEY_STORE    L"UserPubKey_BS"    // committed payload
+
+//
+// Custom Secure Boot key overrides (PK, KEK, db, dbx) - the user-supplied
+// values that replace the firmware keys. The menu lists the ones currently
+// overwritten with their sizes and lets the operator clear all four at once.
+// Reads and clears go through the protocol by the public variable name, so the
+// internal *_BS / *_RT stores and runtime state stay in sync.
+//
+typedef struct _DCSOWNER_SBKEY {
+    CHAR16  *Label;   // short display name
+    CHAR16  *Name;    // public UEFI variable name (gVarMap Name): read / clear target
+} DCSOWNER_SBKEY;
+
+STATIC DCSOWNER_SBKEY gSbKeys[] = {
+    { L"PK",  EFI_PLATFORM_KEY_NAME        },
+    { L"KEK", EFI_KEY_EXCHANGE_KEY_NAME    },
+    { L"db",  EFI_IMAGE_SECURITY_DATABASE  },
+    { L"dbx", EFI_IMAGE_SECURITY_DATABASE1 },
+};
+
+//
+// Rows reserved below the menu for the detail block (the SHA-256 line, or the
+// SB key list) plus the confirmation prompt drawn one line under it. Sized for
+// the tallest case: a header + four keys + the prompt.
+//
+#define DCSOWNER_DETAIL_LINES  7
 
 /**
   Read the committed User Public Key and SHA-256 the raw payload.
@@ -261,14 +277,13 @@ DcsOwnerUserKeyHash (
 }
 
 /**
-  Draw the detail line under the menu: the full SHA-256 when the User Public Key
-  item is selected, or a cleared line otherwise.
+  Draw the full SHA-256 of the committed User Public Key at Row.
+  @return number of lines drawn (always 1).
 **/
 STATIC
-VOID
+INT32
 DcsOwnerDrawKeyDetail (
     IN INT32    Row,
-    IN BOOLEAN  Show,
     IN BOOLEAN  Present,
     IN UINT8    *Hash
     )
@@ -276,18 +291,170 @@ DcsOwnerDrawKeyDetail (
     INT32 i;
 
     gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row);
-    for (i = 0; i < 78; i++) OUT_PRINT(L" ");        // clear the line
-    gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row);
-
-    if (!Show) return;
-
     if (!Present) {
         OUT_PRINT(L"  SHA-256: (none)");
-        return;
+        return 1;
     }
     // Prefix kept short so "  SHA-256: " (11) + 64 hex = 75 fits an 80-col line.
     OUT_PRINT(L"  SHA-256: ");
     for (i = 0; i < 32; i++) OUT_PRINT(L"%02x", Hash[i]);
+    return 1;
+}
+
+/**
+  Blank Lines console rows starting at Row, used to wipe the detail /
+  confirmation block before it is redrawn.
+**/
+STATIC
+VOID
+DcsOwnerClearRegion (
+    IN INT32  Row,
+    IN INT32  Lines
+    )
+{
+    INT32 r, i;
+
+    for (r = 0; r < Lines; r++) {
+        gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row + r);
+        for (i = 0; i < 78; i++) OUT_PRINT(L" ");
+    }
+}
+
+/**
+  @return TRUE if the named SB key override is currently set; *Size (optional)
+  receives its committed byte count.
+**/
+STATIC
+BOOLEAN
+DcsOwnerSbKeyPresent (
+    IN  EFI_DCSOWNER_PROTOCOL  *This,
+    IN  CHAR16                 *Name,
+    OUT UINTN                  *Size      OPTIONAL
+    )
+{
+    UINTN       Sz = 0;
+    EFI_STATUS  Status = This->GetVariable(This, Name, &Sz, NULL, NULL);
+
+    if (Size != NULL) *Size = Sz;
+    return (Status == EFI_BUFFER_TOO_SMALL) || (Status == EFI_SUCCESS && Sz > 0);
+}
+
+/**
+  @return TRUE if any of PK/KEK/db/dbx is currently overwritten.
+**/
+STATIC
+BOOLEAN
+DcsOwnerSbAnyPresent (
+    IN EFI_DCSOWNER_PROTOCOL  *This
+    )
+{
+    UINTN k;
+
+    for (k = 0; k < ARRAY_SIZE(gSbKeys); k++) {
+        if (DcsOwnerSbKeyPresent(This, gSbKeys[k].Name, NULL)) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+/**
+  List the overwritten SB key variables and their sizes starting at Row.
+  @return number of lines drawn (>= 1).
+**/
+STATIC
+INT32
+DcsOwnerDrawSbDetail (
+    IN EFI_DCSOWNER_PROTOCOL  *This,
+    IN INT32                  Row
+    )
+{
+    INT32    line = 0;
+    UINTN    k;
+    BOOLEAN  any = FALSE;
+
+    gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row);
+    OUT_PRINT(L"  Overwritten Secure Boot keys:");
+    line++;
+
+    for (k = 0; k < ARRAY_SIZE(gSbKeys); k++) {
+        UINTN Size = 0;
+        if (DcsOwnerSbKeyPresent(This, gSbKeys[k].Name, &Size)) {
+            gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row + line);
+            OUT_PRINT(L"    %s = %d bytes", gSbKeys[k].Label, (int)Size);
+            line++;
+            any = TRUE;
+        }
+    }
+
+    if (!any) {
+        gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row + line);
+        OUT_PRINT(L"    (none)");
+        line++;
+    }
+    return line;
+}
+
+/**
+  Clear and redraw the detail block for the current selection: the SHA-256 for
+  the User Public Key, the key list for the Secure Boot keys, or nothing.
+  @return the row at which a confirmation prompt should be drawn - one line
+          below the detail, so it never overlaps it.
+**/
+STATIC
+INT32
+DcsOwnerDrawDetail (
+    IN EFI_DCSOWNER_PROTOCOL  *This,
+    IN INT32                  DetailRow,
+    IN INT32                  Selected,
+    IN INT32                  KeyIdx,
+    IN INT32                  SbIdx,
+    IN BOOLEAN                KeyPresent,
+    IN UINT8                  *KeyHash
+    )
+{
+    INT32 lines = 0;
+
+    DcsOwnerClearRegion(DetailRow, DCSOWNER_DETAIL_LINES);
+
+    if (Selected == KeyIdx) {
+        lines = DcsOwnerDrawKeyDetail(DetailRow, KeyPresent, KeyHash);
+    } else if (Selected == SbIdx) {
+        lines = DcsOwnerDrawSbDetail(This, DetailRow);
+    }
+
+    return DetailRow + lines;
+}
+
+/**
+  Draw Prompt at Row and wait for the operator.
+  @return TRUE on y/Y, FALSE on n/N/Esc.
+**/
+STATIC
+BOOLEAN
+DcsOwnerConfirmPrompt (
+    IN INT32          Row,
+    IN CONST CHAR16   *Prompt
+    )
+{
+    EFI_INPUT_KEY key;
+
+    gST->ConOut->SetCursorPosition(gST->ConOut, 0, Row);
+    OUT_PRINT(L"%s", Prompt);
+
+    for (;;) {
+        UINTN EvIdx;
+        gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &EvIdx);
+        if (EFI_ERROR(gST->ConIn->ReadKeyStroke(gST->ConIn, &key))) {
+            continue;
+        }
+        if (key.UnicodeChar == L'y' || key.UnicodeChar == L'Y') {
+            return TRUE;
+        }
+        if (key.UnicodeChar == L'n' || key.UnicodeChar == L'N' || key.ScanCode == SCAN_ESC) {
+            return FALSE;
+        }
+    }
 }
 
 EFI_STATUS
@@ -303,24 +470,36 @@ DcsOwnerShowConfigMenu (
     INT32          i;
     INT32          count = 0;
     INT32          detailRow;
+    INT32          confirmRow;
     INT32          keyIdx = -1;
+    INT32          sbIdx = -1;
     BOOLEAN        keyPresent;
     UINT8          keyHash[32];
-    CFG_MENU_ITEM  items[8];
+    CFG_MENU_ITEM  items[10];
 
     ZeroMem(items, sizeof(items));
     keyPresent = DcsOwnerUserKeyHash(keyHash);
 
-    // Boot Menu Lock (stored in DcsProp, not an EFI variable)
-    {
-        INT32 lockVal = ConfigReadInt(DCSOWNER_BOOTMENULOCK_KEY, 1);
+    // Show (and save back) the DcsProp as it is now: DcsInt (F6) may have saved into it in this
+    // boot, while this module's copy is from boot start
+    if (gUseConfigFile) {
+        CfgReloadCurrent();
+    }
 
-        items[count].ConfigKey    = DCSOWNER_BOOTMENULOCK_KEY;   // DcsProp-backed
+    // Boot Menu Lock (DcsProp, or the EFI variable when there is no DcsProp)
+    {
+        INT32 lockVal = DcsOwnerGetBootMenuLock() ? 1 : 0;
+
         items[count].Label        = L"Boot Menu Lock";
         items[count].Values       = gBoolValues;
         items[count].ValueCount   = ARRAY_SIZE(gBoolValues);
-        items[count].DirectVar    = FALSE;
         items[count].CurrentIndex = CfgFindValueIndex(gBoolValues, ARRAY_SIZE(gBoolValues), lockVal);
+        if (gUseConfigFile) {
+            items[count].ConfigKey = DCSOWNER_BOOTMENULOCK_KEY;
+        } else {
+            items[count].VarName   = DCSOWNER_VAR_BML;
+            items[count].DirectVar = TRUE;
+        }
         if (items[count].CurrentIndex < 0) items[count].CurrentIndex = 0;
         count++;
     }
@@ -361,6 +540,17 @@ DcsOwnerShowConfigMenu (
         count++;
     }
 
+    // Secure Boot Keys (custom PK/KEK/db/dbx overrides) - list / clear all (Del)
+    {
+        items[count].Label     = L"Secure Boot Keys";
+        items[count].Action    = TRUE;          // not a value selector
+        items[count].VarName   = NULL;          // multiple vars; cleared by index below
+        StrCpyS(items[count].ValueText, ARRAY_SIZE(items[count].ValueText),
+                DcsOwnerSbAnyPresent(This) ? L"Present (Del: clear)" : L"None");
+        sbIdx = count;
+        count++;
+    }
+
     // Suspend Isoaltor
     {
         UINT8 Value = 0;
@@ -387,6 +577,24 @@ DcsOwnerShowConfigMenu (
         StrCpyS(items[count].ValueText, ARRAY_SIZE(items[count].ValueText),
                 keyPresent ? L"Present (Del: clear)" : L"None");
         keyIdx = count;
+        count++;
+    }
+
+    // Developer Mode
+    {
+        UINT8 Value = 0;
+        UINTN Size = sizeof(Value);
+        if (EFI_ERROR(This->GetVariable(This, L"PrivacyDeveloper", &Size, &Value, NULL))) {
+            Value = 0;
+        }
+
+        items[count].VarName      = L"PrivacyDeveloper";
+        items[count].Label        = L"MP Developer Mode";
+        items[count].Values       = gDevMode;
+        items[count].ValueCount   = ARRAY_SIZE(gDevMode);
+        items[count].DirectVar    = FALSE;
+        items[count].CurrentIndex = CfgFindValueIndex(gDevMode, ARRAY_SIZE(gDevMode), Value);
+        if (items[count].CurrentIndex < 0) items[count].CurrentIndex = 0;
         count++;
     }
 
@@ -431,7 +639,7 @@ DcsOwnerShowConfigMenu (
     OUT_PRINT(L"Up/Down:select  Left/Right:change  Del:clear  Enter:apply  Esc:cancel\r\n");
 
     detailRow = baseRow + count + 2;
-    DcsOwnerDrawKeyDetail(detailRow, (selected == keyIdx), keyPresent, keyHash);
+    confirmRow = DcsOwnerDrawDetail(This, detailRow, selected, keyIdx, sbIdx, keyPresent, keyHash);
 
     gST->ConOut->EnableCursor(gST->ConOut, FALSE);
 
@@ -497,7 +705,7 @@ DcsOwnerShowConfigMenu (
                 selected--;
                 CfgDrawItem(&items[prev], baseRow + prev, FALSE);
                 CfgDrawItem(&items[selected], baseRow + selected, TRUE);
-                DcsOwnerDrawKeyDetail(detailRow, (selected == keyIdx), keyPresent, keyHash);
+                confirmRow = DcsOwnerDrawDetail(This, detailRow, selected, keyIdx, sbIdx, keyPresent, keyHash);
             }
         }
 
@@ -507,7 +715,7 @@ DcsOwnerShowConfigMenu (
                 selected++;
                 CfgDrawItem(&items[prev], baseRow + prev, FALSE);
                 CfgDrawItem(&items[selected], baseRow + selected, TRUE);
-                DcsOwnerDrawKeyDetail(detailRow, (selected == keyIdx), keyPresent, keyHash);
+                confirmRow = DcsOwnerDrawDetail(This, detailRow, selected, keyIdx, sbIdx, keyPresent, keyHash);
             }
         }
 
@@ -527,31 +735,33 @@ DcsOwnerShowConfigMenu (
             }
         }
 
-        // Delete clears the selected action item (currently the User Public Key).
-        if (key.ScanCode == SCAN_DELETE &&
-            items[selected].Action && items[selected].VarName != NULL && keyPresent) {
+        // Delete clears the selected action item (User Public Key or SB keys).
+        // The confirmation is drawn below the detail block so it never overlaps.
+        if (key.ScanCode == SCAN_DELETE && items[selected].Action) {
 
-            gST->ConOut->SetCursorPosition(gST->ConOut, 0, detailRow);
-            OUT_PRINT(L"  Clear the User Public Key? (y/n) ");
-            for (;;) {
-                UINTN EvIdx;
-                gBS->WaitForEvent(1, &gST->ConIn->WaitForKey, &EvIdx);
-                if (EFI_ERROR(gST->ConIn->ReadKeyStroke(gST->ConIn, &key)))
-                    continue;
-                if (key.UnicodeChar == L'y' || key.UnicodeChar == L'Y' ||
-                    key.UnicodeChar == L'n' || key.UnicodeChar == L'N' ||
-                    key.ScanCode == SCAN_ESC)
-                    break;
-            }
+            if (selected == keyIdx && keyPresent) {
+                if (DcsOwnerConfirmPrompt(confirmRow, L"  Clear the User Public Key? (y/n) ")) {
+                    // Protocol clears the committed store, the RT mirror and runtime state.
+                    This->SetVariable(This, items[selected].VarName, 0, NULL);
+                    keyPresent = FALSE;
+                    StrCpyS(items[selected].ValueText, ARRAY_SIZE(items[selected].ValueText), L"None");
+                    CfgDrawItem(&items[selected], baseRow + selected, TRUE);
+                }
+                confirmRow = DcsOwnerDrawDetail(This, detailRow, selected, keyIdx, sbIdx, keyPresent, keyHash);
 
-            if (key.UnicodeChar == L'y' || key.UnicodeChar == L'Y') {
-                // Protocol clears the committed store, the RT mirror and runtime state.
-                This->SetVariable(This, items[selected].VarName, 0, NULL);
-                keyPresent = FALSE;
-                StrCpyS(items[selected].ValueText, ARRAY_SIZE(items[selected].ValueText), L"None");
-                CfgDrawItem(&items[selected], baseRow + selected, TRUE);
+            } else if (selected == sbIdx && DcsOwnerSbAnyPresent(This)) {
+                if (DcsOwnerConfirmPrompt(confirmRow,
+                        L"  Clear all Secure Boot keys (PK, KEK, db, dbx)? (y/n) ")) {
+                    UINTN k;
+                    // Clear all four; the protocol keeps BS/RT/runtime in sync per key.
+                    for (k = 0; k < ARRAY_SIZE(gSbKeys); k++) {
+                        This->SetVariable(This, gSbKeys[k].Name, 0, NULL);
+                    }
+                    StrCpyS(items[selected].ValueText, ARRAY_SIZE(items[selected].ValueText), L"None");
+                    CfgDrawItem(&items[selected], baseRow + selected, TRUE);
+                }
+                confirmRow = DcsOwnerDrawDetail(This, detailRow, selected, keyIdx, sbIdx, keyPresent, keyHash);
             }
-            DcsOwnerDrawKeyDetail(detailRow, (selected == keyIdx), keyPresent, keyHash);
         }
     }
 }

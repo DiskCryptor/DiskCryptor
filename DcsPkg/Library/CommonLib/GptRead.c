@@ -151,11 +151,19 @@ GptReadEntryArray(
 {
 	EFI_STATUS  Status;
 	UINT8       *Ptr;
+	UINTN       Size;
+
+	// Reject on-disk counts whose size would wrap; GptCheckEntryArray uses the same size.
+	if (PartHeader->SizeOfPartitionEntry == 0 ||
+		PartHeader->NumberOfPartitionEntries > MAX_UINT32 / PartHeader->SizeOfPartitionEntry) {
+		return EFI_CRC_ERROR;
+	}
+	Size = (UINTN)PartHeader->NumberOfPartitionEntries * (UINTN)PartHeader->SizeOfPartitionEntry;
 
 	//
 	// Read the EFI Partition Entries
 	//
-	Ptr = MEM_ALLOC(PartHeader->NumberOfPartitionEntries * PartHeader->SizeOfPartitionEntry);
+	Ptr = MEM_ALLOC(Size);
 	if (Ptr == NULL) {
 		return EFI_BUFFER_TOO_SMALL;
 	}
@@ -164,7 +172,7 @@ GptReadEntryArray(
 		BlockIo,
 		BlockIo->Media->MediaId,
 		PartHeader->PartitionEntryLBA,
-		PartHeader->NumberOfPartitionEntries * PartHeader->SizeOfPartitionEntry,
+		Size,
 		Ptr
 		);
 	if (EFI_ERROR(Status)) {

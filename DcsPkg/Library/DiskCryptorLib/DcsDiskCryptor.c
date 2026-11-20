@@ -39,6 +39,7 @@ https://opensource.org/licenses/LGPL-3.0
 
 #include "include/dc_header.h"
 #include "volume_lib/crypto_head.h"
+#include "volume_lib/header_io.h"
 #include "include/dc_keyfiles.h"
 #include "include/dc_io.h"
 #include "DcsConfigMenu.h"
@@ -90,6 +91,9 @@ int gDCryptTpmMode = DCryptTpmAuto;
 int gDCryptTpmPcrMask = DCS_TPM_DEFAULT_PCR_MASK;
 int gDCryptTpmStorage = DCryptTpmDefault;
 BOOLEAN gDCryptTpmPinUsed = FALSE;  // Set when PIN was entered (skip countdown)
+// The successful unlock needed credentials the user entered (password prompt, TPM or
+// recovery PIN) - not an unattended TPM unseal or auto-login. Gates the recovery and boot menus.
+BOOLEAN gDCryptUnlockInteractive = FALSE;
 
 
 
@@ -141,8 +145,27 @@ static UINT64 GetElapsedMs(UINT64 StartTick, UINT64 EndTick) {
 	return ElapsedTicks / gTicksPerMs;
 }
 
+// Set once the keys are wiped - from then on the volume filters refuse all I/O instead
+// of using zeroed mounts (reads would return ciphertext, writes would land unencrypted)
+STATIC BOOLEAN gDCryptKeysWiped = FALSE;
+
 VOID CleanSensitiveDataDC(BOOLEAN panic)
 {
+	UINTN m;
+
+	gDCryptKeysWiped = TRUE;
+
+	// the pending journal block is always wiped; freed only on the panic path (the other caller
+	// is the ExitBootServices notification, no memory services there)
+	for (m = 0; m < iodb.n_mount && m < MOUNT_MAX; m++) {
+		if (iodb.p_mount[m].pend_img != NULL) {
+			MEM_BURN(iodb.p_mount[m].pend_img, iodb.p_mount[m].pend_len * iodb.p_mount[m].bps);
+			if (panic) {
+				FreePool(iodb.p_mount[m].pend_img);
+			}
+			iodb.p_mount[m].pend_img = NULL;
+		}
+	}
 	MEM_BURN(&iodb, sizeof(iodb));
 
 	MEM_BURN(&gDCryptPassword, sizeof(gDCryptPassword));
@@ -152,7 +175,11 @@ VOID CleanSensitiveDataDC(BOOLEAN panic)
 	MEM_BURN(gDCryptTpmSecret, sizeof(gDCryptTpmSecret));
 
 	if (panic && bootDataBlock != NULL) {
-		MEM_BURN(bootDataBlock, sizeof(*bootDataBlock));
+		// the full BDB also holds the pass cache and header keys past bd_data
+		UINTN bdbSize = bootDataBlock->bd_size;
+		if (bdbSize < sizeof(*bootDataBlock))
+			bdbSize = sizeof(*bootDataBlock);
+		MEM_BURN(bootDataBlock, bdbSize);
 	}
 }
 
@@ -257,6 +284,8 @@ EFI_STATUS SetBootDataBlock()
 	if (gDCryptHandoffMode >= 2)
 	{
 		UINTN addr = (UINTN)bootDataBlock->bd_base64;
+		// drop any stale copy first: a pre-existing (e.g. NV) variable with other attributes would make the set fail
+		EfiSetVar(L"DcsBootDataAddr", NULL, NULL, 0, 0);
 		ret = EfiSetVar(L"DcsBootDataAddr", NULL, &addr, sizeof(addr), EFI_VARIABLE_BOOTSERVICE_ACCESS | EFI_VARIABLE_RUNTIME_ACCESS);
 		if (EFI_ERROR(ret)) {
 			return ret;
@@ -357,6 +386,74 @@ int dc_direct_io(mount_inf *mount, void *buff, u16 sectors, u64 start, int read)
 	return EFI_ERROR(Status) ? 0 : 1;
 }
 
+// dc_mount_io() takes a u16 sector count, so requests are split into chunks; a power of
+// two keeps every chunk's buffer offset as aligned as the caller's buffer
+#define DC_VOLUME_IO_MAX_SECTORS  0x8000
+
+// Request validation, also used by the write hook before it copies the buffer.
+// Returns EFI_SUCCESS for a valid non-empty request.
+static EFI_STATUS
+DCVolumeIO_Check(
+	IN mount_inf             *mount,
+	IN EFI_LBA               Lba,
+	IN UINTN                 BufferSize,
+	IN VOID                  *Buffer
+	)
+{
+	UINTN Sectors;
+
+	if (Buffer == NULL || mount->bps == 0)
+		return EFI_INVALID_PARAMETER;
+
+	// UEFI BlockIo: BufferSize must be a multiple of the block size
+	if ((BufferSize % mount->bps) != 0)
+		return EFI_BAD_BUFFER_SIZE;
+
+	Sectors = BufferSize / mount->bps;
+
+	// UEFI BlockIo: the request must lie within the device
+	if (Lba >= mount->size || (UINT64)Sectors > mount->size - Lba)
+		return EFI_INVALID_PARAMETER;
+
+	return EFI_SUCCESS;
+}
+
+static EFI_STATUS
+DCVolumeIO_Transfer(
+	IN mount_inf             *mount,
+	IN EFI_LBA               Lba,
+	IN UINTN                 BufferSize,
+	IN OUT UINT8             *Buffer,
+	IN int                   read
+	)
+{
+	EFI_STATUS Status;
+	UINTN      Sectors;
+	UINTN      Chunk;
+
+	if (BufferSize == 0)
+		return EFI_SUCCESS;
+
+	Status = DCVolumeIO_Check(mount, Lba, BufferSize, Buffer);
+	if (EFI_ERROR(Status))
+		return Status;
+
+	Sectors = BufferSize / mount->bps;
+
+	while (Sectors != 0) {
+		Chunk = (Sectors > DC_VOLUME_IO_MAX_SECTORS) ? DC_VOLUME_IO_MAX_SECTORS : Sectors;
+
+		if (!dc_mount_io(mount, Buffer, (u16)Chunk, Lba, read))
+			return EFI_DEVICE_ERROR;
+
+		Buffer  += Chunk * mount->bps;
+		Lba     += Chunk;
+		Sectors -= Chunk;
+	}
+
+	return EFI_SUCCESS;
+}
+
 // Volume-level write hook - handles encrypted partition writes or blocks unencrypted
 EFI_STATUS
 DCVolumeIO_Write(
@@ -372,6 +469,9 @@ DCVolumeIO_Write(
 	mount_inf            *mount = NULL;
 	VOID                 *writeBuff;
 
+	if (gDCryptKeysWiped)
+		return EFI_DEVICE_ERROR; // keys wiped, the volume is no longer served
+
 	DcsIntBlockIo = GetBlockIoByProtocol(This);
 	if (DcsIntBlockIo == NULL)
 		return EFI_NOT_FOUND;
@@ -380,6 +480,26 @@ DCVolumeIO_Write(
 	if (mount == NULL)
 		return EFI_DEVICE_ERROR; // Blocked partition
 
+	// validate before allocating / copying the caller's buffer
+	if (BufferSize == 0)
+		return EFI_SUCCESS;
+	Status = DCVolumeIO_Check(mount, Lba, BufferSize, Buffer);
+	if (EFI_ERROR(Status))
+		return Status;
+
+	// never write into the storage area, as the Windows driver (past use_size, or into
+	// [stor_off, stor_off + stor_len)); the redirected sectors themselves are fine - dc_mount_io
+	// maps them into the storage. All values in sectors.
+	{
+		UINT64 Sectors = BufferSize / mount->bps;
+
+		if (Lba + Sectors > mount->use_size)
+			return EFI_WRITE_PROTECTED;
+		if ((mount->flags & VF_STORAGE_FILE) && mount->stor_len != 0 &&
+			Lba < mount->stor_off + mount->stor_len && mount->stor_off < Lba + Sectors)
+			return EFI_WRITE_PROTECTED;
+	}
+
 	// use a copy of the buffer to not change the input buffer
 	writeBuff = MEM_ALLOC(BufferSize);
 	if (writeBuff == NULL)
@@ -387,8 +507,8 @@ DCVolumeIO_Write(
 	CopyMem(writeBuff, Buffer, BufferSize);
 
 	// Lba is partition-relative, pass directly to dc_mount_io
-	if (!dc_mount_io(mount, writeBuff, (u16)(BufferSize / mount->bps), Lba, 0))
-		Status = EFI_DEVICE_ERROR;
+	// in chunks: dc_mount_io takes a u16 sector count
+	Status = DCVolumeIO_Transfer(mount, Lba, BufferSize, (UINT8*)writeBuff, 0);
 
 	MEM_FREE(writeBuff);
 
@@ -409,6 +529,9 @@ DCVolumeIO_Read(
 	DCSINT_BLOCK_IO      *DcsIntBlockIo = NULL;
 	mount_inf            *mount = NULL;
 
+	if (gDCryptKeysWiped)
+		return EFI_DEVICE_ERROR; // keys wiped, the volume is no longer served
+
 	DcsIntBlockIo = GetBlockIoByProtocol(This);
 	if (DcsIntBlockIo == NULL)
 		return EFI_NOT_FOUND;
@@ -418,8 +541,8 @@ DCVolumeIO_Read(
 		return EFI_DEVICE_ERROR; // Blocked partition
 
 	// Lba is partition-relative, pass directly to dc_mount_io
-	if (!dc_mount_io(mount, Buffer, (u16)(BufferSize / mount->bps), Lba, 1))
-		Status = EFI_DEVICE_ERROR;
+	// in chunks: dc_mount_io takes a u16 sector count
+	Status = DCVolumeIO_Transfer(mount, Lba, BufferSize, (UINT8*)Buffer, 1);
 
 	return Status;
 }
@@ -619,13 +742,14 @@ IsTargetPartitionType(
 		return TRUE; // not a GPT disk
 
 	if (EFI_ERROR(GptReadEntryArray(DiskBio, gptHdr, &gptEntry)) || gptEntry == NULL) {
+		MEM_FREE(gptEntry); // allocated even on a CRC error
 		MEM_FREE(gptHdr);
 		return TRUE;
 	}
 
 	for (gi = 0; gi < gptHdr->NumberOfPartitionEntries; gi++) {
-		if (gptEntry[gi].StartingLBA == PartStart) {
-			EFI_GUID *type = &gptEntry[gi].PartitionTypeGUID;
+		if (GPT_ENTRY(gptEntry, gptHdr, gi)->StartingLBA == PartStart) {
+			EFI_GUID *type = &GPT_ENTRY(gptEntry, gptHdr, gi)->PartitionTypeGUID;
 			if (!CompareGuid(type, &gEfiPartTypeSystemPartGuid) &&
 				!CompareGuid(type, &gEfiPartTypeBasicDataPartGuid) &&
 				!CompareGuid(type, &gEfiPartTypeMsRecoveryPartGuid)) {
@@ -638,6 +762,37 @@ IsTargetPartitionType(
 	MEM_FREE(gptEntry);
 	MEM_FREE(gptHdr);
 	return result;
+}
+
+/*
+ * The header geometry must fit the partition before the mount entry is derived from it
+ * (dc_mount_io relies on it). The driver's checks (dc_check_header_geometry), plus the storage
+ * aligned to this disk's sector size. Returns NULL when the volume can be mounted, else the reason.
+ */
+static CONST CHAR16*
+DcCheckMountGeometry(dc_header* header, UINT64 partSectors, UINT32 bps)
+{
+	if (bps == 0 || IS_INVALID_SECTOR_SIZE(bps)) {
+		return L"unsupported sector size";
+	}
+	if (partSectors == 0 || partSectors > MAX_UINT64 / bps) {
+		return L"invalid partition size";
+	}
+	if (header->version > DC_HDR_VERSION_2) {
+		return L"header version not supported";
+	}
+	/* the driver's dc_check_header: both, whether or not the volume re-encrypts */
+	if (header->alg_1 >= CF_CIPHERS_NUM || header->alg_2 >= CF_CIPHERS_NUM) {
+		return L"unknown cipher";
+	}
+	if (dc_check_header_geometry(header, partSectors * bps, bps) != ST_OK) {
+		return L"header geometry does not fit the partition";
+	}
+	if ((header->version >= DC_HDR_VERSION_2 && (header->stor_len % bps) != 0) ||
+		((header->flags & VF_STORAGE_FILE) && (header->stor_off % bps) != 0)) {
+		return L"storage area not aligned to the disk's sector size";
+	}
+	return NULL;
 }
 
 VOID
@@ -658,6 +813,8 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 	u8               hdr_key[PKCS_DERIVE_MAX];
 	int				 hdr_kdf;
 	int				 key_slot;
+	int              hdr_damaged;   // the signature decrypted, the CRC did not match
+	int              hdr_from_bak;  // mounted from the backup header
 	mount_inf*       mount;
 	const UINT16*    fsType;
 	UINT16           fsSerial[18];
@@ -743,7 +900,7 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 		}
 
 		UINT64 StartTick = ReadTimestamp();
-		int decrypt_result = dc_decrypt_header(header, hdr_len, &gDCryptPassword, &hdr_alg, hdr_key, &hdr_kdf, &key_slot);
+		int decrypt_result = dc_decrypt_header_ex(header, hdr_len, &gDCryptPassword, &hdr_alg, hdr_key, &hdr_kdf, &key_slot, &hdr_damaged);
 		UINT64 EndTick = ReadTimestamp();
 		UINT64 ElapsedMs = GetElapsedMs(StartTick, EndTick);
 
@@ -756,6 +913,49 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 			continue;
 		}
 		(*vol_found)++;
+
+		// The password is right but the header does not validate (a header save torn by a power
+		// loss): repaired in memory as the driver does, else refused with its own message
+		hdr_from_bak = 0;
+		if (hdr_damaged) {
+			int hr;
+
+			g_Con->Print(L"Volume %d:%d: the volume header is damaged, trying to repair it...\n", diskNum, part.PartitionNumber);
+			// the backup header only with the password the driver gets too (not in HandoffMode 3,
+			// keys only): the driver repairs the header again at boot and must decide alike
+			hr = dc_header_recover_efi(partBlockIo, part.PartitionSize, partBlockIo->Media->BlockSize, header, header_size,
+				(gDCryptHandoffMode == 3) ? NULL : &gDCryptPassword);
+			if (hr == DCS_HR_DAMAGED) {
+				g_Con->PrintError(L"Volume %d:%d not mounted: the volume header is damaged and could not be repaired (a power loss during a header save?). "
+					L"Mount it with DiskCryptor from another Windows or from recovery media, which repairs it, or read it with dccon -mount ... -ignore_crc.%s\n",
+					diskNum, part.PartitionNumber,
+					(gDCryptHandoffMode == 3) ? L" (Handoff mode \"keys only\": the backup header is not used at boot.)" : L"");
+				// the boot goes on without this volume: keep the reason on the screen
+				g_Con->KeyWait(L"Press any key to continue (%2d)\r", 60, 0, 0);
+				continue;
+			}
+			hdr_from_bak = (hr == DCS_HR_BACKUP);
+			g_Con->Print(L"Volume %d:%d: %s\n", diskNum, part.PartitionNumber,
+				hdr_from_bak ? L"mounted from the backup header" : L"the interrupted header save was restored (in memory)");
+		}
+
+		// VF_NO_REDIR volumes (CD/ISO-style layout) are not supported by the loader; refused,
+		// counted as found (the password was right), the partition stays unhooked
+		if (header->flags & VF_NO_REDIR) {
+			g_Con->PrintError(L"Volume %d:%d has a no-redirect layout, which the boot loader does not support - not mounted\n",
+				diskNum, part.PartitionNumber);
+			continue;
+		}
+
+		// refuse a header whose geometry does not fit the partition (counted as found,
+		// like the case above: the password was right, the partition stays unhooked)
+		{
+			CONST CHAR16* geoErr = DcCheckMountGeometry(header, part.PartitionSize, partBlockIo->Media->BlockSize);
+			if (geoErr != NULL) {
+				g_Con->PrintError(L"Volume %d:%d not mounted: %s\n", diskNum, part.PartitionNumber, geoErr);
+				continue;
+			}
+		}
 
 		if ((iodb.n_mount >= MOUNT_MAX) ||
 			(iodb.n_key >= MOUNT_MAX - ((header->flags & VF_REENCRYPT) ? 1 : 0)))
@@ -806,10 +1006,38 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 		mount->h_kdf = hdr_kdf;
 		memcpy(mount->h_key, hdr_key, PKCS_DERIVE_MAX);
 		mount->d_key      = &iodb.p_key[iodb.n_key++];
+		mount->o_key      = NULL;
 		xts_set_key(header->key_1, header->alg_1, mount->d_key);
 		if (header->flags & VF_REENCRYPT) {
 			mount->o_key  = &iodb.p_key[iodb.n_key++];
 			xts_set_key(header->key_2, header->alg_2, mount->o_key);
+		}
+
+		// A power-loss protected transcryption session: the boundary and the interrupted block as
+		// the driver will recover them from its journal at its mount
+		{
+			u32 lost = 0;
+			int jr = dc_journal_recover(mount, header, hdr_from_bak, &lost);
+
+			if (jr == DCS_JR_CONFLICT) {
+				g_Con->PrintError(L"Volume %d:%d not mounted: its transcryption journal contradicts the volume header\n",
+					diskNum, part.PartitionNumber);
+				// give back what this entry took (the keys stay wiped)
+				if (mount->o_key != NULL) { MEM_BURN(mount->o_key, sizeof(xts_key)); iodb.n_key--; }
+				MEM_BURN(mount->d_key, sizeof(xts_key)); iodb.n_key--;
+				MEM_BURN(mount, sizeof(*mount));
+				continue;
+			}
+			if (jr == DCS_JR_QUARANTINE) {
+				g_Con->PrintError(L"Volume %d:%d: the block a power loss interrupted could not be read; access to it fails until Windows completes it\n",
+					diskNum, part.PartitionNumber);
+			}
+			if (gConfigDebug && jr != DCS_JR_NONE) {
+				g_Con->Print(L"[journal: %s, boundary %llx%s] ",
+					jr == DCS_JR_EXACT ? L"empty" : jr == DCS_JR_RECOVERED ? L"recovered" : jr == DCS_JR_PENDING ? L"pending block" :
+					jr == DCS_JR_QUARANTINE ? L"pending block unreadable" : L"not usable, header boundary",
+					mount->tmp_size * mount->bps, lost ? L", torn units zeroed" : L"");
+			}
 		}
 
 		iodb.n_mount++;
@@ -833,7 +1061,14 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 		}
 	}
 
-	if (/*!*vol_found &&*/ hdr_found && !IsPxeBoot())
+	// the partition loop may not have allocated a header buffer
+	if (hdr_found && !IsPxeBoot() && header == NULL) {
+		header = (dc_header*)MEM_ALLOC(DC_AREA_SIZE);
+		if (header != NULL)
+			header_size = DC_AREA_SIZE;
+	}
+
+	if (/*!*vol_found &&*/ hdr_found && !IsPxeBoot() && header != NULL)
 	{
 		//g_Con->Print(L"enum my root\n");
 
@@ -853,6 +1088,8 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 
 				DirBufferSize = sizeof(EFI_FILE_INFO) + 1024;
 				DirInfo = MEM_ALLOC(DirBufferSize);
+				if (DirInfo == NULL)
+					ret = EFI_OUT_OF_RESOURCES;
 
 				for (; !EFI_ERROR(ret);) {
 					BufferSize = DirBufferSize;
@@ -880,7 +1117,7 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 						else
 						{
 							if (fileSize < DC_AREA_SIZE) {
-								g_Con->PrintError(L"is to small %d\n", &DirInfo->FileName[11], fileSize);
+								g_Con->PrintError(L"is to small %d\n", fileSize);
 							}
 							else {
 								UINT64 HdrStartTick = ReadTimestamp();
@@ -917,6 +1154,39 @@ DcTryDecrypt(int* vol_found, int* hdr_found)
 	}
 }
 
+// In block mode, a partition that appears after MountDisks (fast boot connects disks
+// late, hot plug) is blocked like the ones MountDisks saw - except DCS's own boot ESP. A decrypted
+// volume is never blocked (MountDisks hooks those from its mount list).
+STATIC
+BOOLEAN
+DcLatePartition(
+	IN EFI_HANDLE Controller,
+	IN BOOLEAN    Add)
+{
+	EFI_DEVICE_PATH        *path;
+	EFI_BLOCK_IO_PROTOCOL  *bio = NULL;
+
+	if (!gBlockUnencryptedVolumes || !EfiIsPartition(Controller)) {
+		return FALSE;
+	}
+	if (EFI_ERROR(gBS->HandleProtocol(Controller, &gEfiBlockIoProtocolGuid, (VOID**)&bio)) || bio == NULL) {
+		return FALSE;
+	}
+	path = DevicePathFromHandle(Controller);
+	if (path == NULL || GetPartitionMount(path) != NULL || IsBootEsp(Controller)) {
+		return FALSE;
+	}
+	if (!Add) {
+		return TRUE;
+	}
+	// runs from DcsBoot's ConnectAllEfi or a hot plug, after DcsDiskCryptor shut its console down
+	// (g_Con is NULL then) - print straight to the firmware console
+	if (gConfigDebug) {
+		OUT_PRINT(L"Blocking late volume\n");
+	}
+	return !EFI_ERROR(AddCryptoMount(path, DCVolumeIO_Read, DCVolumeIO_Write, NULL));
+}
+
 EFI_STATUS
 MountDisks(
 	IN EFI_HANDLE ImageHandle,
@@ -930,6 +1200,11 @@ MountDisks(
 	// If no volumes were decrypted and we're not blocking unencrypted volumes, nothing to do
 	if (iodb.n_mount == 0 && !gBlockUnencryptedVolumes) {
 		return ret;
+	}
+
+	// partitions connected later are classified when they are connected
+	if (gBlockUnencryptedVolumes) {
+		gDcsIntLatePartition = DcLatePartition;
 	}
 
 	// Single pass over all partitions - install appropriate hooks
@@ -1078,14 +1353,15 @@ FindBootEspOnBootDisk(
 
 	res = GptReadEntryArray(bio, gptHdr, &gptEntry);
 	if (EFI_ERROR(res)) {
+		MEM_FREE(gptEntry); // allocated even on a CRC error
 		MEM_FREE(gptHdr);
 		return res;
 	}
 
 	// Find the boot ESP entry in GPT
 	for (UINT32 i = 0; i < gptHdr->NumberOfPartitionEntries; i++) {
-		if (CompareGuid(&gptEntry[i].UniquePartitionGUID, &bootEspGuid)) {
-			bootEspEntry = &gptEntry[i];
+		if (CompareGuid(&GPT_ENTRY(gptEntry, gptHdr, i)->UniquePartitionGUID, &bootEspGuid)) {
+			bootEspEntry = GPT_ENTRY(gptEntry, gptHdr, i);
 			break;
 		}
 	}
@@ -1095,8 +1371,8 @@ FindBootEspOnBootDisk(
 		// Find the Windows ESP (non-DCS ESP) on the same disk
 		res = EFI_NOT_FOUND;
 		for (UINT32 i = 0; i < gptHdr->NumberOfPartitionEntries; i++) {
-			if (IsEspPartitionEntry(&gptEntry[i]) && !IsDcsBootPartition(&gptEntry[i])) {
-				CopyGuid(EspGuid, &gptEntry[i].UniquePartitionGUID);
+			if (IsEspPartitionEntry(GPT_ENTRY(gptEntry, gptHdr, i)) && !IsDcsBootPartition(GPT_ENTRY(gptEntry, gptHdr, i))) {
+				CopyGuid(EspGuid, &GPT_ENTRY(gptEntry, gptHdr, i)->UniquePartitionGUID);
 				res = EFI_SUCCESS;
 				break;
 			}
@@ -1134,16 +1410,18 @@ FindBootEspOnFirstDisk(
 		res = GptReadHeader(bio, 1, &gptHdr);
 		if (EFI_ERROR(res)) continue;
 
+		gptEntry = NULL;
 		res = GptReadEntryArray(bio, gptHdr, &gptEntry);
 		if (EFI_ERROR(res)) {
+			MEM_FREE(gptEntry); // allocated even on a CRC error
 			MEM_FREE(gptHdr);
 			continue;
 		}
 
 		res = EFI_NOT_FOUND;
 		for (UINT32 j = 0; j < gptHdr->NumberOfPartitionEntries; j++) {
-			if (IsEspPartitionEntry(&gptEntry[j]) && !IsDcsBootPartition(&gptEntry[j])) {
-				CopyGuid(EspGuid, &gptEntry[j].UniquePartitionGUID);
+			if (IsEspPartitionEntry(GPT_ENTRY(gptEntry, gptHdr, j)) && !IsDcsBootPartition(GPT_ENTRY(gptEntry, gptHdr, j))) {
+				CopyGuid(EspGuid, &GPT_ENTRY(gptEntry, gptHdr, j)->UniquePartitionGUID);
 				res = EFI_SUCCESS;
 				break;
 			}
@@ -1189,8 +1467,10 @@ FindBootEspForPasswordMode(
 		res = GptReadHeader(bio, 1, &gptHdr);
 		if (EFI_ERROR(res)) continue;
 
+		gptEntry = NULL;
 		res = GptReadEntryArray(bio, gptHdr, &gptEntry);
 		if (EFI_ERROR(res)) {
+			MEM_FREE(gptEntry); // allocated even on a CRC error
 			MEM_FREE(gptHdr);
 			continue;
 		}
@@ -1202,7 +1482,7 @@ FindBootEspForPasswordMode(
 
 		// First pass: look for ESP partitions and check encryption status
 		for (UINT32 j = 0; j < gptHdr->NumberOfPartitionEntries; j++) {
-			EFI_PARTITION_ENTRY *entry = &gptEntry[j];
+			EFI_PARTITION_ENTRY *entry = GPT_ENTRY(gptEntry, gptHdr, j);
 			EFI_HANDLE partHandle;
 			mount_inf *mount;
 
@@ -1256,11 +1536,40 @@ FindBootEspForPasswordMode(
 	return EFI_NOT_FOUND;
 }
 
+// Block mode boots the next stage only from an encrypted partition (not from DCS's
+// own unencrypted ESP). Runs after SelectBootPartition. EFI_SUCCESS: the layout fits.
+static EFI_STATUS
+DcCheckBlockModeLayout(VOID)
+{
+	EFI_GUID         bootEspGuid;
+	EFI_HANDLE       h = NULL;
+	EFI_DEVICE_PATH *path;
+
+	if (gDcsBootConfig == NULL || IsZeroGuid(&gDcsBootConfig->ExecPartGuid) ||
+		(gFileRootHandle != NULL && !EFI_ERROR(EfiGetPartGUID(gFileRootHandle, &bootEspGuid)) &&
+		 CompareGuid(&bootEspGuid, &gDcsBootConfig->ExecPartGuid)))
+	{
+		g_Con->PrintError(L"\nBlock mode requires DCS on its own ESP: Windows would boot from the unencrypted ESP DCS was\n"
+			L"started from. Relocate DCS to its own ESP to use block mode (or turn block mode off).\n");
+		return EFI_ACCESS_DENIED;
+	}
+	if (EFI_ERROR(EfiFindPartByGUID(&gDcsBootConfig->ExecPartGuid, &h)) ||
+		(path = DevicePathFromHandle(h)) == NULL || GetPartitionMount(path) == NULL)
+	{
+		g_Con->PrintError(L"\nBlock mode: the Windows boot partition (%g) is not encrypted. Keep the Windows boot files\n"
+			L"on an encrypted ESP and DCS on its own ESP to use block mode (or turn block mode off).\n",
+			&gDcsBootConfig->ExecPartGuid);
+		return EFI_ACCESS_DENIED;
+	}
+	return EFI_SUCCESS;
+}
+
 EFI_STATUS
 SelectBootPartition()
 {
 	EFI_STATUS ret;
 	EFI_GUID guid;
+	UINT8 mode;
 
 	// Check if specific partition is configured (explicit config overrides boot mode)
 	if (gDCryptBootPartition != NULL && gDCryptBootPartition[0] != '\0') {
@@ -1278,13 +1587,20 @@ SelectBootPartition()
 		}
 	}
 
-	switch (gDCryptBootMode) {
+	// boot mode 6 (boot menu) reaches here only after an unattended unlock, which gets no
+	// menu - it boots like the default mode (BootMode=1, mapped as DcAuthLoadConfig does)
+	mode = gDCryptBootMode;
+	if (mode == 6) {
+		mode = (gExternMode || IsPxeBoot()) ? LDR_BT_AP_PASSWORD : LDR_BT_MBR_BOOT;
+	}
+
+	switch (mode) {
 	case LDR_BT_MBR_BOOT:	ret = FindBootEspOnBootDisk(&guid); break;
 	case LDR_BT_MBR_FIRST:	ret = FindBootEspOnFirstDisk(&guid); break;
 	case LDR_BT_AP_PASSWORD:ret = FindBootEspForPasswordMode(0, &guid); break;
 	case LDR_BT_DISK_ID:	ret = FindBootEspForPasswordMode(gDCryptBootDiskID, &guid); break;
 	default:
-		g_Con->PrintError(L"Unsupported boot mode: %d\n", gDCryptBootMode);
+		g_Con->PrintError(L"Unsupported boot mode: %d\n", mode);
 		ret = EFI_UNSUPPORTED;
 		break;
 	}
@@ -1316,6 +1632,7 @@ DcsDiskCryptor(
 	EFI_STATUS ret = EFI_SUCCESS;
 	int vol_found = 0;
 	int hdr_found = 0;
+	BOOLEAN bootMenu = FALSE; // boot mode 6 after an interactive unlock
 
 	// Load Certificate from Loader or directly from disk
 	if (DcsLdrGetCertState(&gVerifyCertInfo.State) == EFI_NOT_READY) {
@@ -1435,6 +1752,26 @@ DcsDiskCryptor(
 		g_Con->Print(L"Volumes Mounted: %d, Headers Approved: %d\n", vol_found, hdr_found);
 	}
 
+	// the boot menu (boot mode 6) can start any file - only after an unlock the user
+	// entered credentials for; an unattended unlock boots as configured otherwise
+	bootMenu = (gDCryptBootMode == 6) && gDCryptUnlockInteractive;
+
+	// Select boot partition (before MountDisks: the block mode layout check needs it)
+	if (!bootMenu) {
+		ret = SelectBootPartition();
+		if (EFI_ERROR(ret)) {
+			g_Con->PrintError(L"SelectBootPartition failed %r\n", ret);
+			goto finish;
+		}
+
+		// block mode boot layout (the boot menu picks its file itself; PXE has no ESP)
+		if (gBlockUnencryptedVolumes && !IsPxeBoot() && EFI_ERROR(DcCheckBlockModeLayout())) {
+			g_Con->KeyWait(L"Press any key to continue (%2d)\r", 60, 0, 0);
+			ret = EFI_DCS_SHUTDOWN_REQUESTED; // the keys are wiped on the way out, the machine is shut down
+			goto finish;
+		}
+	}
+
 	// Install hooks
 	ret = MountDisks(ImageHandle, SystemTable);
 	if (EFI_ERROR(ret)) {
@@ -1442,18 +1779,27 @@ DcsDiskCryptor(
 		goto finish;
 	}
 
-	if (gDCryptBootMode == 6) { // boot menu
+	if (bootMenu) { // boot menu
 		ret = EFI_DCS_INPUT_REQUIRED; 
 		goto finish;
 	}
 
-	// Select boot partition
-	ret = SelectBootPartition();
+finish:
+	// a failed or cancelled unlock keeps no password (typed one and F4 cache)
 	if (EFI_ERROR(ret)) {
-		g_Con->PrintError(L"SelectBootPartition failed %r\n", ret);
+		MEM_BURN(&gDCryptPassword, sizeof(gDCryptPassword));
+		MEM_BURN(gDCryptPassCache, sizeof(gDCryptPassCache));
+		gDCryptPassCount = 0;
 	}
 
-finish:
+	// tell DcsBoot whether the unlock was interactive (it gates the recovery and boot menus)
+	if (gDcsBootConfig != NULL && gDcsBootConfig->Size >= sizeof(DCS_BOOT_CONFIG)) {
+		gDcsBootConfig->UnlockInteractive = !EFI_ERROR(ret) && gDCryptUnlockInteractive;
+	}
+	// the same proof lets DcsLdr allow the Secure Boot enforcement override (DcsRe)
+	if (!EFI_ERROR(ret) && gDCryptUnlockInteractive && vol_found > 0) {
+		DcsLdrConfirmUser();
+	}
 	ConsoleShutdown();
 	return ret;
 }
@@ -1984,7 +2330,7 @@ DCFinalizePassword(dc_pass* pass, CHAR16* password, UINT32 password_size, int ke
 
 	int file_count = 0;
 	if (hw_key == DCryptTPM) file_count++;
-	else if (keyfile_data != NULL) file_count++;
+	if (keyfile_data != NULL) file_count++;
 	if (aux_data && aux_size > 0) file_count++;
 	if (file_count == 0) {
 		return EFI_SUCCESS;
@@ -2245,7 +2591,7 @@ DcAskLabel(char* outTag) // max 20 0 padded
 {
 	CHAR16 tagBuf[SLOT_LABEL_LEN + 1];
 	CHAR16 defaultTag[SLOT_LABEL_LEN + 1];
-	UnicodeSPrint(defaultTag, sizeof(defaultTag) / sizeof(CHAR16), L"Password %d", gDCryptPassCount + 1); // default label
+	UnicodeSPrint(defaultTag, sizeof(defaultTag), L"Password %d", gDCryptPassCount + 1); // default label
 	UINTN len = 0;
 
 	ZeroMem(outTag, SLOT_LABEL_LEN);
@@ -2392,12 +2738,14 @@ DcMain(int* vol_found, int* hdr_found)
 	int		       retry = gDCryptAuthRetry;
 	EFI_INPUT_KEY  key;
 	DCRYPT_PW_PROMPT Params = { DCryptPwPromptPassword, gDCryptUseKeyFile };
+	BOOLEAN        tpmPinUnlock = FALSE; // the TPM / recovery unseal succeeded with a PIN the user typed
 
 	PlatformGetID(NULL, &gPlatformKeyFile, &gPlatformKeyFileSize);
 	//g_Con->Print(L"Platform ID: %a\n", gPlatformKeyFile);
 
 	gDCryptPwdCode = AskPwdRetCancel;
 	gDCryptTpmPinUsed = FALSE;
+	gDCryptUnlockInteractive = FALSE;
 
 	// TPM Auto-load: try to load password from TPM before showing prompt
 	if (gDCryptUseHardwareKey == DCryptTPM) 
@@ -2411,6 +2759,9 @@ DcMain(int* vol_found, int* hdr_found)
 			// password required in addition to TPM secret
 		}
 		else if (!EFI_ERROR(ret)) {
+			// the PIN prompts return success only after a PIN that unsealed; gDCryptTpmPinUsed alone is
+			// also set by a prompt that was cancelled, timed out or got a wrong PIN
+			tpmPinUnlock = gDCryptTpmPinUsed;
 
 			if (!gDCryptTpmPinUsed && !gBlockUnencryptedVolumes && !IsSecureBootEnabled()) {
 				g_Con->Print(L"\n%OWARNING:%N %HSecure Boot is disabled%N without it unattended TPM unlock is unsafe.\n");
@@ -2448,6 +2799,7 @@ DcMain(int* vol_found, int* hdr_found)
 	// Auto-login: if enabled and not already loaded from TPM, use configured password (and key file if configured)
 	if (gDCryptAutoLogin && gDCryptPwdCode != AskPwdRetLogin) 
 	{
+		tpmPinUnlock = FALSE; // the auto-login fallback proves nothing, whatever the TPM prompts saw
 		if (gDCryptAutoPassword && *gDCryptAutoPassword && !EFI_ERROR(StrCpyS(password, MAX_PASSWORD, gDCryptAutoPassword))) {
 			password_size = (int)StrLen(gDCryptAutoPassword) * 2;
 		}
@@ -2462,7 +2814,7 @@ DcMain(int* vol_found, int* hdr_found)
 	if (gDCryptPwdCode == AskPwdRetLogin)
 	{
 		// Only show countdown for truly unattended mode (no PIN, no password interaction)
-		if (!gDCryptTpmPinUsed) {
+		if (!tpmPinUnlock) {
 			key = g_Con->KeyWait(L"Auto mount in %2d\r", gDCryptAutoLoginDelay ? gDCryptAutoLoginDelay : 1, 0, 0);
 			if ((key.UnicodeChar != CHAR_CARRIAGE_RETURN) && (key.ScanCode != 0 || key.UnicodeChar != 0)) {
 				g_Con->Print(L"Cancelled.               \n");
@@ -2474,7 +2826,9 @@ DcMain(int* vol_found, int* hdr_found)
 			if (gConfigDebug) {
 				CONST CHAR16* keyFileName = (Params.KeyFile >= 0 && Params.KeyFile < ARRAY_SIZE(gKeyFileNames)) ? gKeyFileNames[Params.KeyFile] : L"Unknown";
 				CONST CHAR16* hwKeyName = (Params.HwKey >= 0 && Params.HwKey < ARRAY_SIZE(gHwKeyNames)) ? gHwKeyNames[Params.HwKey] : L"Unknown";
-				g_Con->Print(L"Auto Mount:%s KeyFile: %s; HW-Key: %s\n", password_size> 0 ? L" Preset Password;" : L"", keyFileName, hwKeyName);
+				CHAR16 line[160];   // DCS's own names with colour codes
+				UnicodeSPrint(line, sizeof(line), L"Auto Mount:%s KeyFile: %s; HW-Key: %s\n", password_size> 0 ? L" Preset Password;" : L"", keyFileName, hwKeyName);
+				DcsPrintText(line);
 			}
 
 			ret = DCFinalizePassword(&gDCryptPassword, password, password_size, Params.KeyFile, Params.HwKey, NULL, 0);
@@ -2498,6 +2852,8 @@ DcMain(int* vol_found, int* hdr_found)
 				if (!gConfigDebug) {
 					g_Con->Print(L"%VSuccess!%N\n");
 				}
+				// a TPM or recovery PIN the user typed; a PIN-less unseal or an auto-login password is not
+				gDCryptUnlockInteractive = tpmPinUnlock;
 				ret = EFI_SUCCESS;
 				goto finish;
 			}
@@ -2512,7 +2868,7 @@ DcMain(int* vol_found, int* hdr_found)
 	password_size = 0;
 	MEM_BURN(&gDCryptPassword, sizeof(gDCryptPassword));
 
-	do {
+	for (;;) {
 		// password prompt - uses g_Con abstraction to select touch or console mode
 		DcsAskPassword(gDCryptPasswordMsg, &password_size, password, &gDCryptPwdCode, MAX_PASSWORD * 2, gPasswordVisible, TRUE, HandleFuncKeys, FormatStatus, &Params);
 
@@ -2600,6 +2956,9 @@ DcMain(int* vol_found, int* hdr_found)
 			if (iodb.n_mount > mount_before) {
 				g_Con->Print(L"%a\n", gDCryptSuccessMsg);
 			}
+			else if (retry && --retry <= 0) {
+				break; // a password that mounted nothing counts as a failed attempt
+			}
 			continue;
 		}
 
@@ -2609,6 +2968,9 @@ DcMain(int* vol_found, int* hdr_found)
 
 		if (*vol_found > 0 || *hdr_found > 0) {
 			g_Con->Print(L"%a\n", gDCryptSuccessMsg);
+			// entered at the prompt - and it opened a volume: a test header found on the (unencrypted)
+			// ESP alone proves nothing
+			gDCryptUnlockInteractive = (*vol_found > 0);
 			ret = EFI_SUCCESS;
 			goto finish;
 		}
@@ -2618,12 +2980,18 @@ DcMain(int* vol_found, int* hdr_found)
 			//MEM_BURN(&gDCryptPassword, sizeof(gDCryptPassword)); // leave it for next try, maybe user just made a typo and wants to try again without re-entering the password
 
 			if (gDCryptPwdCode == AskPwdForcePass) {
+				gDCryptUnlockInteractive = FALSE; // a forced boot: the password opened nothing, it proves no credential
 				ret = EFI_SUCCESS;
 				goto finish;
 			}
+
+			// only failed password attempts consume retries; retry == 0 means infinite retries
+			if (retry && --retry <= 0) { // <= 0: a negative AuthorizeRetry allows a single attempt
+				break;
+			}
 		}
 
-	} while (!retry || --retry > 0); // retry == 0 means infinite retries
+	}
 
 	ret = RETURN_ABORTED;
 
