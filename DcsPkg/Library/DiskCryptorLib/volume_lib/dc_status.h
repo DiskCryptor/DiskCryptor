@@ -84,6 +84,9 @@
 #ifndef ST_EMPTY_KEYFILES
  #define ST_EMPTY_KEYFILES  44   /* no keyfile was found where one was named */
 #endif
+#ifndef ST_LOG_CONFLICT
+ #define ST_LOG_CONFLICT    84   /* the power-loss journal contradicts the volume header (journal.c) */
+#endif
 
 /*
  * Header operation flags - the flags argument to io_write_header, which

@@ -139,9 +139,15 @@ int dc_derive_key(dc_pass* password, int kdf, u8* salt, u8* dk, ULONG *interrupt
  * that validates. On success hdr_key holds that cipher's key and hcopy the
  * plaintext.
  */
-int try_decrypt_header(u8* dk, xts_key* hdr_key, dc_header* header, dc_header* hcopy)
+/*
+ * allow_damaged: when no cipher yields a valid header but one decrypts the signature
+ * (is_volume_header_damaged), that one is taken: hdr_key and hcopy hold it and 2 is returned.
+ * A valid header always wins (1).
+ */
+static int try_decrypt_header_int(u8* dk, xts_key* hdr_key, dc_header* header, dc_header* hcopy, int allow_damaged)
 {
 	int alg = 0;
+	int dmg = -1;
 
 	while (alg < CF_CIPHERS_NUM)
 	{
@@ -152,14 +158,31 @@ int try_decrypt_header(u8* dk, xts_key* hdr_key, dc_header* header, dc_header* h
 			if (is_volume_header_correct(hcopy) != FALSE) {
 				return 1;
 			}
+			if (allow_damaged && dmg < 0 && is_volume_header_damaged(hcopy) != FALSE) {
+				dmg = alg;
+			}
 		}
 		alg++;
 	}
 
+	if (dmg >= 0 && xts_set_key(dk, dmg, hdr_key) != 0) {
+		xts_decrypt(pv(header), pv(hcopy), DC_AREA_SIZE, 0, hdr_key);
+		return 2;
+	}
 	return 0;
 }
 
+int try_decrypt_header(u8* dk, xts_key* hdr_key, dc_header* header, dc_header* hcopy)
+{
+	return try_decrypt_header_int(dk, hdr_key, header, hcopy, 0);
+}
+
 int cp_try_decrypt_header(u8* dk, int alg, xts_key* hdr_key, dc_header* header)
+{
+	return cp_try_decrypt_header_ex(dk, alg, hdr_key, header, NULL);
+}
+
+int cp_try_decrypt_header_ex(u8* dk, int alg, xts_key* hdr_key, dc_header* header, int *damaged)
 {
 	int succs = 0;
 	dc_header *hcopy;
@@ -174,6 +197,11 @@ int cp_try_decrypt_header(u8* dk, int alg, xts_key* hdr_key, dc_header* header)
 
 		if (is_volume_header_correct(hcopy)) {
 			succs = 1;
+		} else if (damaged != NULL && is_volume_header_damaged(hcopy)) {
+			succs = 1; /* the caller accepts a damaged header */
+			*damaged = 1;
+		}
+		if (succs) {
 			memcpy(&header->sign, &hcopy->sign, (DC_AREA_SIZE - HEADER_SALT_SIZE));
 		}
 	}
@@ -296,7 +324,8 @@ int cp_get_min_header_len(dc_pass *password)
 	return DC_AREA_SIZE;
 }
 
-int cp_decrypt_header_with_kdf(xts_key *hdr_key, dc_header *header, int hdr_len, dc_pass *password, int kdf, u8 *out_dk, int *out_slot, ULONG *interrupt_cmd)
+/* damaged: see cp_decrypt_header_ex */
+static int cp_decrypt_header_with_kdf(xts_key *hdr_key, dc_header *header, int hdr_len, dc_pass *password, int kdf, u8 *out_dk, int *out_slot, int *damaged, ULONG *interrupt_cmd)
 {
 	u8        dk[PKCS_DERIVE_MAX];
 	u8        sk[PKCS_DERIVE_MAX];
@@ -311,12 +340,17 @@ int cp_decrypt_header_with_kdf(xts_key *hdr_key, dc_header *header, int hdr_len,
 		return 0;
 	}
 
-	if ( !dc_derive_key(password, kdf, header->salt, dk, interrupt_cmd) )
+	if ( !dc_derive_key(password, kdf, header->salt, dk, interrupt_cmd) ) {
+		/* KDF failure (Argon2 cancelled / out of memory, invalid kdf, bad raw key
+		   size): dk is burned in case the KDF wrote part of it */
+		burn(dk, sizeof(dk));
+		dc_free(hcopy);
 		return 0;
+	}
 
 	if (slot <= 0)
 	{
-		succs = try_decrypt_header(dk, hdr_key, header, hcopy);
+		succs = try_decrypt_header_int(dk, hdr_key, header, hcopy, damaged != NULL);
 		if (succs && out_dk != NULL) memcpy(out_dk, dk, PKCS_DERIVE_MAX);
 		if (succs && out_slot != NULL) *out_slot = 0;
 	}
@@ -338,9 +372,14 @@ int cp_decrypt_header_with_kdf(xts_key *hdr_key, dc_header *header, int hdr_len,
 			continue;
 
 		/* Use the recovered header key (sk) to decrypt, not the slot derived key (dk) */
-		succs = try_decrypt_header(sk, hdr_key, header, hcopy);
+		succs = try_decrypt_header_int(sk, hdr_key, header, hcopy, damaged != NULL);
 		if (succs && out_dk != NULL) memcpy(out_dk, sk, PKCS_DERIVE_MAX);
 		if (succs && out_slot != NULL) *out_slot = i + 1;
+	}
+
+	/* a damaged header (signature right, CRC not) is a success only for a caller that asked */
+	if (succs == 2) {
+		*damaged = 1;
 	}
 
 	/* Restore salt */
@@ -358,6 +397,11 @@ int cp_decrypt_header_with_kdf(xts_key *hdr_key, dc_header *header, int hdr_len,
 }
 
 int cp_decrypt_header(xts_key* hdr_key, dc_header* header, int hdr_len, dc_pass* password, int* out_kdf, u8 *out_dk, int *out_slot, ULONG *interrupt_cmd)
+{
+	return cp_decrypt_header_ex(hdr_key, header, hdr_len, password, out_kdf, out_dk, out_slot, NULL, interrupt_cmd);
+}
+
+int cp_decrypt_header_ex(xts_key* hdr_key, dc_header* header, int hdr_len, dc_pass* password, int* out_kdf, u8 *out_dk, int *out_slot, int *damaged, ULONG *interrupt_cmd)
 {
 	int* kdfs;
 	int kdf = password->kdf;
@@ -382,7 +426,7 @@ int cp_decrypt_header(xts_key* hdr_key, dc_header* header, int hdr_len, dc_pass*
 				DbgMsg("key derivation interrupted\n");
 				return 0;
 			}
-			if (cp_decrypt_header_with_kdf(hdr_key, header, hdr_len, password, kdf, out_dk, out_slot, interrupt_cmd)) {
+			if (cp_decrypt_header_with_kdf(hdr_key, header, hdr_len, password, kdf, out_dk, out_slot, damaged, interrupt_cmd)) {
 				if (out_kdf) *out_kdf = kdf;
 				return 1;
 			}
@@ -395,7 +439,7 @@ int cp_decrypt_header(xts_key* hdr_key, dc_header* header, int hdr_len, dc_pass*
 			DbgMsg("key derivation interrupted\n");
 			return 0;
 		}
-		if (cp_decrypt_header_with_kdf(hdr_key, header, hdr_len, password, kdf, out_dk, out_slot, interrupt_cmd)) {
+		if (cp_decrypt_header_with_kdf(hdr_key, header, hdr_len, password, kdf, out_dk, out_slot, damaged, interrupt_cmd)) {
 			if (out_kdf) *out_kdf = kdf;
 			return 1;
 		}

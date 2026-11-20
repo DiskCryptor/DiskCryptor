@@ -42,8 +42,20 @@ int dc_update_key_slots(dc_header *header, xts_key **hdr_key, dc_pass *old_pass,
 	u8         new_dk[PKCS_DERIVE_MAX];
 	int        resl = ST_OK;
 
-	dc_derive_key(old_pass, old_pass->kdf, header->salt, old_dk, interrupt_cmd);
-	dc_derive_key(new_pass, new_pass->kdf, header->salt, new_dk, interrupt_cmd);
+	/*
+	 * Both expansions must succeed before a slot is touched: cp_swap_slot_key
+	 * XORs the old expansion out and the new one in with no check of its own,
+	 * so a failed derive (e.g. a KDF selector, an interrupted Argon2) would turn
+	 * every active slot into garbage with a valid CRC.
+	 */
+	if (!dc_derive_key(old_pass, old_pass->kdf, header->salt, old_dk, interrupt_cmd) ||
+		!dc_derive_key(new_pass, new_pass->kdf, header->salt, new_dk, interrupt_cmd))
+	{
+		DbgMsg("dc_update_key_slots: key derivation failed (kdf %d / %d), slots left as they are\n", old_pass->kdf, new_pass->kdf);
+		burn(old_dk, sizeof(old_dk));
+		burn(new_dk, sizeof(new_dk));
+		return ST_INVALID_PARAM;
+	}
 
 	/* update key slots */
 	slot_size = header->slot_area_len / header->key_slot_count;
@@ -180,23 +192,36 @@ int dc_change_slot_pass(dc_header *header, dc_pass *old_pass, dc_pass *new_pass,
 	return resl;
 }
 
-int dc_change_pass_bak(dc_dev *dev, dc_rw_fn rw, dc_header *header, dc_pass *old_pass, dc_pass *new_pass, u32 flags, void *wipe, ULONG *interrupt_cmd)
+int dc_change_pass_bak(dc_dev *dev, dc_rw_fn rw, dc_header *header, dc_pass *old_pass, int kdf_sel, dc_pass *new_pass, u32 flags, void *wipe, ULONG *interrupt_cmd)
 {
 	dc_header *hback = NULL;
 	xts_key   *bak_key = NULL;
 	u64        backup_pos = dev->dsk_size - dev->head_len;
 	int        slots_valid = 0;
 	int        slots_len = 0;
+	int        bak_kdf = -1;
 	int        resl;
 
 	do
 	{
-		/* read and validate backup header */
-		if ((resl = io_read_header(dev, rw, backup_pos, &hback, &bak_key, old_pass, NULL, interrupt_cmd)) != ST_OK) {
+		/* read and validate backup header: with the KDF the primary was found with first; a
+		   backup sealed with another one (an earlier change whose backup step failed) is
+		   still found when the caller gave a selector */
+		resl = io_read_header(dev, rw, backup_pos, &hback, &bak_key, old_pass, &bak_kdf, interrupt_cmd);
+		if (resl == ST_PASS_ERR && kdf_sel < KDF_NONE && kdf_sel != old_pass->kdf) {
+			int kdf = old_pass->kdf;
+
+			old_pass->kdf = kdf_sel;
+			resl = io_read_header(dev, rw, backup_pos, &hback, &bak_key, old_pass, &bak_kdf, interrupt_cmd);
+			old_pass->kdf = kdf;
+		}
+		if (resl != ST_OK) {
 			DbgMsg("failed to read backup header, error code: %d\n", resl);
 			resl = ST_INV_VOLUME;
 			break;
 		}
+		/* a KDF selector only searches; the slot updates below derive with the KDF found */
+		old_pass->kdf = bak_kdf;
 
 		/* check if slot layout matches between primary and backup */
 		if (header->version >= DC_HDR_VERSION_2 && (header->feature_flags & FF_KEY_SLOTS))

@@ -23,7 +23,9 @@
 
 int dc_update_key_slots(dc_header *header, xts_key **hdr_key, dc_pass *old_pass, dc_pass *new_pass, ULONG *interrupt_cmd);
 int dc_change_slot_pass(dc_header *header, dc_pass *old_pass, dc_pass *new_pass, ULONG *interrupt_cmd);
-int dc_change_pass_bak(dc_dev *dev, dc_rw_fn rw, dc_header *header, dc_pass *old_pass, dc_pass *new_pass, u32 flags, void *wipe, ULONG *interrupt_cmd);
+/* kdf_sel: the KDF selector the caller was given for old_pass (KDF_DEFAULT / KDF_ALL), tried
+   when old_pass->kdf does not open the backup; KDF_NONE when there was none */
+int dc_change_pass_bak(dc_dev *dev, dc_rw_fn rw, dc_header *header, dc_pass *old_pass, int kdf_sel, dc_pass *new_pass, u32 flags, void *wipe, ULONG *interrupt_cmd);
 int dc_update_backup(dc_dev *dev, dc_rw_fn rw, dc_header *header, u8 *bak_salt, xts_key *bak_key, u8 *key_slots, u32 flags);
 
 #endif
