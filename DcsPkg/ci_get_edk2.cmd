@@ -5,3 +5,4 @@ git clone --branch edk2-stable202511 --depth 1 --recurse-submodules --shallow-su
 cd edk2
 
 call edksetup.bat Rebuild
+if not exist BaseTools\Bin\Win32\GenFw.exe (echo BaseTools build failed & exit /b 1)
